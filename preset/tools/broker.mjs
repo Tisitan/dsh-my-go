@@ -33,25 +33,18 @@ function parseAgentType(label) {
   return AGENT_TYPES.includes(match[1]) ? match[1] : undefined
 }
 
-/** Effort values the deepseek-official adapter accepts. */
-const DEEPSEEK_EFFORTS = new Set(['off', 'high', 'max'])
-
-function mapEffort(effort) {
-  if (effort === undefined || effort === null) return undefined
-  if (effort === 'low') return 'high'
-  if (DEEPSEEK_EFFORTS.has(effort)) return effort
-  return String(effort)
-}
-
 /** Default bindings per AGENTS.md. Provider stays unset for light agents so
- * they inherit Sisyphus's route; heavy agents pin the octopus gateway. */
+ * they inherit Sisyphus's route; heavy agents pin the octopus gateway.
+ * reasoningEffort is only ever applied when the exact model supports that
+ * level (checked against the DSH model catalog at request time); light agents
+ * leave it unset so the model's own default applies. */
 function defaultBindings() {
   return {
     sisyphus: { dsv4p0813: false },
-    hermes: { model: 'mimo-v2.5', reasoningEffort: 'default', dsv4p0813: false },
-    explore: { model: 'mimo-v2.5', reasoningEffort: 'default', dsv4p0813: false },
-    librarian: { model: 'mimo-v2.5', reasoningEffort: 'default', dsv4p0813: false },
-    looker: { model: 'mimo-v2.5', reasoningEffort: 'default', dsv4p0813: false },
+    hermes: { model: 'mimo-v2.5', dsv4p0813: false },
+    explore: { model: 'mimo-v2.5', dsv4p0813: false },
+    librarian: { model: 'mimo-v2.5', dsv4p0813: false },
+    looker: { model: 'mimo-v2.5', dsv4p0813: false },
     hephaestus: { provider: 'octopus', model: 'deepseek-v4-flash', reasoningEffort: 'high', dsv4p0813: false },
     prometheus: { provider: 'octopus', model: 'deepseek-v4-pro', reasoningEffort: 'max', dsv4p0813: false },
     oracle: { provider: 'octopus', model: 'deepseek-v4-pro', reasoningEffort: 'max', dsv4p0813: false },
@@ -630,6 +623,34 @@ export async function apply(ctx, config = {}) {
   })
 
   // ── model/effort binding at the request waterfall ───────────────────────
+  // reasoningEffort follows the DSH model catalog: some models have no
+  // thinking levels, others expose a different set (off/high/max, low, etc.).
+  // We only ever set an effort the exact model actually supports; when the
+  // configured effort is unsupported (or the model exposes none), we leave
+  // the field unset so the adapter's default behavior applies — never hard-map
+  // or clamp, which would reject or silently alter the request.
+  const llm = ctx.get('llm')
+  const effortCache = new Map() // `${provider}/${model}` -> Set<effortId> | null
+  async function supportedEfforts(provider, model) {
+    const key = `${provider}/${model}`
+    const cached = effortCache.get(key)
+    if (cached !== undefined) return cached
+    let result = null // null = unknown (leave effort unset)
+    try {
+      if (llm && typeof llm.resolveModelInfo === 'function') {
+        const info = await llm.resolveModelInfo(provider, model)
+        const efforts = info?.reasoning?.efforts
+        if (Array.isArray(efforts) && efforts.length > 0) {
+          result = new Set(efforts.map((e) => String(e?.id)))
+        }
+      }
+    } catch {
+      // Capability lookup must never break the request; unknown → leave unset.
+    }
+    effortCache.set(key, result)
+    return result
+  }
+
   ctx.on('agent/request', async (payload, next) => {
     const seed = await next()
     const agent = payload?.agent
@@ -640,8 +661,16 @@ export async function apply(ctx, config = {}) {
     const nextConfig = { ...seed }
     if (binding.provider !== undefined) nextConfig.provider = binding.provider
     if (binding.model !== undefined) nextConfig.model = binding.model
-    const effort = mapEffort(binding.reasoningEffort)
-    if (effort !== undefined) nextConfig.reasoningEffort = effort
+    const desiredEffort = binding.reasoningEffort
+    if (desiredEffort !== undefined && desiredEffort !== null) {
+      const provider = String(nextConfig.provider ?? binding.provider ?? '')
+      const model = String(nextConfig.model ?? binding.model ?? '')
+      const efforts = await supportedEfforts(provider, model)
+      if (efforts !== null && efforts.has(String(desiredEffort))) {
+        nextConfig.reasoningEffort = desiredEffort
+      }
+      // Unsupported or unknown → leave reasoningEffort unset (adapter default).
+    }
     return nextConfig
   })
 

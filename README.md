@@ -1,4 +1,4 @@
-# dsh-my-go
+# MyGO!!!!! 编排调度 | DSH
 
 > **My** tasks, where to **GO**?????
 
@@ -60,7 +60,7 @@ cp -r preset ~/.dsh/.agent-presets/dsh-my-go
 
 ### 最小示例
 
-新开一个 DSH 会话，预设选择 **MyGO!!!!! 模式**（或已通过 npm 安装，直接使用），
+新开一个 DSH 会话，预设选择 **MyGO!!!!! 模式**
 然后对 Sisyphus 说：
 
 > 调研 src/ 目录结构，然后写一个 README 生成脚本，最后让 Oracle 终验。
@@ -85,7 +85,8 @@ dsh web   # 启动 Web GUI，新会话选择 MyGO!!!!! 模式
 - 子智能体 = DSH **continuable subagent**（`subagents.startContinuable`），
   持久化独立 Session，支持 `followup` 续接。
 - 模型绑定 = 创建时 `agentOptions` + `agent/request` waterfall 覆盖
-  `reasoningEffort`（兼容适配器档位映射：`low`→`high`）。
+  `reasoningEffort`（**跟随 DSH 模型目录**：只设置该模型实际支持的思考档位；
+  模型无思考选项或档位不支持时不设置，走模型默认）。
 - 单线阻塞 = broker 编排状态机（当前运行 / 队列 / 求助 / 历史）。
 - 详细设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
@@ -97,18 +98,18 @@ broker 注册 settings 命名空间 `dsh-my-go`（WebUI 设置页「dsh-my-go �
 | ------ | ------ | ---- |
 | `agents.<type>.provider` | 继承父级 | 该工种的 provider 路由 |
 | `agents.<type>.model` | 见表 | 该工种的模型 |
-| `agents.<type>.reasoningEffort` | 见表 | 思考档位（off/high/max，low 自动映射 high） |
+| `agents.<type>.reasoningEffort` | 见表 | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
 | `agents.<type>.dsv4p0813` | false | 是否对该工种启用 DSV4P0813 两阶段锚定补丁 |
 
 工种默认模型（AGENTS.md 建议）：
 
 | 工种 | 模型 | Effort |
 | --- | --- | --- |
-| Sisyphus | 用户所选 | high |
-| Hermes / Explore / Librarian / Looker | mimo-v2.5 | default |
-| Hephaestus | deepseek-v4-flash | high |
-| Prometheus | deepseek-v4-pro | max |
-| Oracle | deepseek-v4-pro | max |
+| Sisyphus | 用户所选 | —（跟随用户选择） |
+| Hermes / Explore / Librarian / Looker | mimo-v2.5 | —（跟随模型默认） |
+| Hephaestus | deepseek-v4-flash | high（模型支持时） |
+| Prometheus | deepseek-v4-pro | max（模型支持时） |
+| Oracle | deepseek-v4-pro | max（模型支持时） |
 
 ## 智能体 Prompt
 

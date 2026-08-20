@@ -12,7 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { Orchestration, AGENT_TYPES, agentLabel, type AgentType } from './orchestration.ts'
-import { BindingTable, DEFAULT_BINDINGS, bindingFor, mapEffort } from './model-binding.ts'
+import { BindingTable, DEFAULT_BINDINGS, bindingFor, supportedEfforts, effortSupported, type LlmServiceLike } from './model-binding.ts'
 import { registerOrchestrationTools } from './tools.ts'
 
 export interface BrokerHostConfig {
@@ -124,6 +124,20 @@ export function apply(ctx: Context, config: BrokerHostConfig = {}): (() => void)
   // ── model/effort binding at the request waterfall ───────────────────────
   // Scoped to the calling agent so Sisyphus itself is untouched unless
   // bindSisyphus is set. Children carry their type in sessionTypes.
+  // reasoningEffort follows the DSH model catalog: only set an effort the
+  // exact model supports (queried via llm.resolveModelInfo, cached); an
+  // unsupported or unknown desired effort leaves the field unset so the
+  // adapter's own default applies.
+  const llm = ctx.get('llm') as LlmServiceLike | undefined
+  const effortCache = new Map<string, Set<string> | null>()
+  const resolvedEfforts = async (provider: string, model: string): Promise<Set<string> | null> => {
+    const key = `${provider}/${model}`
+    const cached = effortCache.get(key)
+    if (cached !== undefined) return cached
+    const value = await supportedEfforts(llm, provider, model)
+    effortCache.set(key, value)
+    return value
+  }
   ctx.on('agent/request', async (payload, next) => {
     const seed = await next()
     const agent = payload.agent
@@ -133,8 +147,14 @@ export function apply(ctx: Context, config: BrokerHostConfig = {}): (() => void)
     const nextConfig = { ...seed }
     if (binding.provider !== undefined) nextConfig.provider = binding.provider
     if (binding.model !== undefined) nextConfig.model = binding.model
-    const effort = mapEffort(binding.reasoningEffort as string | undefined)
-    if (effort !== undefined) nextConfig.reasoningEffort = effort
+    if (binding.reasoningEffort !== undefined) {
+      const provider = String(nextConfig.provider ?? binding.provider ?? '')
+      const model = String(nextConfig.model ?? binding.model ?? '')
+      const efforts = await resolvedEfforts(provider, model)
+      if (effortSupported(efforts, binding.reasoningEffort)) {
+        nextConfig.reasoningEffort = binding.reasoningEffort
+      }
+    }
     return nextConfig
   })
 
