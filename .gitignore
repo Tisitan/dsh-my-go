@@ -5,3 +5,4 @@ bun.lockb
 dist/
 *.tgz
 tmp/
+.idea/
