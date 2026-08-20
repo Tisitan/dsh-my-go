@@ -17,14 +17,8 @@ body:
         ### ❔ | 提议时，如果文字无法说明清楚，不妨使用画图的方法辅助说明
         ### ⚠ | 如果涉及敏感信息，请自行打码
 
-        ## 如果您不知道如何有效、精准地表述，这里有一些文档供您参考
-        [《提问指南》](https://lug.ustc.edu.cn/wiki/doc/howtoask/)
+        ## 提问指引
         [《提问的智慧》](https://lug.ustc.edu.cn/wiki/doc/smart-questions/)
-        [《别像弱智一样提问》](https://github.com/tangx/Stop-Ask-Questions-The-Stupid-Ways/blob/master/README.md)
-
-        如果您第一次提问，建议您从较为简洁现代的《提问指南》读起；尚有余力想要进一步优化问题表述的可以阅读更加详细的《提问的智慧》；如果您更偏好于简短、幽默的文风也不妨读一读《别像弱智一样提问》。
-
-        不过，您也不必为此感到压力，[更好地回答问题](https://lug.ustc.edu.cn/wiki/doc/smart-questions/#%E5%A6%82%E4%BD%95%E6%9B%B4%E5%A5%BD%E5%9C%B0%E5%9B%9E%E7%AD%94%E9%97%AE%E9%A2%98) 也是一个高尚的开发者需要具备的品德，我们都曾是新手。
 
         ---
   - type: checkboxes
@@ -76,13 +70,19 @@ body:
   - type: dropdown
     id: part-type
     attributes:
-      label: 您反馈的问题属于以下哪个部分？
-      description: 新项目使用时，将 <占位模块> 替换为实际模块；如果您确实不知道属于什么，可以选择 “我不确定”
+      label: 优化作用于哪个工种 / 模块？
+      description: 可多选；如果您确实不知道属于什么，可以选择 “我不确定”
       multiple: true
       options:
-        - <占位模块 1>
-        - <占位模块 2>
-        - <占位模块 3>
+        - Sisyphus（总调度）
+        - Hermes（快速执行）
+        - Explore（检索）
+        - Librarian（文档）
+        - Multimodal Looker（看图）
+        - Hephaestus（写代码）
+        - Prometheus（规划）
+        - Oracle（调试/终验）
+        - client UI（面板/设置页）
         - 我不确定
     validations:
       required: true
