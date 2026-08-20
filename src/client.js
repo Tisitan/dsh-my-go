@@ -10,9 +10,13 @@
  *    to the Sisyphus parent session.
  *
  * Built by scripts/build-client.mjs into dist/client.js (a
- * `__ModuleLoader__.load` wrapper around the esbuild CJS bundle). React is a
- * Client Builtin — reference it directly, never via globalThis.
+ * `__ModuleLoader__.load` wrapper around the esbuild CJS bundle). React is
+ * external in the bundle and resolved through the loader's require, so we
+ * import it here — NOT the dynamic-plugin Builtin (that path has no
+ * import and relies on an ambient global, which breaks under esbuild).
  */
+
+import * as React from 'react'
 
 export const name = 'dsh-my-go'
 
