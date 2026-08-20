@@ -143,29 +143,16 @@ bunx tsc --noEmit       # 类型检查
 bun run test            # 冒烟测试
 ```
 
-## 发布到 npm（Trusted Publishing，无需 token）
-
-```bash
-# 1. 首次：本地登录并手动发布一次，认领包名
-npm login
-bun run build:client
-npm publish --access public
-
-# 2. 一次性：npmjs.com → 包 Access → Trusted Publishing →
-#    添加 GitHub Actions provider（仓库 daizihan233/dsh-my-go）
-
-# 3. 之后：打 tag 推送，CI 用 OIDC 自动发布（--provenance 生成可验证溯源）
-git tag v0.1.1 && git push origin v0.1.1
-```
-
 ## 维护状态
 
-- 活跃开发中（v0.1.0）。
+- 开发中
 - 已知限制：
   - 子智能体模型绑定依赖 `agent/request` waterfall（DSH 未原生支持动态子代理模型，
     见 [dsh-handbook 9.2](https://github.com/deepseek-ai/deepseek-harness/discussions/118)）；
   - 结论注入依赖 `subagent/end` 事件；`reportFrom` 为子→父补充通道。
   - 单线阻塞由 broker 状态机执行；Sisyphus 需遵守编排规则（由 system-prompt section 约束）。
+- 感谢以下一位开发者：
+  - DeepSeek V4 Flash 0731
 
 ## 许可证
 

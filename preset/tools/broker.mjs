@@ -18,7 +18,44 @@ export const name = 'dsh-my-go-broker'
 
 export const inject = ['tools', 'subagents', 'systemPrompt']
 
+import { access, cp, mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
+
 const AGENT_TYPES = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
+
+/**
+ * Install the bundled agent preset into the user preset root once, so the
+ * "MyGO!!!!! 模式" preset appears in the session picker after `dsh plugin
+ * add dsh-my-go`. DSH discovers presets only from configured roots
+ * (~/.dsh/.agent-presets/), never from node_modules, so the npm bundle must
+ * copy its preset/ directory there. Idempotent: skips when already present.
+ * Failures are logged and swallowed — the host plugin must keep working even
+ * when the preset copy is not possible.
+ */
+async function ensurePresetInstalled() {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url)) // .../dsh-my-go/lib
+    const packageRoot = dirname(here) // .../dsh-my-go
+    const source = join(packageRoot, 'preset')
+    const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
+    const userPresetRoot = join(dshHome, '.agent-presets')
+    const target = join(userPresetRoot, 'dsh-my-go')
+    try {
+      await access(target)
+      return // already installed
+    } catch {
+      // not present — install below
+    }
+    await access(source)
+    await mkdir(userPresetRoot, { recursive: true })
+    await cp(source, target, { recursive: true })
+    console.log(`[dsh-my-go] installed agent preset to ${target} — restart dsh web if the picker is already open`)
+  } catch (error) {
+    console.error(`[dsh-my-go] could not install agent preset: ${String(error)}`)
+  }
+}
 
 const AGENT_TYPE_PREFIX = 'dsh-my-go:'
 
@@ -213,6 +250,7 @@ class Orchestration {
 }
 
 export async function apply(ctx, config = {}) {
+  void ensurePresetInstalled()
   const orchestration = new Orchestration()
   const sessionTypes = new Map()
   let bindings = { ...defaultBindings(), ...(config.bindings ?? {}) }
