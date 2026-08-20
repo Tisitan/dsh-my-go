@@ -2,28 +2,30 @@
 
 > **My** tasks, where to **GO**?????
 
-dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) 之上的**智能体编排系统**。它以星型 + 单线嵌套拓扑把 DSH 主会话（Sisyphus）与 7 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。他参考了 oh-my-openagent 的编排设计。
+dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) 之上的**智能体编排系统**。
+
+它以星型 + 单线嵌套拓扑把 DSH 主会话（Sisyphus）与 7 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。参考了 oh-my-openagent 的编排设计。
 
 ## 特性
 
 - **星型拓扑**：所有子智能体（叶子）不直接通信，全部经 Sisyphus 中转。
 - **单线阻塞**：同一时段只有一个子智能体运行，多余任务自动排队。
 - **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（调试 + 终验）。
-- **按工种绑定模型与思考档位**：快活小工用轻模型（mimo-v2.5），重活用重模型（deepseek-v4-pro + max）。
+- **按工种绑定模型**：快活小工用轻模型（mimo-v2.5），重活用重模型（deepseek-v4-pro-0813）。
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
-- **步骤级调度**：Prometheus 把需求拆成步骤序列（每步标注工种/交付物/沿用或换人），Sisyphus 逐步骤选择最省 token 的工种——轻活派轻工种、重活派重工种、同工种上下文连续则 `continue` 复用。
+- **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——轻活派轻工种、重活派重工种、同工种上下文连续则 `continue` 复用。
 - **Sisyphus 质检规则**：结论不达标可驳回重做，被驳回的子智能体保留上下文继续。
 - **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关，均可在 DSH 设置页配置。
 - **UI 适配**：右侧编排面板树状图实时显示运行/队列/求助/历史；子智能体运行时自动跳转子会话，结束后跳回。
-- **DSV4P0813 补丁开关**：按工种可选启用两阶段锚定上下文注入（参考 liangshen 模式）。
+- **DSV4P0813 补丁开关**：让 DSV4Pro 发挥最大的实力。
 
 ## 环境要求
 
 ### 理论最低要求
 
-- DeepSeek Harness `0.1.0-rc.8`+（基于 `agent/request` waterfall 与 continuable subagent API）
+- DeepSeek Harness `0.1.0-rc.6`+（基于 `agent/request` waterfall 与 continuable subagent API）
 - Node.js 20+
-- 一个可用的 LLM provider（模型路由默认 `octopus` / `pi-ai`，可配置）
+- 一个可用的 LLM provider
 - Windows / macOS / Linux（DSH 均支持）
 
 ### 开发时的环境
@@ -35,38 +37,21 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 ### 安装（推荐：npm 插件）
 
 ```bash
-# 一条命令安装到 web profile（自动加入 dsh.profile.bundles 并激活）
-dsh plugin --profile web add dsh-my-go
+# 一条命令安装到 web profile
+dsh plugin --profile web add dsh-my-go@latest --config.minimumReleaseAge=0
 # 重启 dsh web 生效
 dsh web
 ```
 
 安装后 broker 插件（编排工具 + 模型绑定 + 树状图面板 + 设置页）自动挂载；
-会话预设「MyGO!!!!! 模式」提供 Sisyphus 的完整编排 persona。
-
-### 安装（备选：agent preset）
-
-```bash
-# 只装会话预设（broker 随 preset 加载，client UI 需另行挂载）
-cp -r preset ~/.dsh/.agent-presets/dsh-my-go
-```
-
-动态验证（开发期，无需重启）：
-
-```bash
-# 在 DSH 会话中用动态 Cordis 插件跑 broker host 半：
-#   cordis_define → cordis_run（见 docs/ARCHITECTURE.md §5）
-```
+会话预设「MyGO!!!!! 模式」提供 Sisyphus 的完整编排。
 
 ### 最小示例
 
 新开一个 DSH 会话，预设选择 **MyGO!!!!! 模式**
 然后对 Sisyphus 说：
 
-> 调研 src/ 目录结构，然后写一个 README 生成脚本，最后让 Oracle 终验。
-
-Sisyphus 会自动：`go_work(prometheus, …)` 规划 → 按步骤 `go_work(explore, …)` 检索 →
-`go_work(hephaestus, …)` 实现 → `go_work(oracle, …)` 终验，每个子智能体运行时界面自动跳到其子会话。
+> 告诉我这个项目是干啥的。
 
 ### 运行
 
@@ -101,15 +86,15 @@ broker 注册 settings 命名空间 `dsh-my-go`（WebUI 设置页「dsh-my-go �
 | `agents.<type>.reasoningEffort` | 见表 | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
 | `agents.<type>.dsv4p0813` | false | 是否对该工种启用 DSV4P0813 两阶段锚定补丁 |
 
-工种默认模型（AGENTS.md 建议）：
+工种模型（建议）：
 
 | 工种 | 模型 | Effort |
 | --- | --- | --- |
-| Sisyphus | 用户所选 | —（跟随用户选择） |
-| Hermes / Explore / Librarian / Looker | mimo-v2.5 | —（跟随模型默认） |
-| Hephaestus | deepseek-v4-flash | high（模型支持时） |
-| Prometheus | deepseek-v4-pro | max（模型支持时） |
-| Oracle | deepseek-v4-pro | max（模型支持时） |
+| Sisyphus | 用户所选 | high |
+| Hermes / Explore / Librarian / Looker | mimo-v2.5 | default |
+| Hephaestus | deepseek-v4-flash | high |
+| Prometheus | deepseek-v4-pro | max |
+| Oracle | deepseek-v4-pro | max |
 
 ## 智能体 Prompt
 
@@ -158,13 +143,19 @@ bunx tsc --noEmit       # 类型检查
 bun run test            # 冒烟测试
 ```
 
-## 发布到 npm
+## 发布到 npm（Trusted Publishing，无需 token）
 
 ```bash
-# 1. 改版本号（package.json），按 Conventional Commits 提交
-# 2. 打 tag 并推送（触发 .github/workflows/publish.yml 自动发布）
+# 1. 首次：本地登录并手动发布一次，认领包名
+npm login
+bun run build:client
+npm publish --access public
+
+# 2. 一次性：npmjs.com → 包 Access → Trusted Publishing →
+#    添加 GitHub Actions provider（仓库 daizihan233/dsh-my-go）
+
+# 3. 之后：打 tag 推送，CI 用 OIDC 自动发布（--provenance 生成可验证溯源）
 git tag v0.1.1 && git push origin v0.1.1
-# 3. 需要 GitHub 仓库配置 NPM_TOKEN secret（npmjs.com 的 automation token）
 ```
 
 ## 维护状态
@@ -173,7 +164,6 @@ git tag v0.1.1 && git push origin v0.1.1
 - 已知限制：
   - 子智能体模型绑定依赖 `agent/request` waterfall（DSH 未原生支持动态子代理模型，
     见 [dsh-handbook 9.2](https://github.com/deepseek-ai/deepseek-harness/discussions/118)）；
-    effort 档位受适配器能力表约束（deepseek-official 仅 off/high/max）。
   - 结论注入依赖 `subagent/end` 事件；`reportFrom` 为子→父补充通道。
   - 单线阻塞由 broker 状态机执行；Sisyphus 需遵守编排规则（由 system-prompt section 约束）。
 

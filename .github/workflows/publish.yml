@@ -1,10 +1,16 @@
-# dsh-my-go publish: build the client bundle and publish to npm on version tags.
+# dsh-my-go publish: build the client bundle and publish to npm on version tags
+# using Trusted Publishing (OIDC) — no long-lived npm token stored in secrets.
 #
 # Usage:
-#   git tag v0.1.0 && git push origin v0.1.0
+#   1. First publish manually once to claim the package name:
+#        npm login && npm publish --access public
+#   2. On npmjs.com, open the package → Access → Trusted Publishing →
+#      add provider "GitHub Actions" for repo daizihan233/dsh-my-go.
+#   3. From then on, tag and push to publish automatically:
+#        git tag v0.1.0 && git push origin v0.1.0
 #
-# Requires an npm automation token stored as a repository secret named
-# NPM_TOKEN (Settings → Secrets and variables → Actions).
+# The workflow uses GitHub's OIDC identity (id-token: write) to mint a short-lived
+# npm token, and --provenance attaches a verifiable build provenance statement.
 name: Publish to npm
 
 on:
@@ -14,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # required for npm Trusted Publishing / provenance
 
 jobs:
   publish:
@@ -32,7 +39,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -47,6 +53,4 @@ jobs:
         run: bun run test
 
       - name: Publish to npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
