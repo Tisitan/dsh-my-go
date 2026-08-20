@@ -1,0 +1,131 @@
+# 🤖 dsh-my-go 智能体编排
+
+> **设计哲学**：让对的工种用对的脑子，Sisyphus 是唯一的总指挥和质检官。
+
+**My** tasks, where to **GO**?????
+
+---
+
+## 🏛️ 核心架构
+
+### 拓扑结构：星型 + 单线嵌套
+
+- **所有子智能体（叶子节点）不直接通信**，必须经由 Sisyphus 中转。
+- **执行模式**：单线阻塞，同一时段只能有一个智能体在运行。
+- **核心职责分离**：
+  - Sisyphus 负责 **“调度 + 审查 + 驳回”**
+  - 子智能体负责 **“执行 + 汇报”**
+
+---
+
+## 🧠 智能体清单
+
+参考 oh-my-openagent（@tmp/oh-my-openagent），针对 DSH 经过一定优化：
+
+| 智能体 | 绑定模型 | Effort | 职责 | 触发关键词 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Sisyphus** | deepseek-v4-flash | high | **总调度 + 质检官**。接收用户请求，分发任务，审查请求/响应，驳回低质量结果，管理上下文栈。 | （系统级，不直接触发） |
+| **Hermes** | mimo-v2.5 | default | **快速执行**。批量替换、代码格式化、统一 imports、纯文本复制粘贴等无脑体力活。 | 替换、批量、全部改成、格式化、统一 |
+| **Explore** | mimo-v2.5 | default | **快速检索**。grep、读文件、定位符号、扫描目录结构。 | 查找、搜索、读取、定位 |
+| **Librarian** | mimo-v2.5 | default | **文档查询**。读 README、API 参考、历史文档、注释提取。 | 文档、API、说明、参考 |
+| **Multimodal Looker** | mimo-v2.5 | default | **多模态识别**。识别 UI 截图、设计稿、PDF 图表。 | 图片、截图、UI、设计稿 |
+| **Hephaestus** | deepseek-v4-flash | high | **代码编写**。单文件重构、模块实现、单元测试编写、常规代码生成。 | 写代码、实现、重构、修改 |
+| **Prometheus** | deepseek-v4-pro | max | **需求规划**。理解模糊需求，拆解任务为可执行步骤，输出计划。仅在流程开始时调用一次。 | 规划、理解需求、拆解任务 |
+| **Oracle** | deepseek-v4-pro | max | **架构调试 + 终验**。跨模块依赖分析、深层 Bug 定位、代码审查、最终验收。 | 调试、架构、审查、验证 |
+
+绑定的模型与思考程度应当可配置，上表为建议的默认模型。触发关键词仅供参考，同时作为举例，实际不应该由插件本身进行调度，而是由主模型 Sisyphus 进行调度。
+
+用户的 “默认模型” 与在对话框上选择的模型被认为是 Sisyphus 的模型。
+
+---
+
+## 🔄 智能体通信
+
+使用 tools 让智能体们进行通信。一次只能有一个智能体运行，所以不应允许同时调用多个。此外，模型的输出**不是** tools 的返回结果，tools 只是一种调用形式，否则可观测性会大大降低。在 tools 被调用后，插件应当尽快返回并接管。
+
+### 1. 请求（子 Agent → Sisyphus）—— need_help
+
+当子智能体需要请求 Sisyphus 协助时使用该 tools
+
+| key     | value                          |
+| ------- | ------------------------------ |
+| intent  | 协助类型                       |
+| content | 具体情况、理由、内容的详细说明 |
+
+**`intent` 枚举值：**
+
+- `explore` - 需要 Explore 读文件或搜代码
+- `read_doc` - 需要 Librarian 查文档
+- `look_image` - 需要 Multimodal Looker 看图
+- `replan` - 任务超出能力、无法定位或受到阻碍，请求重新分配。
+
+插件通过上下文注入通知 Sisyphus 主智能体，对 Sisyphus 注入的上下文里应当生成一个 ID 用于后续操作。发出请求时会挂起此智能体。
+
+### 2. 调用（Sisyphus → 子 Agent）—— go_work
+
+启动一个新的子智能体（空上下文）
+
+| key    | value            |
+| ------ | ---------------- |
+| agent  | 要调用哪个 agent |
+| prompt | 输入的 prompt    |
+
+新的智能体应当同样拥有一个唯一 ID 用于 Sisyphus 操作。
+
+### 3. 继续（Sisyphus → 子 Agent）—— continue
+
+恢复被挂起的 SubAgent，发送新的 Prompt 并继续运行，可用于驳回或传话。
+
+| key    | value             |
+| ------ | ----------------- |
+| id     | 要调用的 agent ID |
+| prompt | 输入的新 prompt   |
+
+### 4. 转发（子 Agent → Sisyphus → 子 Agent）—— forward
+
+当主模型批准了子 Agent 的 Help 请求，且 content 可直接作为 Prompt 时，主模型 Sisyphus 可使用此功能快速转发。
+
+| key    | value                                                        |
+| ------ | ------------------------------------------------------------ |
+| from   | 需要被转发的 need_help ID                                    |
+| target | 目标 Agent ID，或类型；填 ID 时等效于 continue + prompt，填类型时等效于 go_work + prompt |
+
+### 5. 结论（子 Agent → Sisyphus）
+
+当子 Agent 工作结束时，插件会转发最后一段输出作为结论返回并注入给 Sisyphus，其中同样会携带一个唯一 ID 以便操作。
+
+需要注意的是，被调用子智能体工作结束，返回结论时 **不应该** 使用 forward，而是直接输出，等待 Sisyphus 分析后再由 Sisyphus 决定转发给请求调用者还是驳回/追问。
+
+---
+
+## 🛡️ Sisyphus 的质检规则
+
+Sisyphus 在收到子 Agent 的响应后，**有权** 要求驳回重做或追问细节。当 Sisyphus 决定驳回时，应调用 `continue` 工具，向同一个 Agent ID 发送新的 Prompt，附带驳回理由和修正方向。被驳回的 Agent 将**保留其当前轮次的上下文**，继续执行。
+
+---
+
+## 🚫 禁止事项
+
+1. **子 Agent 不得直接调用其他子 Agent**。所有外部操作必须通过 Sisyphus 转发。
+2. **子 Agent 不得主动发起对话**。只能被动响应 Sisyphus 的分发。
+3. **Sisyphus 不得将“换人”等同于“原地升级模型”**。当收到 `intent=replan` 时，必须切换智能体（如 Hephaestus → Oracle），而非切换模型。
+
+---
+
+## 📝 配置
+
+配置项应当能在 DSH 的设置中使用 WebUI 直接进行配置。
+
+配置项除了模型和思考程度，应当再给每个智能体设计一个开关：是否对该智能体作用 DSV4P0813 补丁。DSV4P0813 需要特定的上下文注入流程才能发挥出全部能力，参考 @tmp/liangshen
+
+
+
+## 其他
+
+DSH 相关文档可参考由社区编写的《DeepSeek Harness 白皮书》（@tmp/dsh-handbook）
+
+在任务完成时，请完善 @README.md
+
+各个部分的 Prompt 由你自己书写。
+
+你还需要适配 DSH 的 UI，可以在右侧边栏上用树状图的形式标明子 Agent 的运行情况。

@@ -1,0 +1,98 @@
+name: 我有一计（新功能建议）
+description: 点击此项使软件功能更丰富
+title: '[新功能?]: '
+labels: [ "enhancement" ]
+assignees: []
+projects: []
+# type: feature   # 组织级功能：个人仓库校验不通过，如需启用请取消注释
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 感谢您愿意花一些时间来填写这个内容！
+        ## 以下是一些注意事项，能让提交更快被处理
+
+        ### ❗ | 确定没有相同提议的 ISSUE 已被提出。
+        ### ❔ | 提议时，如果文字无法说明清楚，不妨使用画图的方法辅助说明
+        ### ⚠ | 如果涉及敏感信息，请自行打码
+
+        ## 如果您不知道如何有效、精准地表述，这里有一些文档供您参考
+        [《提问指南》](https://lug.ustc.edu.cn/wiki/doc/howtoask/)
+        [《提问的智慧》](https://lug.ustc.edu.cn/wiki/doc/smart-questions/)
+        [《别像弱智一样提问》](https://github.com/tangx/Stop-Ask-Questions-The-Stupid-Ways/blob/master/README.md)
+
+        如果您第一次提问，建议您从较为简洁现代的《提问指南》读起；尚有余力想要进一步优化问题表述的可以阅读更加详细的《提问的智慧》；如果您更偏好于简短、幽默的文风也不妨读一读《别像弱智一样提问》。
+
+        不过，您也不必为此感到压力，[更好地回答问题](https://lug.ustc.edu.cn/wiki/doc/smart-questions/#%E5%A6%82%E4%BD%95%E6%9B%B4%E5%A5%BD%E5%9C%B0%E5%9B%9E%E7%AD%94%E9%97%AE%E9%A2%98) 也是一个高尚的开发者需要具备的品德，我们都曾是新手。
+
+        ---
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: |
+        请确保您已阅读以上注意事项，并勾选下方的确认框。
+      options:
+        - label: "我已经仔细阅读上述注意事项，并能够尝试运用其中任一文档所述的提问技巧。"
+          required: true
+        - label: "我确定这不是一个伪需求，他能解决实际存在的问题。"
+          required: true
+        - label: "我确定这是一个有意义的建议，且目前似乎没有其他更好的解决方案。"
+          required: true
+        - label: "我确定在最新版本中没有这个功能"
+          required: true
+        - label: "我愿意为此功能提交 Pull Request，或者提供一些实现思路（非必选）"
+          required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        接下来我们将引导您详细地描述您的建议
+
+  - type: input
+    id: name
+    attributes:
+      label: 新功能名称
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 新功能描述
+      description: 简述这个功能是干嘛的
+    validations:
+      required: true
+
+  - type: textarea
+    id: mean
+    attributes:
+      label: 新功能意义
+      description: 简述这个功能的意义在哪，比如用途，或者你怎么想到这个建议的
+    validations:
+      required: true
+
+  - type: dropdown
+    id: part-type
+    attributes:
+      label: 您反馈的问题属于以下哪个部分？
+      description: 新项目使用时，将 <占位模块> 替换为实际模块；如果您确实不知道属于什么，可以选择 “我不确定”
+      multiple: true
+      options:
+        - <占位模块 1>
+        - <占位模块 2>
+        - <占位模块 3>
+        - 我不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: how-to
+    attributes:
+      label: 实现方案（可选）
+      description: 如果您有什么好的实现方案，那么可以写在这里
+
+  - type: textarea
+    id: extra-desc
+    attributes:
+      label: 补充说明（可选）

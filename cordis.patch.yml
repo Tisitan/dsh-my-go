@@ -1,0 +1,8 @@
+# dsh-my-go bundle layer — applied automatically when a profile lists this
+# package in dsh.profile.bundles (via the dsh.bundle.patch declaration in
+# package.json). `dsh plugin --profile web add dsh-my-go` installs the
+# dependency and reconciles the bundle list, so this patch takes effect on
+# the next `dsh web` boot without any manual configuration.
+- insert:
+    - id: dsh-my-go
+      name: 'dsh-my-go'

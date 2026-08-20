@@ -1,0 +1,52 @@
+# dsh-my-go publish: build the client bundle and publish to npm on version tags.
+#
+# Usage:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Requires an npm automation token stored as a repository secret named
+# NPM_TOKEN (Settings → Secrets and variables → Actions).
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Build client bundle
+        run: bun run build:client
+
+      - name: Smoke test
+        run: bun run test
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

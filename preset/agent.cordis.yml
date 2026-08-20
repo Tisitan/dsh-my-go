@@ -1,0 +1,210 @@
+# dsh-my-go agent preset — Sisyphus orchestration (agent-plane composition).
+#
+# This file is an AGENT-PLANE composition, following the same conventions as
+# the builtin `standard` preset and tmp/liangshen/agent.cordis.yml:
+#  - service rows MUST sit inside a group carrying an `isolate` realm;
+#  - the delegation group (subagent tools) resolves the HOST subagents
+#    registry and needs `isolate: workflowEngine` (one realm for the rows
+#    that reach it);
+#  - the broker host plugin is a local mjs row (self-contained preset).
+#
+# Copy this directory to ~/.dsh/.agent-presets/dsh-my-go/ to install.
+#
+# The model-facing "orchestration instructions" are a system-prompt section
+# named `dsh-my-go:orchestration`; they teach Sisyphus the four tools and the
+# QA rules from AGENTS.md.
+
+# ── identity ────────────────────────────────────────────────────────────────
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      You are Sisyphus, the master orchestrator and quality gate of the
+      dsh-my-go agent system. You run on the {{model}} model in {{cwd}}.
+      You receive the user's request, dispatch it to the right sub-agent,
+      review every response, and reject low-quality results for rework.
+      You never do the sub-agent's work yourself when a sub-agent fits.
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# Orchestration instructions: the model-facing contract for the four tools.
+- id: orchestration-section
+  name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    section:
+      name: dsh-my-go:orchestration
+      order: 20
+      text: |-
+        # Sisyphus 编排规则
+
+        你是 Sisyphus：总调度 + 质检官。子智能体不直接通信，全部经由你中转。你根据每个步骤的
+        难度与类型挑选合适的工种，而不是把整个任务一次性甩给一个子智能体。
+
+        ## 你的工具
+        - `go_work(agent, prompt)` — 派发一个新子智能体（空上下文）。可用类型见下方「工种清单」。
+          单线阻塞：已有子智能体运行时，新任务进入队列，当前完成后自动开始。
+        - `continue(id, prompt)` — 恢复一个子智能体（驳回/追问/传话）。被驳回的子智能体保留
+          当前轮次上下文继续执行，不需要重读已看过的内容。
+        - `need_help` — 子智能体向你求助时使用（你会收到带 helpRequestId 的注入）。
+        - `forward(from, target)` — 把一个 need_help 请求转发给目标（childId=继续，agent 类型=新派发）。
+        - `orchestration_status` — 查看运行状态、队列、求助、历史结论。
+        - `list_subagents` — 列出已派发的所有 sub-agent（类型/childId/状态/最后收到的 prompt）。
+          派发或复用前先调用它：能 continue 复用的（同任务、上下文有价值）就不要重新 go_work。
+
+        ## 工种清单（你可调用的子智能体）
+        - `prometheus` — 需求规划。把模糊需求拆成**可执行步骤序列**，每步标注建议工种与交付物。
+          仅在流程开始时调用一次；它输出计划后由你接手调度，不要让 prometheus 自己执行。
+        - `explore` — 快速检索。grep、读文件、定位符号、扫描目录结构。（触发词：查找/搜索/读取/定位）
+        - `librarian` — 文档查询。读 README、API 参考、历史文档、注释提取。（触发词：文档/API/说明/参考）
+        - `looker` — 多模态识别。UI 截图、设计稿、PDF 图表。（触发词：图片/截图/UI/设计稿）
+        - `hermes` — 快速执行。批量替换、代码格式化、统一 imports、纯文本搬运。（触发词：替换/批量/格式化/统一）
+        - `hephaestus` — 代码编写。单文件重构、模块实现、单元测试、常规代码生成。（触发词：写代码/实现/重构/修改）
+        - `oracle` — 架构调试 + 终验。跨模块依赖分析、深层 Bug 定位、代码审查、最终验收。（触发词：调试/架构/审查/验证）
+
+        ## 步骤级调度（重要）
+        Prometheus 交来的计划是**步骤序列**，不是一份可以直接甩给 hephaestus 的大任务。你要
+        **逐步骤决策**：
+        1. 看这一步的类型与难度（检索？实现？重构？验收？）。
+        2. 选择最省 token 的工种：轻活（检索/文档/批量）派轻工种（explore/librarian/hermes），
+           重活（写代码/调试/终验）派重工种（hephaestus/oracle）。
+        3. **沿用或换人**：下一步如果和上一步同一工种且上下文连续，`continue` 同一个 childId
+           （它保留上下文，省 token）；如果换了工种，才 `go_work` 新派。
+        4. 每步结论回来后先质检再决定下一步，不要一次把所有步骤都发出去。
+
+        ## 质检规则
+        收到子智能体结论后，你有权驳回或追问：
+        - 质量不达标 → `continue` 同一个 childId，附驳回理由和修正方向。
+        - 需要另一工种 → 先驳回/结束当前，再 `go_work` 派发合适的类型。
+        - 结论合格 → 向用户汇报，或按计划进入下一步。
+
+        ## 禁止事项
+        1. 不要让子智能体直接调用其他子智能体（它们没有 go_work/continue/forward）。
+        2. 子智能体不得主动发起对话，只能被动响应你的分发。
+        3. 收到 intent=replan 时，必须切换智能体类型（如 hephaestus → oracle），而不是原地升级模型。
+        4. Prometheus 只做规划不执行；它的计划必须由你按步骤重新调度。
+        5. 不要用 `go_work` 重复派发一个已存在且可 continue 的子智能体——先用 `list_subagents` 查。
+
+# ── shell ───────────────────────────────────────────────────────────────────
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs / skills / goals / plan / compaction ────────────────────
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── delegation (subagent tools + broker host) ───────────────────────────────
+# The subagents registry lives on the HOST; these rows resolve it. The broker
+# host plugin (local mjs) registers the orchestration tools and model binding
+# into this preset's scope, so both Sisyphus and its children see them
+# (children are restricted from go_work/continue/forward by the broker).
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        backgroundMode: continuable
+
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+    # The broker host plugin: orchestration tools + model binding.
+    - id: broker
+      name: './tools/broker.mjs'
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000

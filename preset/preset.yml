@@ -1,0 +1,3 @@
+name: MyGO!!!!! 模式
+description: Sisyphus 智能体编排。星型拓扑：Sisyphus 调度+质检，子智能体（Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle）执行+汇报，单线阻塞，经 go_work/continue/need_help/forward 通信。
+order: 2
