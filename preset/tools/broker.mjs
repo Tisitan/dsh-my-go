@@ -395,9 +395,13 @@ export async function apply(ctx, config = {}) {
         // No provider available — set model anyway, agent/request handler will validate
         agentOpts.model = binding.model
       }
+      // Inject sub-agent identity directly into the prompt text.
+      // Sub-agents may not inherit the parent's systemPrompt sections,
+      // so we cannot rely on section.text functions for them.
+      const identityPrefix = `You are ${agentLabel(agentType, '')}. Execute the following task and report your results to Sisyphus.\n\n`
       const request = {
         label: agentLabel(agentType, prompt.slice(0, 60)),
-        prompt: [{ type: 'text', text: prompt }],
+        prompt: [{ type: 'text', text: identityPrefix + prompt }],
         parent,
         ...(Object.keys(agentOpts).length > 0 ? { agentOptions: agentOpts } : {}),
         signal,
