@@ -255,14 +255,14 @@ export async function apply(ctx, config = {}) {
   let bindings = { ...defaultBindings(), ...(config.bindings ?? {}) }
   const bindSisyphus = config.bindSisyphus === true
 
-  // Track the Sisyphus root session id: the first agent that calls a broker
-  // tool is treated as the root. Children cannot delegate (guards below).
-  let rootSessionId = null
-  const isSisyphus = (agent) => {
+  // Track authorized orchestrators: any agent on this preset that is NOT
+  // a sub-agent (has no parentSession) can use orchestration tools.
+  // We do NOT use "first caller" — that breaks multi-session environments.
+  const isSubAgent = (agent) => {
     if (!agent || typeof agent.id !== 'string') return false
-    if (rootSessionId === null) rootSessionId = agent.id
-    return agent.id === rootSessionId
+    return agent?.session?.header?.parentSession != null
   }
+  const canOrchestrate = (agent) => agent && typeof agent.id === 'string' && !isSubAgent(agent)
   // ── settings-backed bindings (WebUI configurable) ───────────────────────
   // NOTE: the settings namespace 'dsh-my-go' is registered by the host bundle
   // (lib/index.js). We only READ from it here — do NOT call settings.register()
@@ -313,68 +313,19 @@ export async function apply(ctx, config = {}) {
   // ── snapshot state (used by connection.rpc handlers in lib/index.js) ──────
   let latestSnapshot = null
   let snapshotSeq = 0
+  // Track the last orchestrator session for auto-jump in the client.
+  let lastOrchestratorSessionId = null
   const bump = () => {
     snapshotSeq += 1
     latestSnapshot = {
       seq: snapshotSeq,
-      parentSessionId: rootSessionId,
+      parentSessionId: lastOrchestratorSessionId,
       ...orchestration.snapshot(),
     }
   }
   orchestration.onChange(() => bump())
 
   // ── per-agent persona + orchestration sections ───────────────────────────
-  // The broker registers sections that differ by agent type:
-  // - Sisyphus (root): full persona + orchestration instructions
-  // Sub-agents get their identity injected into prompt text via dispatchWork.
-  const SISYPHUS_PERSONA = `You are Sisyphus, the master orchestrator and quality gate of the dsh-my-go agent system. You run on the {{model}} model in {{cwd}}. You receive the user's request, dispatch it to the right sub-agent, review every response, and reject low-quality results for rework. You never do the sub-agent's work yourself when a sub-agent fits.`
-  const ORCHESTRATION_TEXT = `# Sisyphus 编排规则
-
-你是 Sisyphus：总调度 + 质检官。子智能体不直接通信，全部经由你中转。
-
-## 何时调用 Prometheus（重要）
-**不要对每个任务都先调 Prometheus。** Prometheus 只在以下情况需要：
-1. **需求模糊**：用户描述含混，有多种理解方式，需要调研、提问、细化后才能执行。
-2. **任务庞大且复杂**：涉及多个模块、多步骤、需要先摸清现状再规划的大型任务。
-3. **涉及不确定的依赖或技术选型**：需要先调研可行性再决定方案。
-
-**以下情况直接派工种，跳过 Prometheus：**
-1. **需求明确无歧义**：任务目标清晰、步骤可直接推断。
-2. **单步可完成的轻活**：一个工种就能搞定的小任务。
-3. **用户明确指定了工种和做法**。
-
-简单判断标准：如果用户的话已经足够明确到你能直接写出子智能体的 prompt，就不要调 Prometheus。
-
-## 工种清单（你可调用的子智能体）
-- \`prometheus\` — 需求规划。调研、提问、细化需求，把模糊需求拆成**可执行步骤序列**。
-- \`explore\` — 快速检索。grep、读文件、定位符号、扫描目录结构。
-- \`librarian\` — 文档查询。读 README、API 参考、历史文档、注释提取。
-- \`looker\` — 多模态识别。UI 截图、设计稿、PDF 图表。
-- \`hermes\` — 快速执行。批量替换、代码格式化、统一 imports、纯文本搬运。
-- \`hephaestus\` — 代码编写。单文件重构、模块实现、单元测试、常规代码生成。
-- \`oracle\` — 架构调试 + 终验。跨模块依赖分析、深层 Bug 定位、代码审查、最终验收。
-
-## 步骤级调度
-当 Prometheus 交来计划（或你自己拆解了多步任务）时，**逐步骤决策**：
-1. 看这一步的类型与难度（检索？实现？重构？验收？）。
-2. 选择最省 token 的工种：轻活派轻工种，重活派重工种。
-3. **沿用或换人**：下一步如果和上一步同一工种且上下文连续，\`continue\` 同一个 childId；如果换了工种，才 \`go_work\` 新派。
-4. 每步结论回来后先质检再决定下一步，不要一次把所有步骤都发出去。
-
-## 质检规则
-收到子智能体结论后，你有权驳回或追问：
-- 质量不达标 → \`continue\` 同一个 childId，附驳回理由和修正方向。
-- 需要另一工种 → 先驳回/结束当前，再 \`go_work\` 派发合适的类型。
-- 结论合格 → 向用户汇报，或按计划进入下一步。
-
-## 禁止事项
-1. 不要让子智能体直接调用其他子智能体（它们没有 go_work/continue/forward）。
-2. 子智能体不得主动发起对话，只能被动响应你的分发。
-3. 收到 intent=replan 时，必须切换智能体类型，而不是原地升级模型。
-4. Prometheus 只做规划不执行；它的计划必须由你按步骤重新调度。`
-
-  // ── per-agent persona + orchestration via systemPrompt ────────────────────
-  //
   // Sub-agents inherit the preset's scope, so they DO see these sections.
   // We use text functions with parentSession detection (no race condition)
   // to differentiate Sisyphus from sub-agents.
@@ -384,60 +335,145 @@ export async function apply(ctx, config = {}) {
   //   - dsh-my-go:orchestration: empty (sub-agents don't orchestrate)
   //   - systemPrompt.context: injects the sub-agent's role description
   //
-  // For Sisyphus:
-  //   - deployment:persona: full Sisyphus persona
-  //   - dsh-my-go:orchestration: full orchestration rules
-  //   - systemPrompt.context: empty (Sisyphus has no extra context)
+  // For orchestrator sessions:
+  //   - deployment:persona: loaded from prompts/sisyphus.md
+  //   - dsh-my-go:orchestration: loaded from prompts/sisyphus.md (same file
+  //     contains both persona and orchestration rules)
+  //   - systemPrompt.context: empty
+
+  // Fallback if file hasn't loaded yet
+  const SISYPHUS_PERSONA_FALLBACK = 'You are Sisyphus, the master orchestrator.'
+  const ORCHESTRATION_FALLBACK = ''
 
   const isSubAgentContext = (context) => {
-    // context = { agent, scope: agent } from assembleContextFor()
-    // Sub-agents have parentSession set in their session header
     return context?.agent?.session?.header?.parentSession != null
   }
 
-  // Use loaded prompt files for persona. SISYPHUS_PERSONA is the fallback
-  // if the file hasn't loaded yet (async startup).
+  // Use loaded sisyphus.md for persona section
   ctx.effect(() => ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,
     text: (context) => {
       if (isSubAgentContext(context)) return ''
-      return promptCache.get('sisyphus') || SISYPHUS_PERSONA
+      const file = promptCache.get('sisyphus')
+      // sisyphus.md contains both persona and orchestration;
+      // extract just the persona (before ## 编排规则 or ## 步骤级调度)
+      if (file) {
+        const cutPoint = file.indexOf('## 编排规则')
+        return cutPoint > 0 ? file.slice(0, cutPoint).trim() : file.trim()
+      }
+      return SISYPHUS_PERSONA_FALLBACK
     },
   }), 'dsh-my-go-broker.persona()')
+
+  // Orchestration section: loaded from prompts/sisyphus.md (after persona)
   ctx.effect(() => ctx.systemPrompt.section({
     name: 'dsh-my-go:orchestration',
     order: 20,
-    text: (context) => isSubAgentContext(context) ? '' : ORCHESTRATION_TEXT,
+    text: (context) => {
+      if (isSubAgentContext(context)) return ''
+      const file = promptCache.get('sisyphus')
+      if (file) {
+        const cutPoint = file.indexOf('## 编排规则')
+        return cutPoint > 0 ? file.slice(cutPoint).trim() : ORCHESTRATION_FALLBACK
+      }
+      return ORCHESTRATION_FALLBACK
+    },
   }), 'dsh-my-go-broker.orchestration()')
 
-  // Inject sub-agent identity via systemPrompt.context (system prompt level).
-  // The text function checks parentSession — no race condition.
-  // Uses loaded prompt files when available.
-  ctx.effect(() => ctx.systemPrompt.context({
-    name: 'dsh-my-go:subagent-role',
-    order: 10,
-    text: (context) => {
-      if (!isSubAgentContext(context)) return ''
-      // Try to find the matching prompt from cache by checking all agent types
-      // The context doesn't carry the agent type, but we can check if any
-      // loaded prompt matches. Use a generic fallback.
-      return 'You are a specialist sub-agent in the dsh-my-go orchestration system. Execute one focused task and report results to Sisyphus. You do not delegate further.'
-    },
-  }), 'dsh-my-go-broker.subagent-role()')
+  // ── DSV4P0813 bootstrap (liangshen pattern) ──────────────────────────────
+  // When dsv4p0813 is enabled for an agent type, the first request uses
+  // minimal prompt + minimal tools. After the model responds (anchor
+  // detected), expand to full tools and prompt.
+  //
+  // Phase 1: only persona section + bootstrap tools (bash/pwsh/read/write/edit)
+  // Phase 2: full sections + full tools + orchestration rules
+  //
+  // Detection: session/event listener tracks step/end and turn/end.
+  // Promotion: after first tool call or first response (per policy).
+
+  const PROMOTED_BY_SESSION = new WeakMap()
+  const PERSONA_SECTION_NAMES = new Set(['deployment:persona', 'persona'])
+
+  function promotionStateFor(session) {
+    let state = PROMOTED_BY_SESSION.get(session)
+    if (state === undefined) {
+      state = { promoted: false, toolCalled: false, responded: false, steps: 0 }
+      PROMOTED_BY_SESSION.set(session, state)
+    }
+    return state
+  }
+
+  // Listen to step/end to detect tool calls and promotion
+  ctx.on('session/event', (_session, event) => {
+    if (event.type !== 'step/end' && event.type !== 'turn/end') return
+    const state = promotionStateFor(_session)
+    if (state.promoted) return
+    if (event.type === 'step/end') {
+      state.steps++
+      // Check if any tool was called in this step
+      const events = _session.events ?? []
+      for (let i = events.length - 1; i >= 0; i--) {
+        if (events[i].type === 'step/end') break
+        if (events[i].type === 'tool/call') { state.toolCalled = true; break }
+      }
+    }
+    if (event.type === 'turn/end') {
+      state.responded = true
+    }
+    // Promote after first tool call or first response
+    if (state.toolCalled || state.responded) {
+      state.promoted = true
+    }
+  })
+
+  // Filter tools/sections during phase 1 via system-prompt/assemble
+  ctx.on('system-prompt/assemble', (_assembly, _context, next) => {
+    return next().then((assembled) => {
+      const agent = _context?.agent
+      if (agent === undefined) return assembled
+      // Check if dsv4p0813 is enabled for this agent type
+      // We detect the agent type from the session label
+      const label = agent?.session?.header?.label ?? ''
+      const match = /^dsh-my-go:([a-z-]+)/.exec(label)
+      const agentType = match?.[1]
+      if (!agentType) return assembled
+      const binding = bindings[agentType]
+      if (!binding?.dsv4p0813) return assembled
+
+      const state = promotionStateFor(agent.session)
+      if (state.promoted) return assembled
+
+      // Phase 1: filter to persona section only + bootstrap tools
+      const BOOTSTRAP_TOOLS = new Set(['bash', 'pwsh', 'read_file', 'write_file', 'edit_file', 'str_replace_editor'])
+      return {
+        ...assembled,
+        sections: Array.isArray(assembled.sections)
+          ? assembled.sections.filter(s => PERSONA_SECTION_NAMES.has(s?.name))
+          : assembled.sections,
+        tools: Array.isArray(assembled.tools)
+          ? assembled.tools.filter(t => BOOTSTRAP_TOOLS.has(t?.name))
+          : assembled.tools,
+        contexts: [],  // no runtime context during phase 1
+      }
+    })
+  })
 
   // ── internal go_work implementation (shared by the tool, forward, queue) ─
   async function dispatchWork(agentType, prompt, parent, signal) {
     if (!AGENT_TYPES.includes(agentType)) throw new Error(`unknown agent type: ${String(agentType)}`)
     const binding = bindings[agentType] ?? {}
     // Parent may be absent during queue advancement (agent object not retained);
-    // fall back to the live Sisyphus root session so delegation still works.
+    // fall back to the last orchestrator session so delegation still works.
     if (!parent) {
       const agents = ctx.get('agents')
-      const root = agents?.roots?.()?.find((agent) => agent && typeof agent.id === 'string')
-      if (root) parent = root
+      const fallback = lastOrchestratorSessionId
+        ? agents?.get?.(lastOrchestratorSessionId)
+        : undefined
+      if (fallback) parent = fallback
     }
     if (!parent) throw new Error('go_work requires a live parent agent to delegate from')
+    lastOrchestratorSessionId = parent.id
     if (orchestration.isBusy()) {
       const workId = orchestration.enqueue(agentType, prompt, parent?.id)
       bump()
@@ -535,7 +571,7 @@ export async function apply(ctx, config = {}) {
     async execute(args, exec) {
       const parent = exec?.agent
       if (!parent) throw new Error('go_work requires a calling agent (exec.agent was undefined)')
-      if (!isSisyphus(parent)) throw new Error('go_work is reserved for Sisyphus (the root session)')
+      if (!canOrchestrate(parent)) throw new Error('go_work is reserved for orchestrator sessions (agents without parentSession)')
       return dispatchWork(args.agent, args.prompt, parent, exec?.signal)
     },
   })
@@ -565,7 +601,7 @@ export async function apply(ctx, config = {}) {
     async execute(args, exec) {
       const parent = exec?.agent
       if (!parent) throw new Error('continue requires a calling agent (exec.agent was undefined)')
-      if (!isSisyphus(parent)) throw new Error('continue is reserved for Sisyphus (the root session)')
+      if (!canOrchestrate(parent)) throw new Error('continue is reserved for orchestrator sessions (agents without parentSession)')
       const record = orchestration.record(args.id)
       if (!record) throw new Error(`unknown sub-agent id: ${String(args.id)}`)
       if (record.status === 'waiting') {
@@ -673,7 +709,7 @@ export async function apply(ctx, config = {}) {
     async execute(args, exec) {
       const parent = exec?.agent
       if (!parent) throw new Error('forward requires a calling agent (exec.agent was undefined)')
-      if (!isSisyphus(parent)) throw new Error('forward is reserved for Sisyphus (the root session)')
+      if (!canOrchestrate(parent)) throw new Error('forward is reserved for orchestrator sessions (agents without parentSession)')
       const help = orchestration.help(args.from)
       if (!help) throw new Error(`unknown help request id: ${String(args.from)}`)
       const prompt = help.content
