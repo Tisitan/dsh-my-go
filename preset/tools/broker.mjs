@@ -36,24 +36,19 @@ const AGENT_TYPES = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', '
  */
 async function ensurePresetInstalled() {
   try {
-    const here = dirname(fileURLToPath(import.meta.url)) // .../dsh-my-go/lib
-    const packageRoot = dirname(here) // .../dsh-my-go
+    const here = dirname(fileURLToPath(import.meta.url)) // .../dsh-my-go/preset/tools
+    const packageRoot = dirname(dirname(here)) // .../dsh-my-go
     const source = join(packageRoot, 'preset')
     const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
     const userPresetRoot = join(dshHome, '.agent-presets')
     const target = join(userPresetRoot, 'dsh-my-go')
-    try {
-      await access(target)
-      return // already installed
-    } catch {
-      // not present — install below
-    }
     await access(source)
     await mkdir(userPresetRoot, { recursive: true })
-    await cp(source, target, { recursive: true })
-    console.log(`[dsh-my-go] installed agent preset to ${target} — restart dsh web if the picker is already open`)
+    // Always overwrite to ensure latest preset files after npm update
+    await cp(source, target, { recursive: true, force: true })
+    console.log(`[dsh-my-go] preset synced to ${target}`)
   } catch (error) {
-    console.error(`[dsh-my-go] could not install agent preset: ${String(error)}`)
+    console.error(`[dsh-my-go] could not sync preset: ${String(error)}`)
   }
 }
 
@@ -316,7 +311,11 @@ export async function apply(ctx, config = {}) {
   let snapshotSeq = 0
   const bump = () => {
     snapshotSeq += 1
-    latestSnapshot = { seq: snapshotSeq, ...orchestration.snapshot() }
+    latestSnapshot = {
+      seq: snapshotSeq,
+      parentSessionId: rootSessionId,
+      ...orchestration.snapshot(),
+    }
   }
   orchestration.onChange(() => bump())
 
@@ -385,26 +384,28 @@ export async function apply(ctx, config = {}) {
 
   // Filter sections per-agent via the system-prompt/assemble waterfall.
   // Sub-agents get a minimal persona and no orchestration rules.
-  // assembleContextFor() returns { agent, scope: agent }, so context.agent.id
-  // is the session ID that sessionTypes maps.
-  ctx.effect(() => ctx.waterfall(
-    'system-prompt/assemble',
-    (assembly, context) => {
-      const agentId = context?.agent?.id
-      const isSubAgent = agentId && sessionTypes.has(agentId)
-      if (!isSubAgent) return assembly // Sisyphus: keep all sections
-      // Sub-agent: replace persona, remove orchestration
-      return {
-        ...assembly,
-        sections: assembly.sections
-          .filter((s) => s.name !== 'dsh-my-go:orchestration')
-          .map((s) => s.name === 'deployment:persona'
-            ? { ...s, text: SUBAGENT_PERSONA }
-            : s
-          ),
-      }
-    },
-  ), 'dsh-my-go-broker.assemble-filter()')
+  // The waterfall dispatch signature is:
+  //   system-prompt calls: ctx.waterfall(scopeTarget, "system-prompt/assemble", assembly, context, defaultFn)
+  //   listener receives:   (scopeTarget, "system-prompt/assemble", assembly, context, next)
+  ctx.effect(() => ctx.on('waterfall', (args, next) => {
+    if (args[1] !== 'system-prompt/assemble') return next()
+    const assembly = args[2]
+    const context = args[3]
+    const agentId = context?.agent?.id
+    const isSubAgent = agentId && sessionTypes.has(agentId)
+    if (!isSubAgent) return next()
+    // Sub-agent: replace persona, remove orchestration
+    const filtered = {
+      ...assembly,
+      sections: assembly.sections
+        .filter((s) => s.name !== 'dsh-my-go:orchestration')
+        .map((s) => s.name === 'deployment:persona'
+          ? { ...s, text: SUBAGENT_PERSONA }
+          : s
+        ),
+    }
+    return filtered
+  }), 'dsh-my-go-broker.assemble-filter()')
 
   // ── internal go_work implementation (shared by the tool, forward, queue) ─
   async function dispatchWork(agentType, prompt, parent, signal) {

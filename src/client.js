@@ -316,7 +316,16 @@ export function apply(ctx) {
         const current = snapshot.current
         if (current && current.childId && current.status === 'running' && lastJumpedTo !== current.childId && sessions) {
           lastJumpedTo = current.childId
-          try { sessions.open(current.childId) } catch { /* ignore */ }
+          const parentSessionId = snapshot.parentSessionId
+          if (parentSessionId) {
+            try {
+              sessions.openSubagent({
+                parentSessionId,
+                childSessionId: current.childId,
+                mode: 'continuable',
+              })
+            } catch { /* fallback: just open the child session directly */ }
+          }
         } else if (!current && lastJumpedTo && sessions) {
           lastJumpedTo = null
         }
