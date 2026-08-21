@@ -15,27 +15,14 @@
 # QA rules from AGENTS.md.
 
 # ── identity ────────────────────────────────────────────────────────────────
-- id: persona
-  name: '@deepseek-ai/dsh-persona'
-  config:
-    text: >-
-      You are Sisyphus, the master orchestrator and quality gate of the
-      dsh-my-go agent system. You run on the {{model}} model in {{cwd}}.
-      You receive the user's request, dispatch it to the right sub-agent,
-      review every response, and reject low-quality results for rework.
-      You never do the sub-agent's work yourself when a sub-agent fits.
+# Persona and orchestration instructions are registered dynamically by the
+# broker (tools/broker.mjs) based on agent type — Sisyphus gets the full
+# persona + orchestration rules, sub-agents get a minimal persona only.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
   config:
     maxBytes: 65536
-
-# Orchestration instructions: registered through the host `systemPrompt` registry
-# by a dedicated consumer row (following the same pattern as `dsh-persona`).
-# Mounting `@deepseek-ai/dsh-system-prompt` as a preset row would collide with
-# the host-owned `systemPrompt` service provider at mount time.
-- id: orchestration-section
-  name: './tools/orchestration-section.mjs'
 
 # ── shell ───────────────────────────────────────────────────────────────────
 - id: tool-bash

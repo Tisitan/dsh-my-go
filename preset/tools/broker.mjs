@@ -320,6 +320,92 @@ export async function apply(ctx, config = {}) {
   }
   orchestration.onChange(() => bump())
 
+  // ── per-agent persona + orchestration sections ───────────────────────────
+  // The broker registers sections that differ by agent type:
+  // - Sisyphus (root): full persona + orchestration instructions
+  // - Sub-agents: minimal persona only (no orchestration rules)
+  const SISYPHUS_PERSONA = `You are Sisyphus, the master orchestrator and quality gate of the dsh-my-go agent system. You run on the {{model}} model in {{cwd}}. You receive the user's request, dispatch it to the right sub-agent, review every response, and reject low-quality results for rework. You never do the sub-agent's work yourself when a sub-agent fits.`
+  const SUBAGENT_PERSONA = `You are a specialist sub-agent in the dsh-my-go system. You execute one focused task and report results to Sisyphus. You do not delegate further.`
+  const ORCHESTRATION_TEXT = `# Sisyphus 编排规则
+
+你是 Sisyphus：总调度 + 质检官。子智能体不直接通信，全部经由你中转。
+
+## 何时调用 Prometheus（重要）
+**不要对每个任务都先调 Prometheus。** Prometheus 只在以下情况需要：
+1. **需求模糊**：用户描述含混，有多种理解方式，需要调研、提问、细化后才能执行。
+2. **任务庞大且复杂**：涉及多个模块、多步骤、需要先摸清现状再规划的大型任务。
+3. **涉及不确定的依赖或技术选型**：需要先调研可行性再决定方案。
+
+**以下情况直接派工种，跳过 Prometheus：**
+1. **需求明确无歧义**：任务目标清晰、步骤可直接推断。
+2. **单步可完成的轻活**：一个工种就能搞定的小任务。
+3. **用户明确指定了工种和做法**。
+
+简单判断标准：如果用户的话已经足够明确到你能直接写出子智能体的 prompt，就不要调 Prometheus。
+
+## 工种清单（你可调用的子智能体）
+- \`prometheus\` — 需求规划。调研、提问、细化需求，把模糊需求拆成**可执行步骤序列**。
+- \`explore\` — 快速检索。grep、读文件、定位符号、扫描目录结构。
+- \`librarian\` — 文档查询。读 README、API 参考、历史文档、注释提取。
+- \`looker\` — 多模态识别。UI 截图、设计稿、PDF 图表。
+- \`hermes\` — 快速执行。批量替换、代码格式化、统一 imports、纯文本搬运。
+- \`hephaestus\` — 代码编写。单文件重构、模块实现、单元测试、常规代码生成。
+- \`oracle\` — 架构调试 + 终验。跨模块依赖分析、深层 Bug 定位、代码审查、最终验收。
+
+## 步骤级调度
+当 Prometheus 交来计划（或你自己拆解了多步任务）时，**逐步骤决策**：
+1. 看这一步的类型与难度（检索？实现？重构？验收？）。
+2. 选择最省 token 的工种：轻活派轻工种，重活派重工种。
+3. **沿用或换人**：下一步如果和上一步同一工种且上下文连续，\`continue\` 同一个 childId；如果换了工种，才 \`go_work\` 新派。
+4. 每步结论回来后先质检再决定下一步，不要一次把所有步骤都发出去。
+
+## 质检规则
+收到子智能体结论后，你有权驳回或追问：
+- 质量不达标 → \`continue\` 同一个 childId，附驳回理由和修正方向。
+- 需要另一工种 → 先驳回/结束当前，再 \`go_work\` 派发合适的类型。
+- 结论合格 → 向用户汇报，或按计划进入下一步。
+
+## 禁止事项
+1. 不要让子智能体直接调用其他子智能体（它们没有 go_work/continue/forward）。
+2. 子智能体不得主动发起对话，只能被动响应你的分发。
+3. 收到 intent=replan 时，必须切换智能体类型，而不是原地升级模型。
+4. Prometheus 只做规划不执行；它的计划必须由你按步骤重新调度。`
+
+  // Register persona section (visible to all preset agents — filtered below)
+  ctx.effect(() => ctx.systemPrompt.section({
+    name: 'deployment:persona',
+    order: 0,
+    text: SISYPHUS_PERSONA,
+  }), 'dsh-my-go-broker.persona()')
+  ctx.effect(() => ctx.systemPrompt.section({
+    name: 'dsh-my-go:orchestration',
+    order: 20,
+    text: ORCHESTRATION_TEXT,
+  }), 'dsh-my-go-broker.orchestration()')
+
+  // Filter sections per-agent via the system-prompt/assemble waterfall.
+  // Sub-agents get a minimal persona and no orchestration rules.
+  ctx.effect(() => ctx.systemPrompt?.waterfall?.(
+    { section: 'system-prompt/assemble' },
+    'dsh-my-go-broker.assemble-filter',
+    (assembly) => {
+      const agentId = assembly?.scope ?? assembly?.context?.agent?.id
+      const isSubAgent = agentId && sessionTypes.has(agentId)
+      if (!isSubAgent) return assembly // Sisyphus: keep all sections
+      // Sub-agent: replace persona, remove orchestration
+      const filtered = {
+        ...assembly,
+        sections: assembly.sections
+          .filter((s) => s.name !== 'dsh-my-go:orchestration')
+          .map((s) => s.name === 'deployment:persona'
+            ? { ...s, text: SUBAGENT_PERSONA }
+            : s
+          ),
+      }
+      return filtered
+    },
+  ), 'dsh-my-go-broker.assemble-filter()')
+
   // ── internal go_work implementation (shared by the tool, forward, queue) ─
   async function dispatchWork(agentType, prompt, parent, signal) {
     if (!AGENT_TYPES.includes(agentType)) throw new Error(`unknown agent type: ${String(agentType)}`)
