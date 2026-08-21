@@ -202,10 +202,25 @@ export function apply(ctx) {
       } finally { setSaving(false) }
     }
 
-    const inputStyle = { background: 'var(--surface, #1e1e1e)', color: 'var(--text, #e0e0e0)', border: '1px solid var(--separator, #333)', borderRadius: 4, padding: '4px 8px', fontSize: 13, width: '100%', boxSizing: 'border-box' }
+    const selectStyle = { background: 'var(--surface, #1e1e1e)', color: 'var(--text, #e0e0e0)', border: '1px solid var(--separator, #333)', borderRadius: 4, padding: '4px 8px', fontSize: 13, width: '100%', boxSizing: 'border-box' }
     const labelStyle = { fontSize: 12, color: 'var(--text-secondary, #888)', marginBottom: 2 }
     const cardStyle = { border: '1px solid var(--separator, #333)', borderRadius: 8, padding: 12, marginBottom: 12 }
     const rowStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }
+
+    const PROVIDERS = ['', 'octopus', 'deepseek']
+    const MODELS = ['', 'mimo-v2.5', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v3']
+    const EFFORTS = ['', 'low', 'high', 'max']
+
+    const providerLabel = (v) => v === '' ? '跟随 Sisyphus' : v
+    const modelLabel = (v) => v === '' ? '跟随 Sisyphus' : v
+    const effortLabel = (v) => v === '' ? '跟随模型默认' : v
+
+    const makeSelect = (value, options, labelFn, onChange) =>
+      React.createElement('select', { style: selectStyle, value: value ?? '', onChange: (e) => onChange(e.target.value) },
+        ...options.map((opt) =>
+          React.createElement('option', { key: opt, value: opt }, labelFn(opt))
+        )
+      )
 
     return React.createElement('div', { style: { padding: 16, maxWidth: 600 } },
       React.createElement('h2', { style: { margin: '0 0 4px' } }, 'MyGO 编排配置'),
@@ -217,17 +232,17 @@ export function apply(ctx) {
           React.createElement('div', { style: rowStyle },
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, 'Provider'),
-              React.createElement('input', { style: inputStyle, value: cfg.provider ?? '', placeholder: '留空跟随 Sisyphus', onChange: (e) => set(type, 'provider', e.target.value) }),
+              makeSelect(cfg.provider ?? '', PROVIDERS, providerLabel, (v) => set(type, 'provider', v)),
             ),
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, 'Model'),
-              React.createElement('input', { style: inputStyle, value: cfg.model ?? '', placeholder: '留空跟随 Sisyphus', onChange: (e) => set(type, 'model', e.target.value) }),
+              makeSelect(cfg.model ?? '', MODELS, modelLabel, (v) => set(type, 'model', v)),
             ),
           ),
           React.createElement('div', { style: rowStyle },
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, 'Reasoning Effort'),
-              React.createElement('input', { style: inputStyle, value: cfg.reasoningEffort ?? '', placeholder: 'low / high / max', onChange: (e) => set(type, 'reasoningEffort', e.target.value) }),
+              makeSelect(cfg.reasoningEffort ?? '', EFFORTS, effortLabel, (v) => set(type, 'reasoningEffort', v)),
             ),
             React.createElement('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
               React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, paddingTop: 18 } },
