@@ -18,9 +18,39 @@ export const name = 'dsh-my-go-broker'
 
 export const inject = ['tools', 'subagents', 'systemPrompt', 'llm', 'settings']
 
+import { readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 const AGENT_TYPES = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
 
 const AGENT_TYPE_PREFIX = 'dsh-my-go:'
+
+// ── prompt file loading ───────────────────────────────────────────────────
+// Prompt files live in the prompts/ directory alongside the preset.
+// They are copied to ~/.dsh/.agent-presets/dsh-my-go/prompts/ by
+// ensurePresetInstalled (lib/index.js).
+const promptCache = new Map()
+async function loadPrompt(agentType) {
+  if (promptCache.has(agentType)) return promptCache.get(agentType)
+  try {
+    const here = dirname(fileURLToPath(import.meta.url)) // .../dsh-my-go/tools
+    const presetRoot = dirname(here) // .../dsh-my-go
+    const promptsDir = join(presetRoot, 'prompts')
+    const content = await readFile(join(promptsDir, `${agentType}.md`), 'utf-8')
+    promptCache.set(agentType, content)
+    return content
+  } catch {
+    promptCache.set(agentType, null)
+    return null
+  }
+}
+// Pre-load all prompts at startup (non-blocking, errors swallowed)
+async function loadAllPrompts() {
+  for (const type of [...AGENT_TYPES, 'sisyphus']) {
+    await loadPrompt(type)
+  }
+}
 
 function agentLabel(type, summary) {
   return `${AGENT_TYPE_PREFIX}${type}${summary ? `: ${summary}` : ''}`
@@ -217,6 +247,9 @@ export async function apply(ctx, config = {}) {
   // bundle), not here — when this file loads from the preset copy,
   // import.meta.url points to the copy, not the npm package source.
 
+  // Load all prompt files from the prompts/ directory at startup
+  void loadAllPrompts()
+
   const orchestration = new Orchestration()
   const sessionTypes = new Map()
   let bindings = { ...defaultBindings(), ...(config.bindings ?? {}) }
@@ -362,10 +395,15 @@ export async function apply(ctx, config = {}) {
     return context?.agent?.session?.header?.parentSession != null
   }
 
+  // Use loaded prompt files for persona. SISYPHUS_PERSONA is the fallback
+  // if the file hasn't loaded yet (async startup).
   ctx.effect(() => ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,
-    text: (context) => isSubAgentContext(context) ? '' : SISYPHUS_PERSONA,
+    text: (context) => {
+      if (isSubAgentContext(context)) return ''
+      return promptCache.get('sisyphus') || SISYPHUS_PERSONA
+    },
   }), 'dsh-my-go-broker.persona()')
   ctx.effect(() => ctx.systemPrompt.section({
     name: 'dsh-my-go:orchestration',
@@ -375,24 +413,16 @@ export async function apply(ctx, config = {}) {
 
   // Inject sub-agent identity via systemPrompt.context (system prompt level).
   // The text function checks parentSession — no race condition.
-  const ROLE_DESCRIPTIONS = {
-    hermes: 'You are Hermes, the rapid executor. You do batch replacements, code formatting, import consolidation, and text manipulation — fast mechanical work. You report results to Sisyphus.',
-    explore: 'You are Explore, the fast searcher. You grep, read files, locate symbols, and scan directory structures — quick reconnaissance. You report results to Sisyphus.',
-    librarian: 'You are Librarian, the document reader. You read READMEs, API references, historical docs, and extract comments — document intelligence. You report results to Sisyphus.',
-    looker: 'You are Looker, the multimodal recognizer. You identify UI screenshots, design mockups, PDF charts — visual understanding. You report results to Sisyphus.',
-    hephaestus: 'You are Hephaestus, the code crafter. You do single-file refactors, module implementations, unit tests, and routine code generation. You report results to Sisyphus.',
-    prometheus: 'You are Prometheus, the requirement planner. You understand vague requirements, decompose them into executable steps, and output a plan. You do NOT execute — only plan. You report results to Sisyphus.',
-    oracle: 'You are Oracle, the architect debugger and final validator. You do cross-module dependency analysis, deep bug localization, code review, and final acceptance. You report results to Sisyphus.',
-  }
+  // Uses loaded prompt files when available.
   ctx.effect(() => ctx.systemPrompt.context({
     name: 'dsh-my-go:subagent-role',
     order: 10,
     text: (context) => {
       if (!isSubAgentContext(context)) return ''
-      // We don't know the exact agent type from the context alone,
-      // but we can infer it from the session metadata or just provide
-      // a generic sub-agent identity. The specific type info is in the prompt.
-      return 'You are a specialist sub-agent in the dsh-my-go orchestration system. You execute one focused task and report results to Sisyphus. You do not delegate further.'
+      // Try to find the matching prompt from cache by checking all agent types
+      // The context doesn't carry the agent type, but we can check if any
+      // loaded prompt matches. Use a generic fallback.
+      return 'You are a specialist sub-agent in the dsh-my-go orchestration system. Execute one focused task and report results to Sisyphus. You do not delegate further.'
     },
   }), 'dsh-my-go-broker.subagent-role()')
 
@@ -430,24 +460,16 @@ export async function apply(ctx, config = {}) {
         // No provider available — set model anyway, agent/request handler will validate
         agentOpts.model = binding.model
       }
-      // Inject sub-agent type-specific context via systemPrompt.context (generic)
-      // and the specific role via <system-reminder> in user prompt.
-      // The context injection provides the base identity; the user prompt
-      // provides type-specific details wrapped in <system-reminder> tags.
-      const roleDescriptions = {
-        hermes: 'You are Hermes, the rapid executor. Batch replacements, code formatting, import consolidation, text manipulation.',
-        explore: 'You are Explore, the fast searcher. Grep, read files, locate symbols, scan directories.',
-        librarian: 'You are Librarian, the document reader. READMEs, API references, historical docs.',
-        looker: 'You are Looker, the multimodal recognizer. UI screenshots, design mockups, PDF charts.',
-        hephaestus: 'You are Hephaestus, the code crafter. Single-file refactors, module implementations, unit tests.',
-        prometheus: 'You are Prometheus, the requirement planner. Understand requirements, decompose into steps, output a plan. Do NOT execute.',
-        oracle: 'You are Oracle, the architect debugger. Cross-module analysis, bug localization, code review, final acceptance.',
-      }
-      const roleInfo = roleDescriptions[agentType] || `You are a ${agentType} sub-agent.`
+      // Inject sub-agent persona from prompts/ files via <system-reminder>.
+      // The loaded prompt contains full role description, responsibilities,
+      // work style, output format, and constraints — much richer than a
+      // one-line hardcoded string.
+      const loadedPrompt = promptCache.get(agentType)
+      const roleInfo = loadedPrompt || `You are a ${agentType} sub-agent in the dsh-my-go orchestration system. Execute one focused task and report results to Sisyphus.`
       const request = {
         label: agentLabel(agentType, prompt.slice(0, 60)),
         prompt: [
-          { type: 'text', text: `<system-reminder>\n${roleInfo}\nYou report results to Sisyphus. You do not delegate further.\n</system-reminder>\n\n${prompt}` },
+          { type: 'text', text: `<system-reminder>\n${roleInfo}\n</system-reminder>\n\n${prompt}` },
         ],
         parent,
         ...(Object.keys(agentOpts).length > 0 ? { agentOptions: agentOpts } : {}),
