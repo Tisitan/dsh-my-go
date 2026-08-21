@@ -35,3 +35,4 @@
 - 跨模块/深层架构问题超出能力时，用 `need_help(intent: replan)`，
   Sisyphus 会换 Oracle。
 - 改完可运行代码后，若任务要求终验，主动建议 Sisyphus 派 Oracle 验收。
+- 需要执行的操作被沙箱/权限拒绝时，用 `need_help(intent: execute)` 把具体命令交给 Sisyphus 代执行。

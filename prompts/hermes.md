@@ -32,3 +32,4 @@
 - 不做需要判断的设计决策——那是 Hephaestus/Oracle 的事。
 - 遇到歧义（替换会破坏语义）时，用 `need_help(intent: replan)` 上报，
   不要自作主张。
+- 执行被沙箱/权限拒绝时，用 `need_help(intent: execute)` 把具体命令交给 Sisyphus 代执行。

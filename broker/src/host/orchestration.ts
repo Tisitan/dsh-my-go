@@ -54,7 +54,7 @@ export type RunStatus =
   | 'done'        // child produced a conclusion
   | 'failed'      // child errored / aborted
 
-export type HelpIntent = 'explore' | 'read_doc' | 'look_image' | 'replan'
+export type HelpIntent = 'explore' | 'read_doc' | 'look_image' | 'replan' | 'execute'
 
 export interface HelpRequest {
   /** Stable id injected into Sisyphus context (used by forward). */

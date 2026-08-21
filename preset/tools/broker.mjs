@@ -623,7 +623,7 @@ export async function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'need_help',
     description: [
-      'Request assistance from Sisyphus. Use when you need another sub-agent\'s capability (explore/read_doc/look_image) or the task is beyond your ability (replan).',
+      'Request assistance from Sisyphus. Use when you need another sub-agent\'s capability (explore/read_doc/look_image), your operation is sandbox/permission denied (execute), or the task is beyond your ability (replan).',
       'Calling this suspends you: Sisyphus will review the request and either forward it or continue you with a new prompt.',
     ].join('\n'),
     parameters: {
@@ -631,8 +631,8 @@ export async function apply(ctx, config = {}) {
       properties: {
         intent: {
           type: 'string',
-          enum: ['explore', 'read_doc', 'look_image', 'replan'],
-          description: 'explore: need Explore to read files/search code. read_doc: need Librarian for docs. look_image: need Multimodal Looker for an image. replan: task exceeds your ability, request reassignment.',
+          enum: ['explore', 'read_doc', 'look_image', 'replan', 'execute'],
+          description: 'explore: need Explore to read files/search code. read_doc: need Librarian for docs. look_image: need Multimodal Looker for an image. replan: task exceeds your ability, request reassignment. execute: permission/sandbox denied — ask Sisyphus to run it for you (attach the exact command/operation in content).',
         },
         content: { type: 'string', description: 'The concrete situation, reason, and details of what you need.' },
       },

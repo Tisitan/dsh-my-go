@@ -22,6 +22,7 @@ const SECTION_TEXT = `# Sisyphus 编排规则
 - \`continue(id, prompt)\` — 恢复一个子智能体（驳回/追问/传话）。被驳回的子智能体保留
   当前轮次上下文继续执行，不需要重读已看过的内容。
 - \`need_help\` — 子智能体向你求助时使用（你会收到带 helpRequestId 的注入）。
+  其中 \`intent=execute\` 表示子智能体被沙箱/权限拒绝，需要你代为执行 content 里的指令。
 - \`forward(from, target)\` — 把一个 need_help 请求转发给目标（childId=继续，agent 类型=新派发）。
 - \`orchestration_status\` — 查看运行状态、队列、求助、历史结论。
 - \`list_subagents\` — 列出已派发的所有 sub-agent（类型/childId/状态/最后收到的 prompt）。
@@ -77,8 +78,9 @@ const SECTION_TEXT = `# Sisyphus 编排规则
 1. 不要让子智能体直接调用其他子智能体（它们没有 go_work/continue/forward）。
 2. 子智能体不得主动发起对话，只能被动响应你的分发。
 3. 收到 intent=replan 时，必须切换智能体类型（如 hephaestus → oracle），而不是原地升级模型。
-4. Prometheus 只做规划不执行；它的计划必须由你按步骤重新调度。
-5. 不要用 \`go_work\` 重复派发一个已存在且可 continue 的子智能体——先用 \`list_subagents\` 查。`
+4. 收到 intent=execute 时，按 content 里的指令用你的工具代为执行，结果用 continue 返回请求者；若指令超出你的权限/判断应转派，则转派合适工种。
+5. Prometheus 只做规划不执行；它的计划必须由你按步骤重新调度。
+6. 不要用 \`go_work\` 重复派发一个已存在且可 continue 的子智能体——先用 \`list_subagents\` 查。`
 
 export function apply(ctx) {
   ctx.effect(() => ctx.systemPrompt.section({

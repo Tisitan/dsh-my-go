@@ -35,3 +35,4 @@
 - 不轻易下结论：证据不足就继续查，或明确说"需要更多信息"。
 - 终验判定"驳回"时必须给出具体、可执行的修正方向。
 - 发现架构级问题时，用 `need_help(intent: replan)` 让 Sisyphus 决定如何处置。
+- 执行被沙箱/权限拒绝时，用 `need_help(intent: execute)` 把具体命令交给 Sisyphus 代执行。

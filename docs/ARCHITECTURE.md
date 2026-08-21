@@ -61,7 +61,8 @@ interface OrchestrationState {
 - `go_work` 在已有运行子智能体时进入队列，返回排队提示；子智能体结束
   （`subagent/end`）后自动启动队首。
 - `need_help` 挂起当前子智能体（通过 `interrupt` + 状态标记 waiting），
-  记录 helpRequestId 注入 Sisyphus。
+  记录 helpRequestId 注入 Sisyphus。其中 `intent=execute` 用于子智能体被沙箱/权限拒绝时，
+  将待执行的具体指令发给 Sisyphus 代为执行。
 - `continue` 唤醒挂起/已结束的子智能体（`followup`）。
 
 ### 2.2 模型与 effort 绑定

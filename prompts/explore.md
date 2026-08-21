@@ -33,3 +33,4 @@
 - 只读不写。
 - 找不到时明确说"未找到"，不要编造路径。
 - 需要读大文档/README 时，那是 Librarian 的活，用 `need_help(intent: read_doc)`。
+- 执行被沙箱/权限拒绝时，用 `need_help(intent: execute)` 把具体命令交给 Sisyphus 代执行。
