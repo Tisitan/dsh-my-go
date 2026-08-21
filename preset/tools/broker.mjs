@@ -16,7 +16,7 @@
 
 export const name = 'dsh-my-go-broker'
 
-export const inject = ['tools', 'subagents', 'systemPrompt', 'llm']
+export const inject = ['tools', 'subagents', 'systemPrompt', 'llm', 'settings']
 
 import { access, cp, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -367,14 +367,20 @@ export async function apply(ctx, config = {}) {
     }
     const placeholder = orchestration.beginSpawning(agentType, prompt)
     try {
-      // Build agentOptions with model validation
+      // Resolve provider: use binding's explicit provider, or inherit from parent session
+      const parentProvider = parent?.session?.header?.provider
+      const resolvedProvider = binding.provider ?? parentProvider
+      // Build agentOptions: always pass provider so sub-agent doesn't fall back to DSH default
       const agentOpts = {}
-      if (binding.provider !== undefined) agentOpts.provider = binding.provider
-      if (binding.model !== undefined) {
-        const resolvedProvider = String(binding.provider ?? '')
-        if (!resolvedProvider || await modelExists(resolvedProvider, binding.model)) {
+      if (resolvedProvider) agentOpts.provider = resolvedProvider
+      // Only set model if it exists on the resolved provider
+      if (binding.model !== undefined && resolvedProvider) {
+        if (await modelExists(resolvedProvider, binding.model)) {
           agentOpts.model = binding.model
         }
+      } else if (binding.model !== undefined && !resolvedProvider) {
+        // No provider available — set model anyway, agent/request handler will validate
+        agentOpts.model = binding.model
       }
       const request = {
         label: agentLabel(agentType, prompt.slice(0, 60)),
@@ -727,7 +733,9 @@ export async function apply(ctx, config = {}) {
     if (binding.model !== undefined) {
       // Validate model exists on the resolved provider before applying
       const resolvedProvider = String(nextConfig.provider ?? seed.provider ?? '')
-      if (!resolvedProvider || await modelExists(resolvedProvider, binding.model)) {
+      const exists = resolvedProvider ? await modelExists(resolvedProvider, binding.model) : false
+      console.log(`[dsh-my-go] agent/request model validation: provider=${resolvedProvider} model=${binding.model} exists=${exists}`)
+      if (exists) {
         nextConfig.model = binding.model
       }
     }
