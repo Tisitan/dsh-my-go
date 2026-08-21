@@ -341,42 +341,25 @@ export async function apply(ctx, config = {}) {
 3. 收到 intent=replan 时，必须切换智能体类型，而不是原地升级模型。
 4. Prometheus 只做规划不执行；它的计划必须由你按步骤重新调度。`
 
-  // Register persona section (visible to all preset agents — filtered below)
+  // Register persona + orchestration with TEXT FUNCTIONS.
+  // section.text(context) receives { agent, scope: agent } — we check
+  // sessionTypes to return different text for sub-agents vs Sisyphus.
   ctx.effect(() => ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,
-    text: SISYPHUS_PERSONA,
+    text: (context) => {
+      const agentId = context?.agent?.id
+      return agentId && sessionTypes.has(agentId) ? SUBAGENT_PERSONA : SISYPHUS_PERSONA
+    },
   }), 'dsh-my-go-broker.persona()')
   ctx.effect(() => ctx.systemPrompt.section({
     name: 'dsh-my-go:orchestration',
     order: 20,
-    text: ORCHESTRATION_TEXT,
+    text: (context) => {
+      const agentId = context?.agent?.id
+      return agentId && sessionTypes.has(agentId) ? '' : ORCHESTRATION_TEXT
+    },
   }), 'dsh-my-go-broker.orchestration()')
-
-  // Filter sections per-agent via the system-prompt/assemble waterfall.
-  // Sub-agents get a minimal persona and no orchestration rules.
-  // The waterfall dispatch signature is:
-  //   system-prompt calls: ctx.waterfall(scopeTarget, "system-prompt/assemble", assembly, context, defaultFn)
-  //   listener receives:   (scopeTarget, "system-prompt/assemble", assembly, context, next)
-  ctx.effect(() => ctx.on('waterfall', (args, next) => {
-    if (args[1] !== 'system-prompt/assemble') return next()
-    const assembly = args[2]
-    const context = args[3]
-    const agentId = context?.agent?.id
-    const isSubAgent = agentId && sessionTypes.has(agentId)
-    if (!isSubAgent) return next()
-    // Sub-agent: replace persona, remove orchestration
-    const filtered = {
-      ...assembly,
-      sections: assembly.sections
-        .filter((s) => s.name !== 'dsh-my-go:orchestration')
-        .map((s) => s.name === 'deployment:persona'
-          ? { ...s, text: SUBAGENT_PERSONA }
-          : s
-        ),
-    }
-    return filtered
-  }), 'dsh-my-go-broker.assemble-filter()')
 
   // ── internal go_work implementation (shared by the tool, forward, queue) ─
   async function dispatchWork(agentType, prompt, parent, signal) {
