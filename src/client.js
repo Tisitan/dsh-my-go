@@ -44,7 +44,7 @@ export function apply(ctx) {
   async function refresh() {
     if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') return
     try {
-      const res = await connection.rpc.call('dsh-my-go/snapshot', 'get', {})
+      const res = await connection.rpc.call('/dsh-my-go', 'snapshot', {})
       if (res && res.ok) {
         const next = res.value
         const changed = next && next.seq !== snapshot.seq
@@ -189,7 +189,7 @@ export function apply(ctx) {
       if (!sp) return
       try { setDraft(sp.read()) } catch { setDraft({}) }
       if (connection && connection.rpc && typeof connection.rpc.call === 'function') {
-        connection.rpc.call('dsh-my-go/listModels', 'get', {}).then((res) => {
+        connection.rpc.call('/dsh-my-go', 'listModels', {}).then((res) => {
           if (res && res.ok && res.value && Array.isArray(res.value.providers)) setAvailable(res.value)
         }).catch(() => {})
       }
@@ -198,7 +198,18 @@ export function apply(ctx) {
     if (!sp) return React.createElement('div', { style: { padding: 16, color: '#888' } }, '设置服务不可用')
 
     const set = (type, field, value) => {
-      setDraft((prev) => ({ ...prev, [type]: { ...prev?.[type], [field]: value } }))
+      setDraft((prev) => {
+        const next = { ...prev, [type]: { ...prev?.[type], [field]: value } }
+        // When provider changes, clear model if it's not in the new provider's model list
+        if (field === 'provider') {
+          const currentModel = next[type]?.model ?? ''
+          const validModels = modelsForProvider(value)
+          if (currentModel && !validModels.includes(currentModel)) {
+            next[type] = { ...next[type], model: '' }
+          }
+        }
+        return next
+      })
     }
 
     const save = async () => {
@@ -218,8 +229,6 @@ export function apply(ctx) {
 
     const EFFORTS = ['', 'low', 'high', 'max']
     const providers = available.providers
-    const allModels = [...new Set(Object.values(available.models).flat())]
-
     const providerLabel = (v) => v === '' ? '跟随 Sisyphus' : v
     const modelLabel = (v) => v === '' ? '跟随 Sisyphus' : v
     const effortLabel = (v) => v === '' ? '跟随模型默认' : v
@@ -230,6 +239,13 @@ export function apply(ctx) {
           React.createElement('option', { key: opt, value: opt }, labelFn(opt))
         )
       )
+
+    // Compute per-type model list: when provider is set, filter to that provider's models; otherwise show all
+    const modelsForProvider = (providerId) => {
+      if (!providerId) return [...new Set(Object.values(available.models).flat())]
+      const specific = available.models[providerId]
+      return Array.isArray(specific) ? specific : []
+    }
 
     const fetchFailed = available.providers.length === 0
 
@@ -250,7 +266,7 @@ export function apply(ctx) {
             ),
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, 'Model'),
-              makeSelect(cfg.model ?? '', ['', ...allModels], modelLabel, (v) => set(type, 'model', v)),
+              makeSelect(cfg.model ?? '', ['', ...modelsForProvider(cfg.provider ?? '')], modelLabel, (v) => set(type, 'model', v)),
             ),
           ),
           React.createElement('div', { style: rowStyle },
