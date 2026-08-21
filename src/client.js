@@ -20,7 +20,7 @@ import * as React from 'react'
 
 export const name = 'dsh-my-go'
 
-export const inject = ['slots', 'settingsScope']
+export const inject = ['slots', 'settingsScope', 'connection']
 
 const AGENT_TYPES = ['sisyphus', 'hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
 const AGENT_LABELS = { sisyphus: 'Sisyphus', hermes: 'Hermes', explore: 'Explore', librarian: 'Librarian', looker: 'Looker', hephaestus: 'Hephaestus', prometheus: 'Prometheus', oracle: 'Oracle' }
@@ -31,7 +31,7 @@ export function apply(ctx) {
   const slots = client.get('slots')
   if (!slots) return
 
-  const host = client.get('host')
+  const connection = client.connection
   const sessions = client.get('sessions')
   const timer = client.get('timer')
 
@@ -42,12 +42,15 @@ export function apply(ctx) {
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* noop */ } } }
 
   async function refresh() {
-    if (!host || typeof host.call !== 'function') return
+    if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') return
     try {
-      const next = await host.call('dsh-my-go/snapshot')
-      const changed = next && next.seq !== snapshot.seq
-      if (next) snapshot = next
-      if (changed) emit()
+      const res = await connection.rpc.call('dsh-my-go/snapshot', 'get', {})
+      if (res && res.ok) {
+        const next = res.value
+        const changed = next && next.seq !== snapshot.seq
+        if (next) snapshot = next
+        if (changed) emit()
+      }
     } catch { /* host not ready */ }
   }
 
@@ -185,9 +188,9 @@ export function apply(ctx) {
     React.useEffect(() => {
       if (!sp) return
       try { setDraft(sp.read()) } catch { setDraft({}) }
-      if (host && typeof host.call === 'function') {
-        host.call('dsh-my-go/listModels').then((data) => {
-          if (data && Array.isArray(data.providers)) setAvailable(data)
+      if (connection && connection.rpc && typeof connection.rpc.call === 'function') {
+        connection.rpc.call('dsh-my-go/listModels', 'get', {}).then((res) => {
+          if (res && res.ok && res.value && Array.isArray(res.value.providers)) setAvailable(res.value)
         }).catch(() => {})
       }
     }, [sp])
