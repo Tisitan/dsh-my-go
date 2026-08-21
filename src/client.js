@@ -215,12 +215,32 @@ export function apply(ctx) {
     const save = async () => {
       setSaving(true); setMsg(null)
       try {
-        await sp.update(draft)
+        const agentTypes = ['sisyphus', 'hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
+        const fields = ['provider', 'model', 'reasoningEffort', 'dsv4p0813']
+        for (const type of agentTypes) {
+          for (const field of fields) {
+            const val = draft?.[type]?.[field]
+            if (val === undefined || val === null || val === '' || val === false) {
+              await sp.unset(`${type}.${field}`).catch(() => {})
+            } else {
+              await sp.set(`${type}.${field}`, val)
+            }
+          }
+        }
         setMsg('已保存')
       } catch (e) {
         setMsg('保存失败: ' + String(e))
       } finally { setSaving(false) }
     }
+
+    // Auto-save on draft change with debounce
+    const autoSaveTimer = React.useRef(null)
+    React.useEffect(() => {
+      if (!draft || !sp) return
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+      autoSaveTimer.current = setTimeout(() => { void save() }, 500)
+      return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
+    }, [draft, sp])
 
     const selectStyle = { background: 'var(--surface, #1e1e1e)', color: 'var(--text, #e0e0e0)', border: '1px solid var(--separator, #333)', borderRadius: 4, padding: '4px 8px', fontSize: 13, width: '100%', boxSizing: 'border-box' }
     const labelStyle = { fontSize: 12, color: 'var(--text-secondary, #888)', marginBottom: 2 }
@@ -287,8 +307,8 @@ export function apply(ctx) {
         React.createElement('button', {
           onClick: save,
           disabled: saving,
-          style: { padding: '6px 20px', borderRadius: 6, border: 'none', background: 'var(--brand, #0066ff)', color: '#fff', cursor: saving ? 'wait' : 'pointer', fontSize: 14 },
-        }, saving ? '保存中…' : '保存'),
+          style: { padding: '6px 20px', borderRadius: 6, border: '1px solid var(--separator, #333)', background: 'transparent', color: 'var(--text, #e0e0e0)', cursor: saving ? 'wait' : 'pointer', fontSize: 13 },
+        }, saving ? '保存中…' : '立即保存'),
         msg ? React.createElement('span', { style: { fontSize: 13, color: msg.startsWith('已') ? '#4caf50' : '#f44336' } }, msg) : null,
       ),
     )
