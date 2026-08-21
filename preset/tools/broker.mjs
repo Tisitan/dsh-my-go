@@ -385,15 +385,16 @@ export async function apply(ctx, config = {}) {
 
   // Filter sections per-agent via the system-prompt/assemble waterfall.
   // Sub-agents get a minimal persona and no orchestration rules.
-  ctx.effect(() => ctx.systemPrompt?.waterfall?.(
-    { section: 'system-prompt/assemble' },
-    'dsh-my-go-broker.assemble-filter',
-    (assembly) => {
-      const agentId = assembly?.scope ?? assembly?.context?.agent?.id
+  // assembleContextFor() returns { agent, scope: agent }, so context.agent.id
+  // is the session ID that sessionTypes maps.
+  ctx.effect(() => ctx.waterfall(
+    'system-prompt/assemble',
+    (assembly, context) => {
+      const agentId = context?.agent?.id
       const isSubAgent = agentId && sessionTypes.has(agentId)
       if (!isSubAgent) return assembly // Sisyphus: keep all sections
       // Sub-agent: replace persona, remove orchestration
-      const filtered = {
+      return {
         ...assembly,
         sections: assembly.sections
           .filter((s) => s.name !== 'dsh-my-go:orchestration')
@@ -402,7 +403,6 @@ export async function apply(ctx, config = {}) {
             : s
           ),
       }
-      return filtered
     },
   ), 'dsh-my-go-broker.assemble-filter()')
 
