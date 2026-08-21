@@ -213,15 +213,8 @@ export function apply(ctx) {
     const cardStyle = { border: '1px solid var(--separator, #333)', borderRadius: 8, padding: 12, marginBottom: 12 }
     const rowStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }
 
-    const FALLBACK_PROVIDERS = ['octopus', 'deepseek', 'deepseek-chat']
-    const FALLBACK_MODELS = ['mimo-v2.5', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v3', 'deepseek-v3-chat', 'deepseek-reasoner']
     const EFFORTS = ['', 'low', 'high', 'max']
-
-    const providers = available.providers.length > 0 ? available.providers : FALLBACK_PROVIDERS
-    const modelSet = new Set()
-    for (const m of Object.values(available.models)) for (const id of m) modelSet.add(id)
-    if (modelSet.size === 0) for (const m of FALLBACK_MODELS) modelSet.add(m)
-    const allModels = [...modelSet]
+    const allModels = [...new Set(Object.values(available.models).flat())]
 
     const providerLabel = (v) => v === '' ? '跟随 Sisyphus' : v
     const modelLabel = (v) => v === '' ? '跟随 Sisyphus' : v
@@ -234,9 +227,14 @@ export function apply(ctx) {
         )
       )
 
+    const fetchFailed = available.providers.length === 0
+
     return React.createElement('div', { style: { padding: 16, maxWidth: 600 } },
       React.createElement('h2', { style: { margin: '0 0 4px' } }, 'MyGO 编排配置'),
       React.createElement('p', { style: { margin: '0 0 16px', fontSize: 13, color: 'var(--text-secondary, #888)' } }, '每个子智能体的模型 / Provider / 思考程度 / DSV4P0813 补丁开关。修改后点保存，下次派发生效。'),
+      fetchFailed ? React.createElement('div', {
+        style: { padding: 12, marginBottom: 16, borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 13 },
+      }, '⚠ 无法从 DSH 获取 Provider/Model 列表。请确认：1) 已重启 dsh web；2) LLM 插件已配置并激活。下拉框仍可手动输入自定义值。') : null,
       ...AGENT_TYPES.map((type) => {
         const cfg = draft?.[type] || {}
         return React.createElement('div', { key: type, style: cardStyle },
