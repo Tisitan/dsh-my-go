@@ -214,6 +214,7 @@ export function apply(ctx) {
     const rowStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }
 
     const EFFORTS = ['', 'low', 'high', 'max']
+    const providers = available.providers
     const allModels = [...new Set(Object.values(available.models).flat())]
 
     const providerLabel = (v) => v === '' ? '跟随 Sisyphus' : v
