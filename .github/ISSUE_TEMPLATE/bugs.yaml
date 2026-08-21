@@ -43,15 +43,11 @@ body:
       value: |
         接下来我们将引导您详细地描述您所遇到的问题
 
-  - type: dropdown
+  - type: textarea
     id: config-type
     attributes:
       label: 您使用的插件版本是？
-      description: 如果您不确定，可以选择 “我不确定”
-      options:
-        - 0.1.0
-        - 最新 main 分支（开发版）
-        - 我不确定
+      description: 使用 dsh plugin --profile list 查看
     validations:
       required: true
 

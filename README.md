@@ -151,8 +151,10 @@ bun run test            # 冒烟测试
     见 [dsh-handbook 9.2](https://github.com/deepseek-ai/deepseek-harness/discussions/118)）；
   - 结论注入依赖 `subagent/end` 事件；`reportFrom` 为子→父补充通道。
   - 单线阻塞由 broker 状态机执行；Sisyphus 需遵守编排规则（由 system-prompt section 约束）。
-- 感谢以下一位开发者：
+- 感谢以下三位开发者：
   - DeepSeek V4 Flash 0731
+  - DeepSeek V4 Pro 0813
+  - MiMo V2.5
 
 ## 许可证
 
