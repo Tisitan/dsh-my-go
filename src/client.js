@@ -215,19 +215,15 @@ export function apply(ctx) {
     const save = async () => {
       setSaving(true); setMsg(null)
       try {
-        const agentTypes = ['sisyphus', 'hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
-        const fields = ['provider', 'model', 'reasoningEffort', 'dsv4p0813']
-        for (const type of agentTypes) {
-          for (const field of fields) {
-            const val = draft?.[type]?.[field]
-            if (val === undefined || val === null || val === '' || val === false) {
-              await sp.unset(`${type}.${field}`).catch(() => {})
-            } else {
-              await sp.set(`${type}.${field}`, val)
-            }
-          }
+        if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') {
+          setMsg('连接不可用'); setSaving(false); return
         }
-        setMsg('已保存')
+        const res = await connection.rpc.call('/dsh-my-go', 'saveSettings', draft)
+        if (res && res.ok) {
+          setMsg('已保存')
+        } else {
+          setMsg('保存失败: ' + (res?.error?.message || '未知错误'))
+        }
       } catch (e) {
         setMsg('保存失败: ' + String(e))
       } finally { setSaving(false) }
