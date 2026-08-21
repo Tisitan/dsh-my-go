@@ -20,6 +20,8 @@ export const inject = ['tools', 'subagents', 'systemPrompt', 'llm', 'settings']
 
 const AGENT_TYPES = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
 
+const AGENT_TYPE_PREFIX = 'dsh-my-go:'
+
 function agentLabel(type, summary) {
   return `${AGENT_TYPE_PREFIX}${type}${summary ? `: ${summary}` : ''}`
 }
