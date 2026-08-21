@@ -81,37 +81,37 @@ dsh web   # 启动 Web GUI，新会话选择 MyGO!!!!! 模式
 
 broker 注册 settings 命名空间 `dsh-my-go`（WebUI 设置页「MyGO 编排」）：
 
-| 配置项 | 默认值 | 说明 |
-| ------ | ------ | ---- |
-| `agents.<type>.provider` | 继承父级 | 该工种的 provider 路由 |
-| `agents.<type>.model` | 见表 | 该工种的模型 |
-| `agents.<type>.reasoningEffort` | 见表 | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
-| `agents.<type>.dsv4p0813` | false | 是否对该工种启用 DSV4P0813 两阶段锚定补丁 |
+| 配置项                          | 默认值   | 说明                                                                    |
+|---------------------------------|----------|-------------------------------------------------------------------------|
+| `agents.<type>.provider`        | 继承父级 | 该工种的 provider 路由                                                  |
+| `agents.<type>.model`           | 见表     | 该工种的模型                                                            |
+| `agents.<type>.reasoningEffort` | 见表     | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
+| `agents.<type>.dsv4p0813`       | false    | 是否对该工种启用 DSV4P0813 两阶段锚定补丁                               |
 
 工种模型（建议）：
 
-| 工种 | 模型 | Effort |
-| --- | --- | --- |
-| Sisyphus | 用户所选 | high |
-| Hermes / Explore / Librarian / Looker | mimo-v2.5 | default |
-| Hephaestus | deepseek-v4-flash | high |
-| Prometheus | deepseek-v4-pro | max |
-| Oracle | deepseek-v4-pro | max |
+| 工种                         | 模型              | Effort  | 备注         |
+|------------------------------|-------------------|---------|--------------|
+| Sisyphus                     | deepseek-v4-flash | high    | 中等能力模型 |
+| Hermes / Explore / Librarian | mimo-v2.5         | default | 便宜模型     |
+| Looker                       | mimo-v2.5         | default | 多模态模型   |
+| Hephaestus                   | deepseek-v4-flash | high    | 中等能力模型 |
+| Prometheus / Oracle          | deepseek-v4-pro   | max     | 强能力大模型 |
 
 ## 智能体 Prompt
 
 每个工种的完整 persona / 职责 / 汇报格式见 [`prompts/`](prompts/)：
 
-| 文件 | 工种 |
-| --- | --- |
-| [prompts/sisyphus.md](prompts/sisyphus.md) | 总调度 + 质检官 |
-| [prompts/hermes.md](prompts/hermes.md) | 快速执行 |
-| [prompts/explore.md](prompts/explore.md) | 快速检索 |
-| [prompts/librarian.md](prompts/librarian.md) | 文档查询 |
-| [prompts/looker.md](prompts/looker.md) | 多模态识别 |
-| [prompts/hephaestus.md](prompts/hephaestus.md) | 代码编写 |
-| [prompts/prometheus.md](prompts/prometheus.md) | 需求规划 |
-| [prompts/oracle.md](prompts/oracle.md) | 架构调试 + 终验 |
+| 文件                                           | 工种            |
+|------------------------------------------------|-----------------|
+| [prompts/sisyphus.md](prompts/sisyphus.md)     | 总调度 + 质检官 |
+| [prompts/hermes.md](prompts/hermes.md)         | 快速执行        |
+| [prompts/explore.md](prompts/explore.md)       | 快速检索        |
+| [prompts/librarian.md](prompts/librarian.md)   | 文档查询        |
+| [prompts/looker.md](prompts/looker.md)         | 多模态识别      |
+| [prompts/hephaestus.md](prompts/hephaestus.md) | 代码编写        |
+| [prompts/prometheus.md](prompts/prometheus.md) | 需求规划        |
+| [prompts/oracle.md](prompts/oracle.md)         | 架构调试 + 终验 |
 
 ## 目录结构
 
