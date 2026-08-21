@@ -316,9 +316,8 @@ export function apply(ctx) {
         const current = snapshot.current
         if (current && current.childId && current.status === 'running' && lastJumpedTo !== current.childId && sessions) {
           lastJumpedTo = current.childId
-          sessions.openSubagent({ parentSessionId: '', childSessionId: current.childId, mode: 'continuable' })
+          try { sessions.open(current.childId) } catch { /* ignore */ }
         } else if (!current && lastJumpedTo && sessions) {
-          // Child settled; jump back to the parent.
           lastJumpedTo = null
         }
       }, 800)

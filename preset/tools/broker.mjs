@@ -16,7 +16,7 @@
 
 export const name = 'dsh-my-go-broker'
 
-export const inject = ['tools', 'subagents', 'systemPrompt']
+export const inject = ['tools', 'subagents', 'systemPrompt', 'llm']
 
 import { access, cp, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -367,13 +367,20 @@ export async function apply(ctx, config = {}) {
     }
     const placeholder = orchestration.beginSpawning(agentType, prompt)
     try {
+      // Build agentOptions with model validation
+      const agentOpts = {}
+      if (binding.provider !== undefined) agentOpts.provider = binding.provider
+      if (binding.model !== undefined) {
+        const resolvedProvider = String(binding.provider ?? '')
+        if (!resolvedProvider || await modelExists(resolvedProvider, binding.model)) {
+          agentOpts.model = binding.model
+        }
+      }
       const request = {
         label: agentLabel(agentType, prompt.slice(0, 60)),
         prompt: [{ type: 'text', text: prompt }],
         parent,
-        ...(binding.provider !== undefined || binding.model !== undefined
-          ? { agentOptions: { ...(binding.provider !== undefined ? { provider: binding.provider } : {}), ...(binding.model !== undefined ? { model: binding.model } : {}) } }
-          : {}),
+        ...(Object.keys(agentOpts).length > 0 ? { agentOptions: agentOpts } : {}),
         signal,
       }
       const { childId } = await ctx.subagents.startContinuable({
@@ -689,6 +696,25 @@ export async function apply(ctx, config = {}) {
     return result
   }
 
+  // ── model validation ─────────────────────────────────────────────────
+  const modelCache = new Map()
+  async function modelExists(provider, model) {
+    const key = String(provider)
+    let set = modelCache.get(key)
+    if (set === undefined) {
+      set = new Set()
+      try {
+        const llm = ctx.get('llm')
+        if (llm) {
+          const list = await llm.listModels(key)
+          for (const m of list) set.add(m.id)
+        }
+      } catch { /* provider may not support listing */ }
+      modelCache.set(key, set)
+    }
+    return set.has(String(model))
+  }
+
   ctx.on('agent/request', async (payload, next) => {
     const seed = await next()
     const agent = payload?.agent
@@ -698,7 +724,13 @@ export async function apply(ctx, config = {}) {
     const binding = bindings[type ?? 'sisyphus'] ?? {}
     const nextConfig = { ...seed }
     if (binding.provider !== undefined) nextConfig.provider = binding.provider
-    if (binding.model !== undefined) nextConfig.model = binding.model
+    if (binding.model !== undefined) {
+      // Validate model exists on the resolved provider before applying
+      const resolvedProvider = String(nextConfig.provider ?? seed.provider ?? '')
+      if (!resolvedProvider || await modelExists(resolvedProvider, binding.model)) {
+        nextConfig.model = binding.model
+      }
+    }
     const desiredEffort = binding.reasoningEffort
     if (desiredEffort !== undefined && desiredEffort !== null) {
       const provider = String(nextConfig.provider ?? binding.provider ?? '')
