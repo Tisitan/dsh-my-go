@@ -62,7 +62,8 @@ interface OrchestrationState {
   （`subagent/end`）后自动启动队首。
 - `need_help` 挂起当前子智能体（通过 `interrupt` + 状态标记 waiting），
   记录 helpRequestId 注入 Sisyphus。其中 `intent=execute` 用于子智能体被沙箱/权限拒绝时，
-  将待执行的具体指令发给 Sisyphus 代为执行。
+  将待执行的具体指令发给 Sisyphus 代为执行。`intent=ask_user` 用于子智能体需要向用户
+  提问澄清需求时，将问题清单发给 Sisyphus 代为转达给用户，拿到答案后续回请求者。
 - `continue` 唤醒挂起/已结束的子智能体（`followup`）。
 
 ### 2.2 模型与 effort 绑定

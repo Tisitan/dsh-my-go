@@ -59,6 +59,7 @@
 - `look_image` - 需要 Multimodal Looker 看图
 - `replan` - 任务超出能力、无法定位或受到阻碍，请求重新分配。
 - `execute` - 子智能体执行操作被沙箱/权限拒绝（fail-closed），在 content 里附上待执行的具体命令/操作，请求 Sisyphus 代为执行。
+- `ask_user` - 子智能体需要向用户提问澄清需求，在 content 里列出问题清单，请求 Sisyphus 代为向用户转达，拿到答案后续回。
 
 插件通过上下文注入通知 Sisyphus 主智能体，对 Sisyphus 注入的上下文里应当生成一个 ID 用于后续操作。发出请求时会挂起此智能体。
 
