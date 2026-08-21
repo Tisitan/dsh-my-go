@@ -265,34 +265,12 @@ export async function apply(ctx, config = {}) {
     return agent.id === rootSessionId
   }
   // ── settings-backed bindings (WebUI configurable) ───────────────────────
+  // NOTE: the settings namespace 'dsh-my-go' is registered by the host bundle
+  // (lib/index.js). We only READ from it here — do NOT call settings.register()
+  // again or it throws "already registered".
   const settings = ctx.get('settings')
-  let settingsScope
   if (settings !== undefined) {
     try {
-      // Dynamic import so a loader without npm-package resolution for local
-      // mjs files degrades to defaults instead of failing the preset mount.
-      const mod = await import('@deepseek-ai/schemastery')
-      const z = mod.default ?? mod
-      const agentSchema = z.object({
-        provider: z.string(),
-        model: z.string(),
-        reasoningEffort: z.string(),
-        dsv4p0813: z.boolean(),
-      })
-      settingsScope = settings.register(
-        'dsh-my-go',
-        z.object({
-          sisyphus: agentSchema,
-          hermes: agentSchema,
-          explore: agentSchema,
-          librarian: agentSchema,
-          looker: agentSchema,
-          hephaestus: agentSchema,
-          prometheus: agentSchema,
-          oracle: agentSchema,
-        }),
-        {},
-      )
       const stored = settings.get('dsh-my-go')
       if (stored && typeof stored === 'object') {
         const merged = { ...bindings }
@@ -300,9 +278,9 @@ export async function apply(ctx, config = {}) {
           const row = stored[key]
           if (row && typeof row === 'object') {
             merged[key] = {
-              provider: row.provider ?? merged[key]?.provider,
-              model: row.model ?? merged[key]?.model,
-              reasoningEffort: row.reasoningEffort ?? merged[key]?.reasoningEffort,
+              provider: row.provider || merged[key]?.provider,
+              model: row.model || merged[key]?.model,
+              reasoningEffort: row.reasoningEffort || merged[key]?.reasoningEffort,
               dsv4p0813: row.dsv4p0813 ?? merged[key]?.dsv4p0813 ?? false,
             }
           }
@@ -318,9 +296,9 @@ export async function apply(ctx, config = {}) {
             const row = next[key]
             if (row && typeof row === 'object') {
               merged[key] = {
-                provider: row.provider ?? merged[key]?.provider,
-                model: row.model ?? merged[key]?.model,
-                reasoningEffort: row.reasoningEffort ?? merged[key]?.reasoningEffort,
+                provider: row.provider || merged[key]?.provider,
+                model: row.model || merged[key]?.model,
+                reasoningEffort: row.reasoningEffort || merged[key]?.reasoningEffort,
                 dsv4p0813: row.dsv4p0813 ?? merged[key]?.dsv4p0813 ?? false,
               }
             }
@@ -328,12 +306,12 @@ export async function apply(ctx, config = {}) {
           bindings = merged
         }
       })
-    } catch {
-      // Settings optional — defaults apply.
+    } catch (e) {
+      console.error('[dsh-my-go] settings load error:', e)
     }
   }
 
-  // ── notify a client bridge (optional harness handle) ────────────────────
+  // ── snapshot state (used by connection.rpc handlers in lib/index.js) ──────
   let latestSnapshot = null
   let snapshotSeq = 0
   const bump = () => {
@@ -341,12 +319,6 @@ export async function apply(ctx, config = {}) {
     latestSnapshot = { seq: snapshotSeq, ...orchestration.snapshot() }
   }
   orchestration.onChange(() => bump())
-  const harness = globalThis.harness
-  const disposers = []
-  if (harness && typeof harness.handle === 'function') {
-    disposers.push(harness.handle('dsh-my-go/snapshot', async () => latestSnapshot ?? { seq: 0, current: null, queue: [], helpRequests: [], history: [] }))
-    disposers.push(harness.handle('dsh-my-go/notify', async () => { bump(); return { seq: snapshotSeq } }))
-  }
 
   // ── internal go_work implementation (shared by the tool, forward, queue) ─
   async function dispatchWork(agentType, prompt, parent, signal) {
@@ -367,8 +339,8 @@ export async function apply(ctx, config = {}) {
     }
     const placeholder = orchestration.beginSpawning(agentType, prompt)
     try {
-      // Resolve provider: use binding's explicit provider, or inherit from parent session
-      const parentProvider = parent?.session?.header?.provider
+      // Resolve provider: use binding's explicit provider, or inherit from parent agent options
+      const parentProvider = parent?.options?.provider
       const resolvedProvider = binding.provider ?? parentProvider
       // Build agentOptions: always pass provider so sub-agent doesn't fall back to DSH default
       const agentOpts = {}
@@ -778,8 +750,4 @@ export async function apply(ctx, config = {}) {
       }
     }
   })
-
-  return () => {
-    for (const dispose of disposers) dispose()
-  }
 }
