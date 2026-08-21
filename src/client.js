@@ -187,8 +187,12 @@ export function apply(ctx) {
 
     React.useEffect(() => {
       if (!sp) return
-      try { setDraft(sp.read()) } catch { setDraft({}) }
+      // Load settings via host RPC (DSH SettingsScope doesn't support nested reads)
       if (connection && connection.rpc && typeof connection.rpc.call === 'function') {
+        connection.rpc.call('/dsh-my-go', 'loadSettings', {}).then((res) => {
+          if (res && res.ok && res.value) setDraft(res.value)
+          else setDraft({})
+        }).catch(() => setDraft({}))
         connection.rpc.call('/dsh-my-go', 'listModels', {}).then((res) => {
           if (res && res.ok && res.value && Array.isArray(res.value.providers)) setAvailable(res.value)
         }).catch(() => {})
@@ -212,6 +216,7 @@ export function apply(ctx) {
       })
     }
 
+    // Manual save only — auto-save risks infinite loops with settings/updated events
     const save = async () => {
       setSaving(true); setMsg(null)
       try {
@@ -228,15 +233,6 @@ export function apply(ctx) {
         setMsg('保存失败: ' + String(e))
       } finally { setSaving(false) }
     }
-
-    // Auto-save on draft change with debounce
-    const autoSaveTimer = React.useRef(null)
-    React.useEffect(() => {
-      if (!draft || !sp) return
-      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
-      autoSaveTimer.current = setTimeout(() => { void save() }, 500)
-      return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
-    }, [draft, sp])
 
     const selectStyle = { background: 'var(--surface, #1e1e1e)', color: 'var(--text, #e0e0e0)', border: '1px solid var(--separator, #333)', borderRadius: 4, padding: '4px 8px', fontSize: 13, width: '100%', boxSizing: 'border-box' }
     const labelStyle = { fontSize: 12, color: 'var(--text-secondary, #888)', marginBottom: 2 }
