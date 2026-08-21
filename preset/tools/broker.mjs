@@ -340,21 +340,61 @@ export async function apply(ctx, config = {}) {
 3. 收到 intent=replan 时，必须切换智能体类型，而不是原地升级模型。
 4. Prometheus 只做规划不执行；它的计划必须由你按步骤重新调度。`
 
-  // Register persona + orchestration for Sisyphus only (static text).
-  // Sub-agents get their identity injected into prompt text via dispatchWork.
-  // We do NOT use section.text functions because:
-  //   1. Sub-agents may not inherit parent preset sections (scope issue)
-  //   2. Even if visible, text functions have a race condition with sessionTypes
+  // ── per-agent persona + orchestration via systemPrompt ────────────────────
+  //
+  // Sub-agents inherit the preset's scope, so they DO see these sections.
+  // We use text functions with parentSession detection (no race condition)
+  // to differentiate Sisyphus from sub-agents.
+  //
+  // For sub-agents:
+  //   - deployment:persona: empty (sub-agent persona is injected via context)
+  //   - dsh-my-go:orchestration: empty (sub-agents don't orchestrate)
+  //   - systemPrompt.context: injects the sub-agent's role description
+  //
+  // For Sisyphus:
+  //   - deployment:persona: full Sisyphus persona
+  //   - dsh-my-go:orchestration: full orchestration rules
+  //   - systemPrompt.context: empty (Sisyphus has no extra context)
+
+  const isSubAgentContext = (context) => {
+    // context = { agent, scope: agent } from assembleContextFor()
+    // Sub-agents have parentSession set in their session header
+    return context?.agent?.session?.header?.parentSession != null
+  }
+
   ctx.effect(() => ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,
-    text: SISYPHUS_PERSONA,
+    text: (context) => isSubAgentContext(context) ? '' : SISYPHUS_PERSONA,
   }), 'dsh-my-go-broker.persona()')
   ctx.effect(() => ctx.systemPrompt.section({
     name: 'dsh-my-go:orchestration',
     order: 20,
-    text: ORCHESTRATION_TEXT,
+    text: (context) => isSubAgentContext(context) ? '' : ORCHESTRATION_TEXT,
   }), 'dsh-my-go-broker.orchestration()')
+
+  // Inject sub-agent identity via systemPrompt.context (system prompt level).
+  // The text function checks parentSession — no race condition.
+  const ROLE_DESCRIPTIONS = {
+    hermes: 'You are Hermes, the rapid executor. You do batch replacements, code formatting, import consolidation, and text manipulation — fast mechanical work. You report results to Sisyphus.',
+    explore: 'You are Explore, the fast searcher. You grep, read files, locate symbols, and scan directory structures — quick reconnaissance. You report results to Sisyphus.',
+    librarian: 'You are Librarian, the document reader. You read READMEs, API references, historical docs, and extract comments — document intelligence. You report results to Sisyphus.',
+    looker: 'You are Looker, the multimodal recognizer. You identify UI screenshots, design mockups, PDF charts — visual understanding. You report results to Sisyphus.',
+    hephaestus: 'You are Hephaestus, the code crafter. You do single-file refactors, module implementations, unit tests, and routine code generation. You report results to Sisyphus.',
+    prometheus: 'You are Prometheus, the requirement planner. You understand vague requirements, decompose them into executable steps, and output a plan. You do NOT execute — only plan. You report results to Sisyphus.',
+    oracle: 'You are Oracle, the architect debugger and final validator. You do cross-module dependency analysis, deep bug localization, code review, and final acceptance. You report results to Sisyphus.',
+  }
+  ctx.effect(() => ctx.systemPrompt.context({
+    name: 'dsh-my-go:subagent-role',
+    order: 10,
+    text: (context) => {
+      if (!isSubAgentContext(context)) return ''
+      // We don't know the exact agent type from the context alone,
+      // but we can infer it from the session metadata or just provide
+      // a generic sub-agent identity. The specific type info is in the prompt.
+      return 'You are a specialist sub-agent in the dsh-my-go orchestration system. You execute one focused task and report results to Sisyphus. You do not delegate further.'
+    },
+  }), 'dsh-my-go-broker.subagent-role()')
 
   // ── internal go_work implementation (shared by the tool, forward, queue) ─
   async function dispatchWork(agentType, prompt, parent, signal) {
@@ -390,24 +430,25 @@ export async function apply(ctx, config = {}) {
         // No provider available — set model anyway, agent/request handler will validate
         agentOpts.model = binding.model
       }
-      // Inject sub-agent identity + role directly into the prompt text.
-      // Sub-agents may not inherit parent systemPrompt sections, so we
-      // cannot rely on section.text functions. The identity is injected
-      // as the first message so the model knows its role.
+      // Inject sub-agent type-specific context via systemPrompt.context (generic)
+      // and the specific role via <system-reminder> in user prompt.
+      // The context injection provides the base identity; the user prompt
+      // provides type-specific details wrapped in <system-reminder> tags.
       const roleDescriptions = {
-        hermes: 'You are Hermes, the rapid executor. You do batch replacements, code formatting, import consolidation, and text manipulation — fast mechanical work.',
-        explore: 'You are Explore, the fast searcher. You grep, read files, locate symbols, and scan directory structures — quick reconnaissance.',
-        librarian: 'You are Librarian, the document reader. You read READMEs, API references, historical docs, and extract comments — document intelligence.',
-        looker: 'You are Looker, the multimodal recognizer. You identify UI screenshots, design mockups, PDF charts — visual understanding.',
-        hephaestus: 'You are Hephaestus, the code crafter. You do single-file refactors, module implementations, unit tests, and routine code generation.',
-        prometheus: 'You are Prometheus, the requirement planner. You understand vague requirements, decompose them into executable steps, and output a plan. You do NOT execute — only plan.',
-        oracle: 'You are Oracle, the architect debugger and final validator. You do cross-module dependency analysis, deep bug localization, code review, and final acceptance.',
+        hermes: 'You are Hermes, the rapid executor. Batch replacements, code formatting, import consolidation, text manipulation.',
+        explore: 'You are Explore, the fast searcher. Grep, read files, locate symbols, scan directories.',
+        librarian: 'You are Librarian, the document reader. READMEs, API references, historical docs.',
+        looker: 'You are Looker, the multimodal recognizer. UI screenshots, design mockups, PDF charts.',
+        hephaestus: 'You are Hephaestus, the code crafter. Single-file refactors, module implementations, unit tests.',
+        prometheus: 'You are Prometheus, the requirement planner. Understand requirements, decompose into steps, output a plan. Do NOT execute.',
+        oracle: 'You are Oracle, the architect debugger. Cross-module analysis, bug localization, code review, final acceptance.',
       }
-      const rolePrefix = roleDescriptions[agentType] || `You are a ${agentType} sub-agent.`
-      const identityPrefix = `${rolePrefix}\n\nYou report your results to Sisyphus. Execute the following task and report back.\n\n`
+      const roleInfo = roleDescriptions[agentType] || `You are a ${agentType} sub-agent.`
       const request = {
         label: agentLabel(agentType, prompt.slice(0, 60)),
-        prompt: [{ type: 'text', text: identityPrefix + prompt }],
+        prompt: [
+          { type: 'text', text: `<system-reminder>\n${roleInfo}\nYou report results to Sisyphus. You do not delegate further.\n</system-reminder>\n\n${prompt}` },
+        ],
         parent,
         ...(Object.keys(agentOpts).length > 0 ? { agentOptions: agentOpts } : {}),
         signal,
