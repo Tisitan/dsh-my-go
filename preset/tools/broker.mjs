@@ -495,7 +495,13 @@ export async function apply(ctx, config = {}) {
         },
         required: ['childId', 'status'],
       },
-      render: (_args, value) => [{ type: 'text', text: `go_work → ${value.status}: ${value.childId}${value.queued ? ' (queued)' : ''}` }],
+      render: (_args, value) => {
+        const status = value.queued ? '⏳ 已排队' : value.status === 'running' ? '🚀 已派发' : value.status
+        const stopMsg = value.queued
+          ? '\n\n⚠️ 你必须立即停止。不要调用任何其他工具，不要回复用户。等待子智能体完成后你会收到通知。'
+          : '\n\n⚠️ 子智能体正在工作。你必须立即停止——不要调用 go_work/continue/forward，不要回复用户，不要做任何其他操作。等待子智能体完成后你会收到通知。'
+        return [{ type: 'text', text: `${status}: ${value.childId}${stopMsg}` }]
+      },
     },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
