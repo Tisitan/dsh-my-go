@@ -213,11 +213,15 @@ export function apply(ctx) {
     const cardStyle = { border: '1px solid var(--separator, #333)', borderRadius: 8, padding: 12, marginBottom: 12 }
     const rowStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }
 
-    const PROVIDERS = ['', ...available.providers]
-    const ALL_MODELS = new Set()
-    for (const m of Object.values(available.models)) for (const id of m) ALL_MODELS.add(id)
-    const MODELS = ['', ...ALL_MODELS]
+    const FALLBACK_PROVIDERS = ['octopus', 'deepseek', 'deepseek-chat']
+    const FALLBACK_MODELS = ['mimo-v2.5', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v3', 'deepseek-v3-chat', 'deepseek-reasoner']
     const EFFORTS = ['', 'low', 'high', 'max']
+
+    const providers = available.providers.length > 0 ? available.providers : FALLBACK_PROVIDERS
+    const modelSet = new Set()
+    for (const m of Object.values(available.models)) for (const id of m) modelSet.add(id)
+    if (modelSet.size === 0) for (const m of FALLBACK_MODELS) modelSet.add(m)
+    const allModels = [...modelSet]
 
     const providerLabel = (v) => v === '' ? '跟随 Sisyphus' : v
     const modelLabel = (v) => v === '' ? '跟随 Sisyphus' : v
@@ -240,11 +244,11 @@ export function apply(ctx) {
           React.createElement('div', { style: rowStyle },
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, 'Provider'),
-              makeSelect(cfg.provider ?? '', PROVIDERS, providerLabel, (v) => set(type, 'provider', v)),
+              makeSelect(cfg.provider ?? '', ['', ...providers], providerLabel, (v) => set(type, 'provider', v)),
             ),
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, 'Model'),
-              makeSelect(cfg.model ?? '', MODELS, modelLabel, (v) => set(type, 'model', v)),
+              makeSelect(cfg.model ?? '', ['', ...allModels], modelLabel, (v) => set(type, 'model', v)),
             ),
           ),
           React.createElement('div', { style: rowStyle },
