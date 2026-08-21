@@ -180,10 +180,16 @@ export function apply(ctx) {
     const [draft, setDraft] = React.useState(null)
     const [saving, setSaving] = React.useState(false)
     const [msg, setMsg] = React.useState(null)
+    const [available, setAvailable] = React.useState({ providers: [], models: {} })
 
     React.useEffect(() => {
       if (!sp) return
       try { setDraft(sp.read()) } catch { setDraft({}) }
+      if (host && typeof host.call === 'function') {
+        host.call('dsh-my-go/listModels').then((data) => {
+          if (data && Array.isArray(data.providers)) setAvailable(data)
+        }).catch(() => {})
+      }
     }, [sp])
 
     if (!sp) return React.createElement('div', { style: { padding: 16, color: '#888' } }, '设置服务不可用')
@@ -207,8 +213,10 @@ export function apply(ctx) {
     const cardStyle = { border: '1px solid var(--separator, #333)', borderRadius: 8, padding: 12, marginBottom: 12 }
     const rowStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }
 
-    const PROVIDERS = ['', 'octopus', 'deepseek']
-    const MODELS = ['', 'mimo-v2.5', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v3']
+    const PROVIDERS = ['', ...available.providers]
+    const ALL_MODELS = new Set()
+    for (const m of Object.values(available.models)) for (const id of m) ALL_MODELS.add(id)
+    const MODELS = ['', ...ALL_MODELS]
     const EFFORTS = ['', 'low', 'high', 'max']
 
     const providerLabel = (v) => v === '' ? '跟随 Sisyphus' : v
