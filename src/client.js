@@ -20,7 +20,10 @@ import * as React from 'react'
 
 export const name = 'dsh-my-go'
 
-export const inject = ['slots']
+export const inject = ['slots', 'settingsScope']
+
+const AGENT_TYPES = ['sisyphus', 'hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
+const AGENT_LABELS = { sisyphus: 'Sisyphus', hermes: 'Hermes', explore: 'Explore', librarian: 'Librarian', looker: 'Looker', hephaestus: 'Hephaestus', prometheus: 'Prometheus', oracle: 'Oracle' }
 
 export function apply(ctx) {
   const client = ctx
@@ -164,16 +167,85 @@ export function apply(ctx) {
   ))
 
   // ── settings page ───────────────────────────────────────────────────────
+  const scope = client.get('settingsScope')
+    ? client.get('settingsScope').bind({ namespace: 'dsh-my-go' })
+    : null
+
   slots.inject('settings.section', () => slots.register(
     { name: 'settings.section', id: 'dsh-my-go', order: 30, label: 'MyGO 编排' },
-    (props) => React.createElement(SettingsPage, props),
+    (props) => React.createElement(SettingsPage, { ...props, scope }),
   ))
 
-  function SettingsPage(_props) {
-    return React.createElement('div', { style: { padding: 16 } },
-      React.createElement('h2', null, 'MyGO 编排配置'),
-      React.createElement('p', null, '每个子智能体的模型 / 思考程度 / DSV4P0813 补丁开关。修改后通过 Settings 服务持久化。'),
-      React.createElement('div', { style: { color: '#888', marginTop: 12 } }, '配置项由 host 侧 settings 命名空间 dsh-my-go 提供；修改后生效于下一次派发。'),
+  function SettingsPage({ scope: sp, close }) {
+    const [draft, setDraft] = React.useState(null)
+    const [saving, setSaving] = React.useState(false)
+    const [msg, setMsg] = React.useState(null)
+
+    React.useEffect(() => {
+      if (!sp) return
+      try { setDraft(sp.read()) } catch { setDraft({}) }
+    }, [sp])
+
+    if (!sp) return React.createElement('div', { style: { padding: 16, color: '#888' } }, '设置服务不可用')
+
+    const set = (type, field, value) => {
+      setDraft((prev) => ({ ...prev, [type]: { ...prev?.[type], [field]: value } }))
+    }
+
+    const save = async () => {
+      setSaving(true); setMsg(null)
+      try {
+        await sp.update(draft)
+        setMsg('已保存')
+      } catch (e) {
+        setMsg('保存失败: ' + String(e))
+      } finally { setSaving(false) }
+    }
+
+    const inputStyle = { background: 'var(--surface, #1e1e1e)', color: 'var(--text, #e0e0e0)', border: '1px solid var(--separator, #333)', borderRadius: 4, padding: '4px 8px', fontSize: 13, width: '100%', boxSizing: 'border-box' }
+    const labelStyle = { fontSize: 12, color: 'var(--text-secondary, #888)', marginBottom: 2 }
+    const cardStyle = { border: '1px solid var(--separator, #333)', borderRadius: 8, padding: 12, marginBottom: 12 }
+    const rowStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }
+
+    return React.createElement('div', { style: { padding: 16, maxWidth: 600 } },
+      React.createElement('h2', { style: { margin: '0 0 4px' } }, 'MyGO 编排配置'),
+      React.createElement('p', { style: { margin: '0 0 16px', fontSize: 13, color: 'var(--text-secondary, #888)' } }, '每个子智能体的模型 / Provider / 思考程度 / DSV4P0813 补丁开关。修改后点保存，下次派发生效。'),
+      ...AGENT_TYPES.map((type) => {
+        const cfg = draft?.[type] || {}
+        return React.createElement('div', { key: type, style: cardStyle },
+          React.createElement('div', { style: { fontWeight: 600, marginBottom: 8 } }, AGENT_LABELS[type] || type),
+          React.createElement('div', { style: rowStyle },
+            React.createElement('div', null,
+              React.createElement('div', { style: labelStyle }, 'Provider'),
+              React.createElement('input', { style: inputStyle, value: cfg.provider ?? '', placeholder: '留空跟随 Sisyphus', onChange: (e) => set(type, 'provider', e.target.value) }),
+            ),
+            React.createElement('div', null,
+              React.createElement('div', { style: labelStyle }, 'Model'),
+              React.createElement('input', { style: inputStyle, value: cfg.model ?? '', placeholder: '留空跟随 Sisyphus', onChange: (e) => set(type, 'model', e.target.value) }),
+            ),
+          ),
+          React.createElement('div', { style: rowStyle },
+            React.createElement('div', null,
+              React.createElement('div', { style: labelStyle }, 'Reasoning Effort'),
+              React.createElement('input', { style: inputStyle, value: cfg.reasoningEffort ?? '', placeholder: 'low / high / max', onChange: (e) => set(type, 'reasoningEffort', e.target.value) }),
+            ),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
+              React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, paddingTop: 18 } },
+                React.createElement('input', { type: 'checkbox', checked: cfg.dsv4p0813 === true, onChange: (e) => set(type, 'dsv4p0813', e.target.checked) }),
+                'DSV4P0813',
+              ),
+            ),
+          ),
+        )
+      }),
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 } },
+        React.createElement('button', {
+          onClick: save,
+          disabled: saving,
+          style: { padding: '6px 20px', borderRadius: 6, border: 'none', background: 'var(--brand, #0066ff)', color: '#fff', cursor: saving ? 'wait' : 'pointer', fontSize: 14 },
+        }, saving ? '保存中…' : '保存'),
+        msg ? React.createElement('span', { style: { fontSize: 13, color: msg.startsWith('已') ? '#4caf50' : '#f44336' } }, msg) : null,
+      ),
     )
   }
 
