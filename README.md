@@ -4,20 +4,22 @@
 
 dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) 之上的**智能体编排系统**。
 
-它以星型 + 单线嵌套拓扑把 DSH 主会话（Sisyphus）与 7 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。参考了 oh-my-openagent 的编排设计。
+它以星型 + 单线嵌套拓扑把 DSH 主会话（Sisyphus）与 7 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。参考了 oh-my-openagent 的编排设计，针对 DSH 进行了优化调整。
 
 ## 特性
 
 - **星型拓扑**：所有子智能体（叶子）不直接通信，全部经 Sisyphus 中转。
-- **单线阻塞**：同一时段只有一个子智能体运行，多余任务自动排队。
+- **单线阻塞**：同一时段只有一个子智能体运行，便于审查，增强可观测性。
 - **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（调试 + 终验）。
-- **按工种绑定模型**：快活小工用轻模型（mimo-v2.5），重活用重模型（deepseek-v4-pro-0813）。
+- **按工种绑定模型**：快活小工用轻模型（如 mimo-v2.5），重活用重模型（如 deepseek-v4-pro-0813）。
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
 - **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——轻活派轻工种、重活派重工种、同工种上下文连续则 `continue` 复用。
-- **Sisyphus 质检规则**：结论不达标可驳回重做，被驳回的子智能体保留上下文继续。
+- **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
 - **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关，均可在 DSH 设置页配置。
-- **UI 适配**：右侧编排面板树状图实时显示运行/队列/求助/历史；子智能体运行时自动跳转子会话，结束后跳回。
-- **DSV4P0813 补丁开关**：让 DSV4Pro 发挥最大的实力。
+- **DSH 适配**：权限请求、问题询问由主智能体执行。
+- **DSV4P0813 补丁开关**：内置过拟合补丁，让 DeepSeek V4 Pro 0813 发挥最大的实力。
+
+_真正实现 “按量付费”_
 
 ## 环境要求
 
@@ -77,7 +79,7 @@ dsh web   # 启动 Web GUI，新会话选择 MyGO!!!!! 模式
 
 ## 配置
 
-broker 注册 settings 命名空间 `dsh-my-go`（WebUI 设置页「dsh-my-go 编排」）：
+broker 注册 settings 命名空间 `dsh-my-go`（WebUI 设置页「MyGO 编排」）：
 
 | 配置项 | 默认值 | 说明 |
 | ------ | ------ | ---- |
@@ -145,13 +147,13 @@ bun run test            # 冒烟测试
 
 ## 维护状态
 
-- 开发中
+- 仍在积极开发中，可能有少量 Bug 尚存，欢迎提交 Issue
 - 已知限制：
   - 子智能体模型绑定依赖 `agent/request` waterfall（DSH 未原生支持动态子代理模型，
     见 [dsh-handbook 9.2](https://github.com/deepseek-ai/deepseek-harness/discussions/118)）；
   - 结论注入依赖 `subagent/end` 事件；`reportFrom` 为子→父补充通道。
   - 单线阻塞由 broker 状态机执行；Sisyphus 需遵守编排规则（由 system-prompt section 约束）。
-- 感谢以下三位开发者：
+- 感谢以下三位开发者：（排名不分先后）
   - DeepSeek V4 Flash 0731
   - DeepSeek V4 Pro 0813
   - MiMo V2.5
