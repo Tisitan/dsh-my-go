@@ -1,3 +1,12 @@
+<!-- deepseek-harness-meta
+{
+  "name": "MyGO 编排器",
+  "version": "0.1.32",
+  "tags": ["preset", "模式预设"],
+  "description": "把每一步路由到最合适模型的智能体编排器"
+}
+-->
+
 # MyGO!!!!! 编排调度 | DSH
 
 > **My** tasks, where to **GO**?????
@@ -5,6 +14,8 @@
 dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) 之上的**智能体编排系统**。
 
 它以星型 + 单线嵌套拓扑把 DSH 主会话（Sisyphus）与 7 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。参考了 oh-my-openagent 的编排设计，针对 DSH 进行了优化调整。
+
+开发手记：https://khbit.cn/posts/dsh-my-go/
 
 ## 特性
 
