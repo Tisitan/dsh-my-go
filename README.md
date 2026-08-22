@@ -6,6 +6,8 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 
 它以星型 + 单线嵌套拓扑把 DSH 主会话（Sisyphus）与 7 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。参考了 oh-my-openagent 的编排设计，针对 DSH 进行了优化调整。
 
+开发手记：https://khbit.cn/posts/dsh-my-go/
+
 ## 特性
 
 - **星型拓扑**：所有子智能体（叶子）不直接通信，全部经 Sisyphus 中转。
