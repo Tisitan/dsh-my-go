@@ -24,7 +24,7 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 - **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（最后手段：调试 + 终验，仅当其他工种无法胜任时启用）。
 - **按工种绑定模型**：快活小工用轻模型（如 mimo-v2.5），重活用重模型（如 deepseek-v4-pro-0813）。
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
-- **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——轻活派轻工种、重活派重工种、同工种上下文连续则 `continue` 复用。
+- **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——**按任务难度分配（不按需求难度）**：指令明确、步骤具体的执行活优先派 Hermes，需要设计/推理的才升级 Hephaestus，仅疑难/极端复杂才到 Oracle；同工种上下文连续则 `continue` 复用。
 - **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
 - **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关，均可在 DSH 设置页配置。
 - **DSH 适配**：权限请求、问题询问由主智能体执行。
