@@ -801,6 +801,21 @@ export async function apply(ctx, config = {}) {
     },
   })
 
+  // 仅对 Sisyphus 主会话（非子智能体）隐藏 skill 工具：使 dsh-tool-skill 的
+  // catalog 注入守门条件（ctx.tools.get('skill', agent) === skillTool）失败，
+  // 从而跳过 <available_skills> 注入以节省主会话上下文。子智能体保留 skill。
+  // 这是工具层（tools.restrict）屏蔽，与 system-prompt assemble 的
+  // DSV4P0813 phase-1 过滤（system prompt section 层）正交，互不冲突。
+  ctx.on('agent/created', ({ agent }) => {
+    if (!agent) return
+    if (isSubAgent(agent)) return // 子智能体保留 skill，跳过
+    try {
+      agent.ctx.tools.restrict({ deny: ['skill'] })
+    } catch (e) {
+      // agent.ctx 尚未 ready 或 skill 工具名未注册时兜底，不阻断流程
+    }
+  })
+
   // ── model/effort binding at the request waterfall ───────────────────────
   // reasoningEffort follows the DSH model catalog: some models have no
   // thinking levels, others expose a different set (off/high/max, low, etc.).

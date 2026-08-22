@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.1.32",
+  "version": "0.2.0",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -28,6 +28,7 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 - **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
 - **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关，均可在 DSH 设置页配置。
 - **DSH 适配**：权限请求、问题询问由主智能体执行。
+- **节省主会话上下文**：Sisyphus 主会话不加载 Skill 工具（子智能体仍保留），跳过 Skill catalog 注入以压缩主会话上下文。
 - **DSV4P0813 补丁开关**：内置过拟合补丁，让 DeepSeek V4 Pro 0813 发挥最大的实力。
 
 _真正实现 “按量付费”_
