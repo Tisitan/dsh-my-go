@@ -21,7 +21,7 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 
 - **星型拓扑**：所有子智能体（叶子）不直接通信，全部经 Sisyphus 中转。
 - **单线阻塞**：同一时段只有一个子智能体运行，便于审查，增强可观测性。
-- **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（调试 + 终验）。
+- **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（最后手段：调试 + 终验，仅当其他工种无法胜任时启用）。
 - **按工种绑定模型**：快活小工用轻模型（如 mimo-v2.5），重活用重模型（如 deepseek-v4-pro-0813）。
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
 - **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——轻活派轻工种、重活派重工种、同工种上下文连续则 `continue` 复用。
@@ -100,9 +100,6 @@ broker 注册 settings 命名空间 `dsh-my-go`（WebUI 设置页「MyGO 编排�
 | `agents.<type>.dsv4p0813`       | false    | 是否对该工种启用 DSV4P0813 两阶段锚定补丁                               |
 
 工种模型（建议）：
-
-> [!TIP]
-> 从架构上来说，Sisyphus 使用 MiMo V2.5 这种便宜模型可能仍然能取得不错的效果，如果希望极致省成本，不妨试一试。
 
 | 工种                         | 模型              | Effort  | 备注         |
 |------------------------------|-------------------|---------|--------------|
