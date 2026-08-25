@@ -45,7 +45,7 @@
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.2.3-tisitan.2；test = 冒烟 + 单测
+├── package.json              # 包声明；版本 0.2.3-tisitan.4；test = 冒烟 + 单测
 ├── cordis.patch.yml          # bundle patch：dsh plugin add 后自动把 lib 挂进 profile（global 层）
 ├── CHANGELOG.md              # fork 修复台账（相对上游的全部差异）
 ├── README.md                 # 项目说明（含 fork 标识段）
@@ -56,7 +56,8 @@ dsh-my-go/
 │
 ├── preset/                   # agent preset「MyGO!!!!! 模式」（被同步到 ~/.dsh/.agent-presets/）
 │   ├── preset.yml            #   preset 元信息（名称/排序）
-│   ├── agent.cordis.yml      #   agent 平面组合：DSH 官方工具行 + 本地 broker 行
+│   ├── agent.cordis.yml      #   agent 平面组合：DSH 官方工具行 + 本地 broker 行 + tool-mask 行
+│   ├── tool-mask.mjs         #   工具屏蔽（nova 配方同步）：藏 Rei 记忆工具 + OpenCode 桥 ×7
 │   └── tools/
 │       └── broker.mjs        #   【agent 半 · 编排真源】状态机 + 6 工具 + prompt 注入
 │                             #     + 模型绑定 + 拓扑闸 + 快照桥发布（★ 大部分修复在这里）

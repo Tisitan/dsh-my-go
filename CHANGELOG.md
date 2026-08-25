@@ -3,6 +3,16 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.4] - 2026-08-25
+
+### 部署适配（Tisitan 环境）
+
+- **tool-mask 同步**：新增 `preset/tool-mask.mjs`（配方取自本机 `nova` preset），
+  在 preset 作用域屏蔽 Rei 角色记忆工具与 OpenCode 桥接共 7 个
+  `mcp__vcp__*` 工具——对 Sisyphus 与全部子代理同时生效（preset scope 覆盖
+  整个 standing mount）。逐名 try/catch + 失败 `console.warn` 告警，
+  工具缺席不炸挂载。`preset/agent.cordis.yml` 末尾新增 tool-mask 行。
+
 ## [0.2.3-tisitan.3] - 2026-08-25
 
 ### 修正（安装前自查发现）

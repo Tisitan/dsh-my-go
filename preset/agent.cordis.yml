@@ -162,3 +162,11 @@
   config:
     fetch: false
     searchTimeoutMs: 60000
+
+# ── tool mask ────────────────────────────────────────────────────────────────
+# Hides Rei-persona memory tools and the OpenCode bridge from this preset's
+# catalog — applies to Sisyphus and every sub-agent on the preset (synced from
+# the `nova` preset recipe). Mask list lives in ./tool-mask.mjs (per-name
+# try/catch, so an absent tool cannot fail the mount).
+- id: tool-mask
+  name: ./tool-mask.mjs
