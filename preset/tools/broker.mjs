@@ -99,8 +99,8 @@ function nextId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${seq.toString(36)}`
 }
 
-/** Minimal single-line-blocking orchestration state. */
-class Orchestration {
+/** Minimal single-line-blocking orchestration state. Exported for unit tests. */
+export class Orchestration {
   constructor() {
     this.currentMap = new Map()
     this.queue = []
@@ -206,10 +206,49 @@ class Orchestration {
       updatedAt: Date.now(),
     }
     this.currentMap.delete(childId)
+    this.clearHelpFor(childId)
     this.history = [...this.history, done]
     if (this.history.length > 200) this.history = this.history.slice(-200)
     this.emit()
     return done
+  }
+
+  clearHelpFor(childId) {
+    let removed = false
+    for (const [id, help] of this.helpRequests) {
+      if (help.childId === childId) {
+        this.helpRequests.delete(id)
+        removed = true
+      }
+    }
+    if (removed) this.emit()
+    return removed
+  }
+
+  requeueHead(work) {
+    if (!work) return
+    this.queue.unshift(work)
+    this.emit()
+  }
+
+  dropQueuedFor(parentId) {
+    const before = this.queue.length
+    this.queue = this.queue.filter((w) => w.parentId !== parentId)
+    if (this.queue.length !== before) this.emit()
+    return before - this.queue.length
+  }
+
+  /** Move a done/failed history record back into currentMap as running (revive via continue/forward). */
+  revive(childId) {
+    if (this.currentMap.has(childId)) return this.currentMap.get(childId)
+    const idx = this.history.findIndex((r) => r.childId === childId)
+    if (idx < 0) return undefined
+    const rec = this.history[idx]
+    const next = { ...rec, status: 'running', updatedAt: Date.now() }
+    this.history = [...this.history.slice(0, idx), ...this.history.slice(idx + 1)]
+    this.currentMap.set(childId, next)
+    this.emit()
+    return next
   }
 
   abort(childId) {
@@ -252,7 +291,10 @@ export async function apply(ctx, config = {}) {
 
   const orchestration = new Orchestration()
   const sessionTypes = new Map()
-  let bindings = { ...defaultBindings(), ...(config.bindings ?? {}) }
+  // 合并基线：默认值 + 插件 config。settings 覆盖永远从基线起算，
+  // 这样 WebUI 取消某字段后能正确回落默认，而不是残留旧的已合并值。
+  const baseBindings = { ...defaultBindings(), ...(config.bindings ?? {}) }
+  let bindings = { ...baseBindings }
   const bindSisyphus = config.bindSisyphus === true
 
   // Track authorized orchestrators: any agent on this preset that is NOT
@@ -272,7 +314,7 @@ export async function apply(ctx, config = {}) {
     try {
       const stored = settings.get('dsh-my-go')
       if (stored && typeof stored === 'object') {
-        const merged = { ...bindings }
+        const merged = { ...baseBindings }
         for (const key of ['sisyphus', ...AGENT_TYPES]) {
           const row = stored[key]
           if (row && typeof row === 'object') {
@@ -290,7 +332,7 @@ export async function apply(ctx, config = {}) {
         if (ns !== 'dsh-my-go') return
         const next = settings.get('dsh-my-go')
         if (next && typeof next === 'object') {
-          const merged = { ...bindings }
+          const merged = { ...baseBindings }
           for (const key of ['sisyphus', ...AGENT_TYPES]) {
             const row = next[key]
             if (row && typeof row === 'object') {
@@ -324,6 +366,14 @@ export async function apply(ctx, config = {}) {
     }
   }
   orchestration.onChange(() => bump())
+
+  // ── 跨平面快照桥 ────────────────────────────────────────────────────────
+  // agent 平面（本插件，实际编排发生地）与 host 半（lib/index.js，持
+  // connection.rpc 服务端）在同一 Node 进程但分属不同 cordis scope，
+  // 无法直接共享模块状态。通过 Symbol.for 全局注册表发布只读快照访问器，
+  // host 半的 RPC 层优先读取它；若不在同一进程（未来架构变化），host 半
+  // 自动回落到自身状态机，行为与现在一致、无回归。
+  globalThis[Symbol.for('dsh-my-go.snapshot')] = () => latestSnapshot
 
   // ── per-agent persona + orchestration sections ───────────────────────────
   // Sub-agents inherit the preset's scope, so they DO see these sections.
@@ -445,7 +495,7 @@ export async function apply(ctx, config = {}) {
       if (state.promoted) return assembled
 
       // Phase 1: filter to persona section only + bootstrap tools
-      const BOOTSTRAP_TOOLS = new Set(['bash', 'pwsh', 'read_file', 'write_file', 'edit_file', 'str_replace_editor'])
+      const BOOTSTRAP_TOOLS = new Set(['bash', 'pwsh', 'read', 'write', 'edit', 'glob', 'grep'])
       return {
         ...assembled,
         sections: Array.isArray(assembled.sections)
@@ -460,6 +510,21 @@ export async function apply(ctx, config = {}) {
   })
 
   // ── internal go_work implementation (shared by the tool, forward, queue) ─
+  // 队列推进：取出队首并派发；派发失败时回补队首——任务不蒸发、队列不停摆，
+  // 失败原因进日志与控制台，Sisyphus 可通过 orchestration_status 看到它仍在排队。
+  function advanceQueue(parentHint) {
+    if (orchestration.isBusy()) return
+    const work = orchestration.dequeue()
+    if (!work) return
+    const agents = ctx.get('agents')
+    const parentAgent = (work.parentId && agents ? agents.get(work.parentId) : undefined) ?? parentHint
+    void dispatchWork(work.agentType, work.prompt, parentAgent, undefined).catch((error) => {
+      orchestration.requeueHead(work)
+      bump()
+      console.error('[dsh-my-go] queued dispatch failed, task requeued:', error)
+    })
+  }
+
   async function dispatchWork(agentType, prompt, parent, signal) {
     if (!AGENT_TYPES.includes(agentType)) throw new Error(`unknown agent type: ${String(agentType)}`)
     const binding = bindings[agentType] ?? {}
@@ -524,6 +589,8 @@ export async function apply(ctx, config = {}) {
     } catch (error) {
       orchestration.abort(placeholder.childId)
       bump()
+      // 槽位已腾出：立即推进队首，避免后续排队任务永久等待
+      advanceQueue(parent)
       throw new Error(`go_work failed: ${String(error)}`)
     }
   }
@@ -537,6 +604,7 @@ export async function apply(ctx, config = {}) {
       ...AGENT_TYPES.map((t) => `- ${t}: ${describeAgent(t)}`),
       'Single-line blocking: if a sub-agent is already running, this task is queued and starts when the current one finishes.',
       'The result contains a childId you keep for later continue/forward operations.',
+      'If the task was queued (queued=true), the returned id is a queue placeholder (work-*), NOT a childId — once dispatched, find the real childId via orchestration_status.',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -603,17 +671,33 @@ export async function apply(ctx, config = {}) {
       if (!parent) throw new Error('continue requires a calling agent (exec.agent was undefined)')
       if (!canOrchestrate(parent)) throw new Error('continue is reserved for orchestrator sessions (agents without parentSession)')
       const record = orchestration.record(args.id)
-      if (!record) throw new Error(`unknown sub-agent id: ${String(args.id)}`)
+      if (!record) {
+        const queued = orchestration.snapshot().queue.find((w) => w.id === args.id)
+        if (queued) {
+          throw new Error(`task ${String(args.id)} (${queued.agentType}) is still queued — wait for dispatch, then use its real childId (see orchestration_status)`)
+        }
+        throw new Error(`unknown sub-agent id: ${String(args.id)}`)
+      }
+      const isFinished = !orchestration.currentMap.has(record.childId)
+      if (isFinished && orchestration.isBusy()) {
+        throw new Error('another sub-agent is currently running; wait for it to finish before reviving a completed sub-agent (single-line blocking)')
+      }
+      // 先投递，成功后再落账：投递失败不会留下假 running、也不会弄丢求助单
+      const messageId = await ctx.subagents.followup(parent, record.childId, [{ type: 'text', text: args.prompt }], {
+        source: { kind: 'coordinator', form: 'relay', senderSessionId: parent.id },
+        signal: exec?.signal,
+      })
       if (record.status === 'waiting') {
         for (const help of orchestration.snapshot().helpRequests) {
           if (help.childId === record.childId) orchestration.resolveHelp(help.id)
         }
         orchestration.resume(record.childId)
+      } else if (isFinished) {
+        // 驳回/追问一个已结束的子智能体：重新入册并恢复类型登记，
+        // 否则它游离在单线阻塞之外，且再次结束时结论会被静默丢弃
+        orchestration.revive(record.childId)
+        sessionTypes.set(record.childId, record.agentType)
       }
-      const messageId = await ctx.subagents.followup(parent, record.childId, [{ type: 'text', text: args.prompt }], {
-        source: { kind: 'coordinator', form: 'relay', senderSessionId: parent.id },
-        signal: exec?.signal,
-      })
       orchestration.followupPrompt(record.childId, args.prompt)
       bump()
       return { accepted: true, messageId }
@@ -714,19 +798,31 @@ export async function apply(ctx, config = {}) {
       if (!help) throw new Error(`unknown help request id: ${String(args.from)}`)
       const prompt = help.content
       const target = String(args.target)
-      orchestration.resolveHelp(help.id)
       if (AGENT_TYPES.includes(target)) {
         // Dispatch a new sub-agent of that type.
         const result = await dispatchWork(target, prompt, parent, exec?.signal)
+        orchestration.resolveHelp(help.id) // 投递成功后才销账，失败则求助单保留
         bump()
         return { kind: 'go_work', targetId: String(result?.childId ?? ''), resolved: true }
+      }
+      const record = orchestration.record(target)
+      if (!record) throw new Error(`unknown sub-agent id: ${target}`)
+      const isFinished = !orchestration.currentMap.has(target)
+      if (isFinished && orchestration.isBusy()) {
+        throw new Error('another sub-agent is currently running; wait for it to finish before forwarding to a completed sub-agent (single-line blocking)')
       }
       const messageId = await ctx.subagents.followup(parent, target, [{ type: 'text', text: prompt }], {
         source: { kind: 'coordinator', form: 'relay', senderSessionId: parent.id },
         signal: exec?.signal,
       })
       orchestration.followupPrompt(target, prompt)
-      orchestration.resume(target)
+      if (record.status === 'waiting') {
+        orchestration.resume(target)
+      } else if (isFinished) {
+        orchestration.revive(target)
+        sessionTypes.set(target, record.agentType)
+      }
+      orchestration.resolveHelp(help.id)
       bump()
       return { kind: 'continue', targetId: messageId, resolved: true }
     },
@@ -808,11 +904,49 @@ export async function apply(ctx, config = {}) {
   // DSV4P0813 phase-1 过滤（system prompt section 层）正交，互不冲突。
   ctx.on('agent/created', ({ agent }) => {
     if (!agent) return
-    if (isSubAgent(agent)) return // 子智能体保留 skill，跳过
     try {
+      if (isSubAgent(agent)) {
+        // 星型拓扑闸（子智能体）：在工具目录层摘除原生派生工具
+        // （subagent/subagent_fork/workflow/ralph），防止绕过 Sisyphus 私自
+        // 派生孙代；同时摘除编排工具 go_work/continue/forward（它们本有
+        // canOrchestrate 运行时守卫，此处为目录层双保险）。
+        // need_help / orchestration_status / list_subagents 保留。
+        agent.ctx.tools.restrict({
+          deny: ['subagent', 'subagent_fork', 'workflow', 'ralph', 'go_work', 'continue', 'forward'],
+        })
+        return
+      }
+      // Sisyphus 主会话：隐藏 skill 工具
       agent.ctx.tools.restrict({ deny: ['skill'] })
     } catch (e) {
-      // agent.ctx 尚未 ready 或 skill 工具名未注册时兜底，不阻断流程
+      // agent.ctx 尚未 ready 或工具名未注册时兜底，不阻断流程
+    }
+  })
+
+  // ── 生命周期清理：会话/代理销毁时回收编排状态，防止跨会话泄漏 ──────────
+  ctx.on('agent/disposed', ({ agent }) => {
+    const id = agent?.id
+    if (!id) return
+    const tracked = sessionTypes.delete(id)
+    if (orchestration.currentMap.has(id)) {
+      // 子代理被销毁但错过了 subagent/end：兜底清槽，否则队列永久冻结
+      orchestration.clearHelpFor(id)
+      orchestration.abort(id)
+      bump()
+      advanceQueue()
+    } else if (tracked) {
+      bump()
+    }
+  })
+
+  ctx.on('session/disposed', (session) => {
+    const id = session?.id
+    if (!id) return
+    if (id === lastOrchestratorSessionId) {
+      // Sisyphus 主会话被删除：丢弃其排队任务，避免悬挂到永远不会来的父会话
+      lastOrchestratorSessionId = null
+      orchestration.dropQueuedFor(id)
+      bump()
     }
   })
 
@@ -859,7 +993,9 @@ export async function apply(ctx, config = {}) {
           for (const m of list) set.add(m.id)
         }
       } catch { /* provider may not support listing */ }
-      modelCache.set(key, set)
+      // 只缓存非空结果：瞬时失败/空列表不永久缓存（负缓存会让模型绑定
+      // 在本进程生命周期内静默失效），留待下次请求重试
+      if (set.size > 0) modelCache.set(key, set)
     }
     return set.has(String(model))
   }
@@ -898,8 +1034,17 @@ export async function apply(ctx, config = {}) {
   // ── conclusion injection + queue advancement on subagent/end ────────────
   ctx.on('subagent/end', (info) => {
     const childId = info?.id
-    const type = sessionTypes.get(childId)
-    if (type === undefined) return
+    let type = sessionTypes.get(childId)
+    if (type === undefined) {
+      // 竞态兜底：快速失败的子会话可能在 startContinuable resolve 之前就触发
+      // subagent/end（此时 sessionTypes 尚未登记）。单线阻塞下至多存在一条
+      // spawning 记录，可安全归因到它，否则会永久卡在 spawning/running 冻结队列。
+      const spawning = [...orchestration.currentMap.values()].find((r) => r.status === 'spawning')
+      if (!spawning) return
+      type = spawning.agentType
+      orchestration.bindChild(spawning.childId, childId)
+      console.warn('[dsh-my-go] subagent/end arrived before spawn resolved; attributed to spawning record', childId)
+    }
     const blocks = info?.lastAssistantMessage ?? []
     const text = blocks
       .filter((block) => block?.type === 'text' && typeof block.text === 'string')
@@ -910,15 +1055,6 @@ export async function apply(ctx, config = {}) {
     sessionTypes.delete(childId)
     bump()
     // Advance queue.
-    if (orchestration.snapshot().queue.length > 0 && !orchestration.isBusy()) {
-      const work = orchestration.dequeue()
-      if (work) {
-        // Resolve the recorded parent agent (the Sisyphus session) and
-        // dispatch the next queued work through the same internal path.
-        const agents = ctx.get('agents')
-        const parentAgent = work.parentId && agents ? agents.get(work.parentId) : undefined
-        void dispatchWork(work.agentType, work.prompt, parentAgent, undefined).catch(() => undefined)
-      }
-    }
+    advanceQueue()
   })
 }

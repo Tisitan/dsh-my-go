@@ -60,11 +60,13 @@ interface OrchestrationState {
 
 - `go_work` 在已有运行子智能体时进入队列，返回排队提示；子智能体结束
   （`subagent/end`）后自动启动队首。
-- `need_help` 挂起当前子智能体（通过 `interrupt` + 状态标记 waiting），
-  记录 helpRequestId 注入 Sisyphus。其中 `intent=execute` 用于子智能体被沙箱/权限拒绝时，
+- `need_help` 挂起当前子智能体（状态机标记 waiting + 工具描述约定「调用后停止」；
+  注意：当前为台账层挂起，无强制 interrupt，子智能体若在返回后继续行动靠
+  prompt 约束兜底），记录 helpRequestId 注入 Sisyphus。其中 `intent=execute` 用于子智能体被沙箱/权限拒绝时，
   将待执行的具体指令发给 Sisyphus 代为执行。`intent=ask_user` 用于子智能体需要向用户
   提问澄清需求时，将问题清单发给 Sisyphus 代为转达给用户，拿到答案后续回请求者。
-- `continue` 唤醒挂起/已结束的子智能体（`followup`）。
+- `continue` 唤醒挂起/已结束的子智能体（`followup`）；对已结束的子智能体会
+  重新入册（revive 回 currentMap + 恢复类型登记），保持单线阻塞与结论回收。
 
 ### 2.2 模型与 effort 绑定
 
@@ -77,8 +79,9 @@ interface OrchestrationState {
   `reasoningEffort`（以及兜底 provider/model）。类型识别通过会话 label
   前缀约定：`dsh-my-go:<agentType>`。
 
-> ⚠️ effort 档位需按适配器能力表映射（deepseek-official 仅 off/high/max，
-> `low` 会报错）。broker 提供映射：low→high 兼容。
+> ⚠️ effort 档位跟随 DSH 模型目录：仅在目标模型实际支持所配档位时才设置；
+> 不支持或能力未知时**不设置**（走适配器默认），拒绝硬映射/钳位
+> （如 deepseek-official 仅 off/high/max，配 `low` 则留空而不是改成 high）。
 
 ### 2.3 DSV4P0813 补丁（参考 tmp/liangshen）
 
@@ -87,8 +90,9 @@ DSV4P0813 需要「两阶段锚定」上下文注入流程才能发挥全部能�
 - **Phase 1（未锚定）**：子智能体只见最小工具集 + 单行 persona +
   白名单消息源（user/goal），锚定 minimal 推理轨迹（首块含 `we` 且无
   `let me`）。
-- **晋升**：首块锚定后放开完整工具目录与全部 prompt section；
-  compaction 后回落受控阶段。
+- **晋升**：首块锚定后放开完整工具目录与全部 prompt section。
+  （注：「compaction 后回落受控阶段」尚未实现——晋升状态目前一经提升
+  不回落。）
 
 broker 为每个智能体提供 `dsv4p0813: boolean` 开关。开启时给该子智能体
 注入阶段化引导（复用 liangshen 的 tool-bootstrap 语义，按子智能体类型
@@ -96,8 +100,9 @@ broker 为每个智能体提供 `dsv4p0813: boolean` 开关。开启时给该子
 
 ## 3. UI 适配
 
-- **details 右侧详情栏**：树状图显示子 Agent 运行情况（current / waiting /
-  queue / done），点击节点可跳转子会话。
+- **overlay 树状图面板**：`shell.overlay` 浮层显示子 Agent 运行情况
+  （current / queue / help / history），由侧栏底部 🧭 按钮开关，
+  点击节点可跳转子会话（经 host 半的 connection.rpc 快照桥轮询）。
 - **自动跳转**：子智能体运行时，client 通过 `sessions.openSubagent({
   parentSessionId, childSessionId, mode: 'continuable' })` 自动跳转到子会话，
   展示其上下文；子智能体结束（`subagent/end`）后跳回 Sisyphus 父会话。

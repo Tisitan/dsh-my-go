@@ -1,6 +1,6 @@
 {
   "name": "dsh-my-go",
-  "version": "0.2.3",
+  "version": "0.2.3-tisitan.1",
   "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 7 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
   "author": "daizihan233",
   "license": "MIT",
@@ -27,7 +27,7 @@
     "build": "bun run build:client",
     "build:client": "node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/apply.mjs"
+    "test": "node test/apply.mjs && node --test test/orchestration.test.mjs test/bridge.test.mjs"
   },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

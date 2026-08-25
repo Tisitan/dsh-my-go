@@ -72,16 +72,15 @@ export function apply(ctx) {
   }
 
   function TreePanel(_props) {
-    const [open, setOpen] = React.useState(panelOpen)
     const [, force] = React.useState(0)
 
     React.useEffect(() => {
-      const unsub = () => listeners.delete(force)
-      listeners.add(force)
-      return unsub
+      const rerender = () => force((c) => c + 1)
+      listeners.add(rerender)
+      return () => listeners.delete(rerender)
     }, [])
 
-    if (!open) return null
+    if (!panelOpen) return null
     const s = snapshot
 
     const node = (label, status, childId, onClick) =>
@@ -120,7 +119,7 @@ export function apply(ctx) {
     },
       React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 8 } },
         React.createElement('strong', null, 'Sisyphus 编排'),
-        React.createElement('button', { onClick: () => setOpen(false) }, '×'),
+        React.createElement('button', { onClick: () => { panelOpen = false; emit() } }, '×'),
       ),
 
       React.createElement('div', { style: { marginBottom: 8 } },
@@ -190,9 +189,10 @@ export function apply(ctx) {
       // Load settings via host RPC (DSH SettingsScope doesn't support nested reads)
       if (connection && connection.rpc && typeof connection.rpc.call === 'function') {
         connection.rpc.call('/dsh-my-go', 'loadSettings', {}).then((res) => {
-          if (res && res.ok && res.value) setDraft(res.value)
-          else setDraft({})
-        }).catch(() => setDraft({}))
+          // 加载失败保持 draft=null 并禁用保存：空 draft 保存会清空全部配置
+          if (res && res.ok) setDraft(res.value ?? {})
+          else setDraft(null)
+        }).catch(() => setDraft(null))
         connection.rpc.call('/dsh-my-go', 'listModels', {}).then((res) => {
           if (res && res.ok && res.value && Array.isArray(res.value.providers)) setAvailable(res.value)
         }).catch(() => {})
@@ -218,6 +218,7 @@ export function apply(ctx) {
 
     // Manual save only — auto-save risks infinite loops with settings/updated events
     const save = async () => {
+      if (!draft) { setMsg('配置尚未加载成功，已禁止保存以避免覆盖'); return }
       setSaving(true); setMsg(null)
       try {
         if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') {
@@ -298,7 +299,7 @@ export function apply(ctx) {
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 } },
         React.createElement('button', {
           onClick: save,
-          disabled: saving,
+          disabled: saving || !draft,
           style: { padding: '6px 20px', borderRadius: 6, border: '1px solid var(--separator, #333)', background: 'transparent', color: 'var(--text, #e0e0e0)', cursor: saving ? 'wait' : 'pointer', fontSize: 13 },
         }, saving ? '保存中…' : '立即保存'),
         msg ? React.createElement('span', { style: { fontSize: 13, color: msg.startsWith('已') ? '#4caf50' : '#f44336' } }, msg) : null,
