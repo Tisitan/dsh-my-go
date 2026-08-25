@@ -3,6 +3,16 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.3] - 2026-08-25
+
+### 修正（安装前自查发现）
+
+- **摘除 lib 的 `agent/created` 钩子**：tisitan.1 镜像拓扑闸时误给 lib（global
+  层插件）也挂了 skill 隐藏/拓扑闸钩子——该事件在 global 层会收到 profile 内
+  **所有**会话（含非 MyGO 会话），装上去会拔掉其他 preset 会话的 skill 工具。
+  钩子只应作用于 MyGO preset 会话，由 preset 作用域的 broker.mjs 独占负责
+  （standing scope listener 只接收 join 它的 agent 的事件）。lib 恢复上游行为。
+
 ## [0.2.3-tisitan.2] - 2026-08-25
 
 在 tisitan.1 基础上的稳步升级批（全部经测试验证；评估后不安全的改动仅文档化）。
