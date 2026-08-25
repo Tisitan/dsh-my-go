@@ -4,6 +4,9 @@
 > 与运行时代码存在已知偏差（仍使用 `globalThis.harness.handle` 桥、
 > 缺少 settings/RPC/list_subagents/followupPrompt/canOrchestrate、
 > go_work/continue/forward 无鉴权、resume-before-followup 时序病等）。
+> 另注：`src/host/model-binding.ts` 的 `DEFAULT_BINDINGS` 仍保留上游作者的
+> 环境私货值（仅作历史快照）；tisitan.7 起运行时默认值已泛化为空绑定，
+> 以 `preset/tools/broker.mjs` / `lib/index.js` 的 `defaultBindings()` 为准。
 
 **实际运行代码请以外面两份为准**：
 

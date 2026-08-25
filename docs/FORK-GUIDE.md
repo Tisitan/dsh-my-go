@@ -45,7 +45,7 @@
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.2.3-tisitan.4；test = 冒烟 + 单测
+├── package.json              # 包声明；版本 0.2.3-tisitan.7；test = 冒烟 + 单测
 ├── cordis.patch.yml          # bundle patch：dsh plugin add 后自动把 lib 挂进 profile（global 层）
 ├── CHANGELOG.md              # fork 修复台账（相对上游的全部差异）
 ├── README.md                 # 项目说明（含 fork 标识段）
@@ -57,7 +57,8 @@ dsh-my-go/
 ├── preset/                   # agent preset「MyGO!!!!! 模式」（被同步到 ~/.dsh/.agent-presets/）
 │   ├── preset.yml            #   preset 元信息（名称/排序）
 │   ├── agent.cordis.yml      #   agent 平面组合：DSH 官方工具行 + 本地 broker 行 + tool-mask 行
-│   ├── tool-mask.mjs         #   工具屏蔽（nova 配方同步）：藏 Rei 记忆工具 + OpenCode 桥 ×7
+│   ├── tool-mask.mjs         #   工具屏蔽：按清单藏环境特定工具（默认 7 个示例，
+│   │                         #     可用 agent.cordis.yml 行的 config.deny 覆盖）
 │   └── tools/
 │       └── broker.mjs        #   【agent 半 · 编排真源】状态机 + 6 工具 + prompt 注入
 │                             #     + 模型绑定 + 拓扑闸 + 快照桥发布（★ 大部分修复在这里）
@@ -71,7 +72,7 @@ dsh-my-go/
 │   ├── looker.md             #   多模态识别
 │   ├── hephaestus.md         #   代码编写
 │   ├── prometheus.md         #   需求规划（流程开始一次）
-│   └── oracle.md             #   疑难/终验兜底
+│   └── oracle.md             #   疑难/极端复杂兜底
 │
 ├── src/
 │   └── client.js             # 【client 半源码】面板/设置页/自动跳转（React.createElement 手写）
@@ -81,8 +82,9 @@ dsh-my-go/
 │
 ├── test/
 │   ├── apply.mjs             # 冒烟：模块可加载 + client 可解析 + dist 存在
-│   ├── orchestration.test.mjs# 状态机 12 单测（占位占锁/revive/requeue/幽灵求助/上限…）
-│   └── bridge.test.mjs       # 快照桥 2 集成测试（Symbol.for 发布/读取）
+│   ├── orchestration.test.mjs# 状态机 14 单测（占位占锁/revive/requeue/幽灵求助/上限…）
+│   └── bridge.test.mjs       # apply 级集成 9 例（快照桥/队列重试/disposed 竞态/
+│                             #   派发模型绑定/settings 重基线）
 │
 ├── broker/                   # ⚠️ 归档的 TS 参考实现（见 broker/README.md），不参与构建运行
 ├── docs/
@@ -122,7 +124,7 @@ dsh-my-go/
 | 功能 | 实现位置 | 原理 |
 |---|---|---|
 | 编排权限 | `broker.mjs` `canOrchestrate()` | go_work/continue/forward 仅「无 parentSession 的会话」可调（工具层强制，不靠 prompt 自觉）；need_help 仅被跟踪的子代理可调 |
-| 星型拓扑闸（fork 新增） | `broker.mjs` + `lib/index.js` `agent/created` | 子代理在工具目录层被摘除 `subagent/subagent_fork/workflow/ralph/go_work/continue/forward`——无法私自派生孙代，也无法直接调度（与运行时守卫双保险） |
+| 星型拓扑闸（fork 新增） | `broker.mjs` `agent/created`（tisitan.3 起 lib 不再挂钩——global 层会误伤非 MyGO 会话） | 子代理在工具目录层被摘除 `subagent/subagent_fork/workflow/ralph/go_work/continue/forward`——无法私自派生孙代，也无法直接调度（与运行时守卫双保险） |
 | 沙箱外执行通道 | need_help `intent=execute` | 子代理把被拒命令发给 Sisyphus 代执行。注意：这是设计的权限提升通道，缓解靠 Sisyphus 的质检 prompt |
 
 ### UI 与配置
@@ -141,8 +143,8 @@ dsh-my-go/
 | 层 | 文件 | 覆盖 |
 |---|---|---|
 | 冒烟 | `test/apply.mjs` | 模块加载/导出面/client 语法/dist 存在 |
-| 单测 | `test/orchestration.test.mjs` | 状态机 12 例：占锁原子性、bindChild、finish 清求助、suspend/resume、revive、requeueHead、dropQueuedFor、history 200 上限、record/followupPrompt |
-| 集成 | `test/bridge.test.mjs` | mock cordis ctx 跑 `broker.apply()`，验证 Symbol.for 快照访问器发布且为实时 getter |
+| 单测 | `test/orchestration.test.mjs` | 状态机 14 例：占锁原子性、bindChild（含缺位告警）、finish 清求助、suspend/resume、revive、requeueHead、dropQueuedFor、dropQueuedFailed、history 200 上限、record/followupPrompt |
+| 集成 | `test/bridge.test.mjs` | mock cordis ctx 跑 `broker.apply()` 共 9 例：Symbol.for 快照桥 ×2、队列回补重试/超上限放弃/disposed 竞态 ×4（tisitan.6）、dispatchWork 模型绑定解析 ×2、settings 重基线 ×1（tisitan.7） |
 
 ## 四、fork 与上游的关系
 
@@ -157,3 +159,34 @@ dsh-my-go/
 | need_help 改真 interrupt 硬挂起 | **暂缓** | `ctx.subagents.interrupt(childId, { kind: 'ancestor', agent: parentAgent })` API 存在（dsh-subagent/lib/types/continuation.d.ts:232），但中断时机（reportFrom 送达前杀回合会丢求助单）、恢复后模型如何感知被取消的 tool call，均需运行时实测验证。当前软挂起下：乱跑的子代理无法破坏队列（单线由状态机强制），仅浪费自身 token，残余风险可接受 |
 | isolate 服务 + `agentPresets.serviceFor` 官方桥 | **暂缓** | 需把 broker 拆成 isolate realm 服务行 + root 消费行（mount 审计强制 preset 服务入 isolate，而 broker 的 systemPrompt.section 必须留在 agent scope），重构面大且挂载行为无法离线验证。当前 Symbol.for 桥在拉取路径上功能等价（同进程、零副本、实时读） |
 | projection 推流替代 600ms 轮询 | **未来方向** | `session.append('mygo/state', 全量快照)` + `sessionProjections.register` + client `useProjection`（dsh-goal 官方范式），可解锁推流与冷会话回放。需 session 级事件写入，等运行时环境验证后实施 |
+
+## 六、已知陷阱 / 限制
+
+- **合并语义无法表达「完全不指定模型」**：settings 合并把空串/缺省视为
+  「未设置」并回落基线（`baseBindings` = 默认值 + 插件 config）。若
+  `config.bindings` 给某工种配了模型，在 WebUI 清空该字段只会回落到
+  config 值，无法回到「不指定」；要彻底不指定，需同时摘掉 config 里的绑定。
+- **`bindSisyphus: true` 是全局副作用**：`agent/request` waterfall 会对
+  「未登记工种的会话」套用 sisyphus 绑定——lib 半注册在 global 层，开启后
+  连非 MyGO 会话的主模型也会被覆盖。默认关闭，勿轻开。
+- **默认绑定已清空（tisitan.7 起）**：`defaultBindings()` 七工种均为 `{}`，
+  不内置任何模型/渠道名，子代理完全继承环境默认路由。需要按工种分流
+  必须自行配置（WebUI 设置页「MyGO 编排」或 `~/.dsh/settings.yaml`，
+  示例见 README「工种模型绑定」），否则所有子代理与 Sisyphus 同路由。
+- **tool-mask 默认清单只是示例**：`preset/tool-mask.mjs` 的 `DEFAULT_DENY`
+  里的 7 个 `mcp__vcp__*` 工具名来自特定部署；你的环境大概率没有这些
+  工具（按名跳过、仅 warn）。按需在 `agent.cordis.yml` 的 tool-mask 行
+  用 `config.deny` 覆盖成你自己的清单。
+- **双通知（reported + settled）是机制性重复，不可抑制**：子代理完工时
+  父会话会收到两条通知——子代理自己的 `reportFrom`（reported）与
+  dsh-subagent 的 `notifySettlement`（settled）。两者都是 harness 硬编码
+  模板（dsh-subagent/lib/index.js 的 `deliverReport` / `notifySettlement`），
+  插件层无法抑制或改写，只能并存。tisitan.8 的补充通知（队列上岗映射 /
+  失败附因）因此走自己的 `plugin/notice` inject 通道，不去碰 harness 模板。
+- **harness 通知层丢失 error.message**：`subagent/end` 载荷的
+  `stopReason` 只有 kind（completed/error/...），不带 error 字段；完整的
+  `error.message` / `code` 只存在于子会话档案的 `turn/end` 事件
+  `reason.error` 里。broker 的兜底路径是经 `sessions` 服务 API
+  （`sessions.get(childId).events`）倒序读最后一条 `turn/end`——不要手解
+  `session.jsonl.zstd` 多帧；读档失败（子会话已退出 live store）静默退回
+  无附因。

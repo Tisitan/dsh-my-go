@@ -5,7 +5,7 @@
 #   1. First publish manually once to claim the package name:
 #        npm login && npm publish --access public
 #   2. On npmjs.com, open the package → Access → Trusted Publishing →
-#      add provider "GitHub Actions" for repo daizihan233/dsh-my-go.
+#      add provider "GitHub Actions" for your fork repo (<owner>/dsh-my-go).
 #   3. From then on, tag and push to publish automatically:
 #        git tag v0.1.0 && git push origin v0.1.0
 #
@@ -41,7 +41,9 @@ jobs:
           node-version: lts/*
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # No lockfile is committed (.gitignore), so --frozen-lockfile would
+        # fail on a fresh clone; resolve floating versions instead.
+        run: bun install
 
       - name: Typecheck
         run: bunx tsc --noEmit

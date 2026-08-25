@@ -14,20 +14,21 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
                      │
               ┌──────▼──────┐
               │  Sisyphus    │  调度 + 审查 + 驳回（主会话，用户所选模型）
-              │  (deepseek-  │
-              │   v4-flash)  │
+              │  (用户所选)  │
               └──────┬──────┘
      ┌───────────┬───┼───┬───────────┬───────────┐
      ▼           ▼       ▼           ▼           ▼
   Hermes      Explore  Librarian  Looker      Hephaestus
-  (mimo-v2.5) (mimo-   (mimo-     (mimo-      (deepseek-
-   default     v2.5)    v2.5)      v2.5)       v4-flash/high)
+  (轻量模型)  (轻量模型) (轻量模型)  (轻量模型)   (中等模型/high)
      ▲           ▲       ▲           ▲           ▲
      │           │       │           │           │
      └───────────┴───┬───┴───────────┴───────────┘
                     Oracle        Prometheus
-                    (deepseek-v4-pro/max)   (deepseek-v4-pro/max, 仅流程开始一次)
+                    (强模型/max)   (强模型/max, 仅流程开始一次)
 ```
+
+> 图中模型仅为能力档位建议；插件不内置任何默认模型（tisitan.7 起默认
+> 空绑定，全部继承环境路由），具体模型由使用者在设置中按工种配置。
 
 - **所有子智能体（叶子）不直接通信**，必须经由 Sisyphus 中转。
 - **执行模式**：单线阻塞，同一时段只能有一个子智能体运行。
@@ -67,6 +68,17 @@ interface OrchestrationState {
   提问澄清需求时，将问题清单发给 Sisyphus 代为转达给用户，拿到答案后续回请求者。
 - `continue` 唤醒挂起/已结束的子智能体（`followup`）；对已结束的子智能体会
   重新入册（revive 回 currentMap + 恢复类型登记），保持单线阻塞与结论回收。
+- **台账持久化（tisitan.8）**：history（done/failed，上限 200 条）防抖落盘
+  `<DSH_HOME>/dsh-my-go/orchestration-ledger.json`，插件加载时读回——进程
+  重启后 `continue` 已完工 childId 仍能命中台账（revive → harness coldResume
+  续聊），而不是报 unknown sub-agent id。
+- **父会话补充通知（tisitan.8）**：harness 的双通知（reported/settled）是
+  dsh-subagent 硬编码模板，插件不可抑制/改写；broker 经公开 API
+  `parent.inject`（非唤醒）自行注入两条低频高价值短通知——队列上岗映射
+  （`work-* → childId`）与失败附因。失败附因来源：`subagent/end` 载荷无
+  error 字段，broker 经 `sessions` 服务读子会话最后一条 `turn/end` 的
+  `reason.error` 兜底（读档失败静默退回无附因），同一原因同时追加进
+  history 结论尾部。
 
 ### 2.2 模型与 effort 绑定
 
@@ -74,57 +86,68 @@ interface OrchestrationState {
 `reasoningEffort` / `dsv4p0813`（DSV4P0813 补丁开关）。
 
 - **创建时**：`SubagentStartRequest.agentOptions = { provider, model }` 直接
-  指定模型；`persona` 用该类型的 prompt 覆盖。
+  指定模型（`provider` 缺省时继承父会话渠道；`model` 先经 `modelExists()`
+  用 `llm.listModels` 校验真实存在才应用，且只缓存非空查询结果——瞬时
+  失败不留负缓存）；`persona` 用该类型的 prompt 覆盖。
 - **请求时**：`agent/request` waterfall 拦截，按 agent 类型覆盖
-  `reasoningEffort`（以及兜底 provider/model）。类型识别通过会话 label
-  前缀约定：`dsh-my-go:<agentType>`。
+  `reasoningEffort`（以及兜底 provider/model）。类型识别以 broker 的
+  `sessionTypes` 注册表为准：spawn 成功时登记 `childId → 工种`，
+  `agent/disposed` 时移入有界墓碑表（防 disposed 先于 `subagent/end`
+  的竞态串号），`subagent/end` 消费后清除。会话 label 前缀约定
+  `dsh-my-go:<agentType>` 仅用于 DSV4P0813 的 assemble 过滤识别。
 
 > ⚠️ effort 档位跟随 DSH 模型目录：仅在目标模型实际支持所配档位时才设置；
 > 不支持或能力未知时**不设置**（走适配器默认），拒绝硬映射/钳位
 > （如 deepseek-official 仅 off/high/max，配 `low` 则留空而不是改成 high）。
 
-### 2.3 DSV4P0813 补丁（参考 tmp/liangshen）
+### 2.3 DSV4P0813 补丁（两阶段引导）
 
-DSV4P0813 需要「两阶段锚定」上下文注入流程才能发挥全部能力：
+DSV4P0813 需要两阶段上下文注入流程才能发挥全部能力。实现现状：
 
-- **Phase 1（未锚定）**：子智能体只见最小工具集 + 单行 persona +
-  白名单消息源（user/goal），锚定 minimal 推理轨迹（首块含 `we` 且无
-  `let me`）。
-- **晋升**：首块锚定后放开完整工具目录与全部 prompt section。
+- **Phase 1（未晋升）**：`system-prompt/assemble` 钩子过滤装配结果——
+  只保留 persona section + 引导工具白名单
+  （`bash/pwsh/read/write/edit/glob/grep`），清空 runtime contexts。
+- **晋升**：监听 `session/event`，首次 `tool/call` 或首次 `turn/end`
+  （模型产生首轮响应）即晋升，放开完整工具目录与全部 prompt section。
+  **无锚定文本检测**（不检查模型输出内容）。
   （注：「compaction 后回落受控阶段」尚未实现——晋升状态目前一经提升
   不回落。）
 
-broker 为每个智能体提供 `dsv4p0813: boolean` 开关。开启时给该子智能体
-注入阶段化引导（复用 liangshen 的 tool-bootstrap 语义，按子智能体类型
-配置工具白名单）。Sisyphus 本身不启用（它是调度者）。
+broker 为每个智能体提供 `dsv4p0813: boolean` 开关（默认关闭）。
+Sisyphus 本身不启用（它是调度者）。
 
 ## 3. UI 适配
 
 - **overlay 树状图面板**：`shell.overlay` 浮层显示子 Agent 运行情况
   （current / queue / help / history），由侧栏底部 🧭 按钮开关，
   点击节点可跳转子会话（经 host 半的 connection.rpc 快照桥轮询）。
+  队列节点渲染 work-id 占位；快照桥未就绪时显示「编排桥未就绪」提示态
+  而非静默空白（tisitan.8）。
 - **自动跳转**：子智能体运行时，client 通过 `sessions.openSubagent({
   parentSessionId, childSessionId, mode: 'continuable' })` 自动跳转到子会话，
   展示其上下文；子智能体结束（`subagent/end`）后跳回 Sisyphus 父会话。
   中间保持 DSH 原生会话视图，不自建上下文面板。
-- **settings.section**：broker 注册「dsh-my-go 编排」设置页，配置每个
-  智能体的 provider / model / reasoningEffort / dsv4p0813。
+- **设置页**：client 半（`src/client.js`）注册「MyGO 编排」设置页 UI；
+  settings 命名空间 `dsh-my-go` 由 host 半（`lib/index.js`）注册，
+  broker 半只读取，配置每个智能体的 provider / model /
+  reasoningEffort / dsv4p0813。
 
 ## 4. 交付物
 
 | 目录 | 内容 |
 | --- | --- |
-| `preset/` | dsh-my-go agent preset（复制到 `~/.dsh/.agent-presets/dsh-my-go/`） |
-| `broker/` | host+client broker 插件（npm 包，挂到 profile 或动态运行） |
+| `preset/` | dsh-my-go agent preset（由 lib 同步到 `~/.dsh/.agent-presets/dsh-my-go/`） |
+| `broker/` | ⚠️ 归档的 TS 参考实现（见 `broker/README.md`），不参与构建与运行 |
 | `prompts/` | 每个智能体的 persona/prompt 文件 |
 | `docs/` | 本文档 |
 | `README.md` | 项目说明 |
 
-## 5. 安装
+## 5. 安装（npm 插件流程）
 
-1. 复制 `preset/` → `~/.dsh/.agent-presets/dsh-my-go/`（会话预设可选「dsh-my-go」）。
-2. 安装 broker 插件：
-   - 动态：本会话 `cordis_define` + `cordis_run`（开发验证）。
-   - 持久：在 `~/.dsh/profiles/web/package.json` 加依赖，`cordis.patch.yml`
-     `insert` 挂载，重启 `dsh web`。
-3. 新会话选择「dsh-my-go」预设，开始编排。
+1. `dsh plugin --profile web add dsh-my-go@latest --config.minimumReleaseAge=0`
+   ——npm 包自带 `cordis.patch.yml`（`dsh.bundle.patch`），安装后 host
+   插件（`lib/index.js`）自动挂载为 profile 层。
+2. 重启 `dsh web`；lib 的 `ensurePresetInstalled()` 会按版本标记把
+   `preset/` + `prompts/` 同步到 `~/.dsh/.agent-presets/dsh-my-go/`
+   （幂等：同版本不覆盖手工修改）。
+3. 新会话选择「MyGO!!!!! 模式」预设，开始编排。

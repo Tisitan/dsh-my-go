@@ -20,7 +20,9 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # No lockfile is committed (.gitignore), so --frozen-lockfile would
+        # fail on a fresh clone; resolve floating versions instead.
+        run: bun install
 
       - name: Typecheck
         run: bunx tsc --noEmit

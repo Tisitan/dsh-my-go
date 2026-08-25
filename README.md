@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.2.3-tisitan.5",
+  "version": "0.2.3-tisitan.8",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -18,14 +18,14 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 
 它以星型 + 单线嵌套拓扑把 DSH 主会话（Sisyphus）与 7 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。参考了 oh-my-openagent 的编排设计，针对 DSH 进行了优化调整。
 
-开发手记：https://khbit.cn/posts/dsh-my-go/
+上游作者开发手记（原项目背景，非 fork 文档）：https://khbit.cn/posts/dsh-my-go/
 
 ## 特性
 
 - **星型拓扑**：所有子智能体（叶子）不直接通信，全部经 Sisyphus 中转。
 - **单线阻塞**：同一时段只有一个子智能体运行，便于审查，增强可观测性。
-- **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（最后手段：调试 + 终验，仅当其他工种无法胜任时启用）。
-- **按工种绑定模型**：快活小工用轻模型（如 mimo-v2.5），重活用重模型（如 deepseek-v4-pro-0813）。
+- **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（最后手段：疑难/极端复杂问题的架构调试，仅当其他工种无法胜任时启用；验收是 Sisyphus 的质检本职）。
+- **按工种绑定模型**：快活小工配便宜模型，重活配强模型——默认不绑任何模型（继承环境路由），按工种分流见下文「工种模型绑定」。
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
 - **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——**按任务难度分配（不按需求难度）**：指令明确、步骤具体的执行活优先派 Hermes，需要设计/推理的才升级 Hephaestus，仅疑难/极端复杂才到 Oracle；同工种上下文连续则 `continue` 复用。
 - **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
@@ -94,24 +94,72 @@ dsh web   # 启动 Web GUI，新会话选择 MyGO!!!!! 模式
 
 ## 配置
 
-broker 注册 settings 命名空间 `dsh-my-go`（WebUI 设置页「MyGO 编排」）：
+host 半（lib）注册 settings 命名空间 `dsh-my-go`，client 半提供设置页
+（WebUI「MyGO 编排」），broker 半只读取：
 
-| 配置项                          | 默认值   | 说明                                                                    |
-|---------------------------------|----------|-------------------------------------------------------------------------|
-| `agents.<type>.provider`        | 继承父级 | 该工种的 provider 路由                                                  |
-| `agents.<type>.model`           | 见表     | 该工种的模型                                                            |
-| `agents.<type>.reasoningEffort` | 见表     | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
-| `agents.<type>.dsv4p0813`       | false    | 是否对该工种启用 DSV4P0813 两阶段锚定补丁                               |
+| 配置项                          | 默认值         | 说明                                                                    |
+|---------------------------------|----------------|-------------------------------------------------------------------------|
+| `agents.<type>.provider`        | 不指定（继承） | 该工种的 provider 路由；缺省时继承父会话渠道                            |
+| `agents.<type>.model`           | 不指定（继承） | 该工种的模型；缺省时继承父会话模型                                      |
+| `agents.<type>.reasoningEffort` | 不指定         | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
+| `agents.<type>.dsv4p0813`       | false          | 是否对该工种启用 DSV4P0813 两阶段引导补丁                               |
 
-工种模型（建议）：
+### 工种模型绑定
 
-| 工种                         | 模型              | Effort  | 备注         |
-|------------------------------|-------------------|---------|--------------|
-| Sisyphus                     | deepseek-v4-flash | high    | 中等能力模型 |
-| Hermes / Explore / Librarian | mimo-v2.5         | default | 便宜模型     |
-| Looker                       | mimo-v2.5         | default | 多模态模型   |
-| Hephaestus                   | deepseek-v4-flash | high    | 中等能力模型 |
-| Prometheus / Oracle          | deepseek-v4-pro   | max     | 强能力大模型 |
+自 tisitan.7 起，插件**不再内置任何模型名/渠道名**——所有工种默认空绑定，
+子代理完全继承环境默认路由（与 Sisyphus 同渠道同模型）。需要按工种分流
+（快活走便宜模型、重活走强模型）时，在 DSH 设置页「MyGO 编排」逐工种填写，
+或直接编辑 `~/.dsh/settings.yaml`：
+
+```yaml
+dsh-my-go:
+  hermes:
+    model: your-cheap-model        # 高频体力活：便宜快模型
+  explore:
+    model: your-cheap-model
+  librarian:
+    model: your-cheap-model
+  looker:
+    model: your-multimodal-model   # 看图需要多模态能力
+  hephaestus:
+    provider: your-gateway         # provider 缺省 = 继承父会话渠道
+    model: your-mid-model
+    reasoningEffort: high          # 仅当该模型实际支持此档位时应用
+  prometheus:
+    provider: your-gateway
+    model: your-strong-model
+    reasoningEffort: max
+  oracle:
+    provider: your-gateway
+    model: your-strong-model
+    reasoningEffort: max
+```
+
+字段缺省即不覆盖。`model` 在派发前会经 `llm.listModels` 校验真实存在
+才应用（不存在则跳过并回落父会话模型，日志 warn）；`reasoningEffort`
+跟随 DSH 模型目录，模型不支持所配档位时留空走适配器默认。
+
+建议分工：Sisyphus / Hephaestus 用中等能力模型，Hermes / Explore /
+Librarian / Looker 用便宜轻量模型，Prometheus / Oracle 用最强模型。
+
+### 插件 config 键（broker 行为调参）
+
+以下为插件级 config（`dsh plugin add` 的 config / bundle 层），与上面的
+settings 命名空间正交；默认值即旧硬编码口径（tisitan.8 起截断阈值可配）：
+
+| config 键               | 默认值 | 说明                                                                 |
+|-------------------------|--------|----------------------------------------------------------------------|
+| `disposeEndGraceMs`     | 500    | `agent/disposed` 后等待 `subagent/end` 的宽限期，超时兜底清槽推进队列 |
+| `queueRetryBaseMs`      | 1000   | 队列派发失败回补后的线性退避基数（1×/2×/3×，上限 3 次后放弃）         |
+| `statusHistoryLimit`    | 12     | `orchestration_status` 展示的历史条数                                 |
+| `statusConclusionMax`   | 400    | `orchestration_status` 单条结论截断长度（**failed 记录不截断**）      |
+| `helpContentMax`        | 240    | `orchestration_status` 单条求助内容截断长度                           |
+| `subagentPromptMax`     | 200    | `list_subagents` prompt 摘要及会话 label 的 prompt 摘要截断长度       |
+
+编排台账（history，上限 200 条）持久化在
+`<DSH_HOME>/dsh-my-go/orchestration-ledger.json`（`DSH_HOME` 缺省
+`~/.dsh`），进程重启后读回——跨重启 `continue` 已完工子代理经 harness
+coldResume 续聊可用。
 
 ## 智能体 Prompt
 
@@ -126,7 +174,7 @@ broker 注册 settings 命名空间 `dsh-my-go`（WebUI 设置页「MyGO 编排�
 | [prompts/looker.md](prompts/looker.md)         | 多模态识别      |
 | [prompts/hephaestus.md](prompts/hephaestus.md) | 代码编写        |
 | [prompts/prometheus.md](prompts/prometheus.md) | 需求规划        |
-| [prompts/oracle.md](prompts/oracle.md)         | 架构调试 + 终验 |
+| [prompts/oracle.md](prompts/oracle.md)         | 架构调试（疑难兜底）|
 
 ## 目录结构
 
@@ -152,7 +200,7 @@ dsh-my-go/
 ## 贡献
 
 ```bash
-git clone git@github.com:daizihan233/dsh-my-go.git
+git clone git@github.com:Tisitan/dsh-my-go.git
 cd dsh-my-go
 bun install
 bun run build:client    # 构建 client bundle

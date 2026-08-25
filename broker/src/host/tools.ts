@@ -8,8 +8,8 @@
  *
  * Plus `orchestration_status` (read-only snapshot for Sisyphus).
  *
- * Registration follows the custom-tool pattern from tmp/liangshen/custom-bash.mjs:
- * `register({ name, description, parameters, output, execute })`.
+ * Registration follows the DSH custom-tool pattern (reference: internal
+ * experimental presets): `register({ name, description, parameters, output, execute })`.
  * The tools service and subagents service are hard dependencies.
  */
 

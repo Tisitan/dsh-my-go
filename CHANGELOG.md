@@ -3,6 +3,198 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.8] - 2026-08-25
+
+「可观测性」批：补齐编排黑盒的四条观测缝（队列映射、失败附因、截断阈值、
+跨重启台账），`preset/tools/broker.mjs` 与 `lib/index.js` 同构实施。
+
+### 父会话补充通知（经 harness 公开 API `parent.inject`，非唤醒注入）
+
+- **队列上岗映射推送**：`advanceQueue` 派发成功、占位记录 `bindChild` 到
+  真身后，向父会话注入一行短通知
+  （`[dsh-my-go] 队列任务上岗: work-xxx → <childId> (<agentType>)`）——
+  Sisyphus 手里的 `go_work` 返回值只有占位 id，映射关系此前只能靠
+  `orchestration_status` 反查。注入失败静默兜底，绝不阻塞派发。
+- **失败附因推送**：`subagent/end` 的 `stopReason` 为 error 类时，经
+  `sessions` 服务读该子会话最后一条 `turn/end` 的 `reason.error`
+  （harness 通知层载荷丢失 error.message，读档为兜底路径，失败静默退回
+  无附因），向父会话注入
+  `[dsh-my-go] 子代理失败: <childId> (<agentType>): <message> [code]`；
+  同一原因同时追加进 history 记录的 conclusion 尾部
+  （`orchestration_status` 可见完整原因）。`inject` 声明补 `'sessions'`。
+- 双通知（reported + settled）为 dsh-subagent 硬编码模板，插件无法抑制
+  或改写——留档不动，补充通知走自己的 `plugin/notice` 通道。
+
+### 截断可配置（新增 4 个插件 config 键）
+
+- `statusHistoryLimit`（默认 12）：`orchestration_status` 历史条数（原硬编码 5）。
+- `statusConclusionMax`（默认 400）：单条结论截断（原 80）；**failed
+  记录的结论不截断**——错误信息必须完整到达。
+- `helpContentMax`（默认 240）：单条求助内容截断（原 120）。
+- `subagentPromptMax`（默认 200）：`list_subagents` prompt 摘要（原 140）
+  及会话 label / `go_work` 返回 label 的 prompt 摘要（原 60）。
+
+### continue 体验
+
+- 「unknown sub-agent id」报错文案附操作提示（该 id 不在编排台账；进程
+  重启过且台账未覆盖时请用 `go_work` 重派），`continue` / `forward`
+  两处同改。
+- **台账持久化**：history 记录（done/failed，上限与内存 cap 200 对齐）
+  防抖 250ms 落盘为 `<DSH_HOME>/dsh-my-go/orchestration-ledger.json`
+  （沿用 `ensurePresetInstalled` 的 DSH_HOME 惯例，独立插件状态目录，
+  不进 preset 同步目录）；插件加载时读回。任何台账变化经 `onChange`
+  调度落盘，写盘走 Promise 链串行化，热路径零同步阻塞。持久化让跨重启
+  `continue` 经 harness coldResume 可用（继续失败的语义不变）。
+
+### 面板可见性（`src/client.js`，已重建 `dist/client.js`）
+
+- 队列分区节点补渲染 work-id（此前只有工种名，占位 id 不可见）。
+- snapshot RPC 桥未就绪时面板显示「编排桥未就绪」提示态（refresh 全路径
+  标记 `bridgeOk`，仅状态迁移时 emit，600ms 轮询不重复渲染），不再静默空白。
+- 设置页 Oracle 工种标签残留的「疑难兜底·终验 Oracle」改为
+  「疑难/极端复杂兜底 Oracle」（tisitan.7 遗留，与 oracle.md 新口径对齐）。
+
+### 测试与文档
+
+- `test/bridge.test.mjs` 新增 4 例：队列上岗映射通知（mock agents inject
+  通道断言）、error stopReason 附因入 history + 父通知（mock sessions
+  读档）、截断 config 生效且 failed 结论不截断、台账持久化 round-trip
+  （写盘后重载可 revive）。`mockCtxFull` 默认按用例隔离 DSH_HOME 临时
+  目录，防跨用例台账串档。27/27 全绿，`tsc --noEmit` 干净。
+- `docs/FORK-GUIDE.md`「已知陷阱 / 限制」补两条（双通知机制性重复不可
+  抑制；harness 通知层丢失 error.message，broker 读子会话档兜底）；
+  `docs/ARCHITECTURE.md` 同步台账持久化与补充通知机制；README 新增
+  「插件 config 键」小节。
+
+## [0.2.3-tisitan.7] - 2026-08-25
+
+「去私有化 + 泛化完善」批：清除上游作者与使用者个人环境的残留，让 fork
+在任意 DSH 环境开箱可用。
+
+### 去环境私货
+
+- **默认绑定清空**：`defaultBindings()`（`preset/tools/broker.mjs`、
+  `lib/index.js`）七工种全部改为 `{}`——不再内置任何 provider/model 名，
+  子代理完全继承环境默认路由。按工种分流改为纯用户配置，README 新增
+  「工种模型绑定」小节（WebUI / `settings.yaml` YAML 示例）。
+- **tool-mask 参数化**：`preset/tool-mask.mjs` 的屏蔽清单支持
+  `agent.cordis.yml` 行 `config.deny` 覆盖；原 7 个 `mcp__vcp__*` 名字
+  保留为默认示例并标注「按你的环境裁剪」；逐名 try/catch 静默跳过语义
+  不变。nova/Rei 等个人环境注释改写为中性描述（含 `agent.cordis.yml`）。
+- **包身份切换**：`package.json` 的 author/repository/bugs/homepage 指向
+  Tisitan/dsh-my-go；`files` 白名单补 `CHANGELOG.md`、`AGENTS.md`；
+  publish.yml 的 OIDC 提示改为泛指「你的 fork 仓库」。
+- **私有路径清除**：AGENTS.md / docs/ARCHITECTURE.md / agent.cordis.yml /
+  归档 broker/src 注释中的 `tmp/liangshen`、`tmp/oh-my-openagent`、
+  `tmp/dsh-handbook` 引用改写为中性描述；归档 `model-binding.ts` 的
+  默认值注释标注「tisitan.7 起运行时默认已泛化」（代码不改，见
+  broker/README.md 归档说明）。
+- README 的上游作者博客链接明确标注为「上游作者开发手记（原项目背景）」；
+  AGENTS.md / README / ARCHITECTURE.md 中的具体模型名建议表泛化为
+  能力档位（便宜轻量/中等能力/强能力模型）。
+
+### prompt 与代码一致性
+
+- `prompts/oracle.md` 删除「终验/最终验收/判定通过驳回」口径——验收是
+  Sisyphus 的质检本职，Oracle 只做疑难/极端复杂的架构调试（对齐
+  tisitan.1 后的 sisyphus.md）；同步修正 AGENTS.md、README、
+  `describeAgent('oracle')` 与 sisyphus.md 工种清单的同款表述。
+- `prompts/hermes.md` 工具名 `fs-search`/`fs/edit` 改为模型实际可见的
+  glob/grep/edit。
+- `broker.mjs` persona 切分注释修正（只按 `## 编排规则` 切，与代码一致）。
+
+### 健壮性
+
+- **supportedEfforts 负缓存修复**：capability 查询失败不再永久缓存 null
+  （只缓存查询成功的结果，失败留待下次请求重试），与 modelExists 策略
+  对齐（`broker.mjs` + `lib/index.js` 同构修复）。
+- **模型校验日志降噪**：`agent/request` 每请求的 `console.log` 移除，
+  仅在校验不通过时 `console.warn`。
+- **settings schema 核查**：lib 的四字段 schema 经核实无需改动——
+  schemastery 对象字段默认即非必填（仅 `.required()` 才强制），与
+  saveSettings 空值 unset 语义无冲突（该库无 `.optional()` 方法，
+  添加反而会让注册抛错被静默吞掉）。
+
+### 工程
+
+- **CI 修复**：`.gitignore` 不提交 lockfile 但 ci.yml / publish.yml 使用
+  `bun install --frozen-lockfile`（新 clone 必败）——去掉两个 workflow
+  的 `--frozen-lockfile`。
+- **测试补强**：`test/bridge.test.mjs` 新增 3 例——空绑定继承父渠道
+  且不设 model、指定 model 经 modelExists 通过与失败两分支、
+  settings 重基线（WebUI 取消字段回落默认）回归保护。23/23 全绿，
+  `tsc --noEmit` 干净；本批次不动 `src/client.js`，无需重建 dist。
+- `docs/FORK-GUIDE.md` 新增「已知陷阱 / 限制」小节（合并语义无法表达
+  「完全不指定模型」、`bindSisyphus=true` 全局副作用、默认绑定已清空
+  需用户自配、tool-mask 默认清单只是示例）。
+
+## [0.2.3-tisitan.6] - 2026-08-25
+
+首次实战确认的编排故障修复批（`preset/tools/broker.mjs`，镜像同步 `lib/index.js`）。
+
+### Critical 修复
+
+- **队列停摆**：`advanceQueue` 派发失败回补队首后再无任何触发源，队列永久
+  卡死（实战观察：`work-*` 条目滞留、currentMap 空、面板显示 idle）。
+  现回补时挂带线性退避的重试定时器（默认 1s/2s/3s，上限 3 次；间隔
+  仅 lib 半经插件 config `queueRetryBaseMs` 可调，preset 半 broker 行
+  未暴露 config 字段）；超上限后 `dropQueuedFailed` 将任务从
+  队列移除并写 failed 历史 + `console.error`，同时继续消化后续排队任务。
+  另修两条隐性停摆路径：`subagent/end` 归随兜底失败时不再静默 return
+  （留痕并照常推进队列）；`inject` 增补 `agents` 服务声明，保证队列路径
+  按 parentId 重解析父会话时注册表可见（直发路径传活对象所以从未失败）。
+- **历史工种串号（系统性）**：根因是 `agent/disposed` 无条件
+  `sessionTypes.delete`（若 disposed 先于 `subagent/end` 到达，end 丢失
+  类型登记）+ 归随兜底把任何丢失类型的 end 盲目错绑到当前 spawning 记录
+  （记录的 agentType 属于别人），错绑又导致真实 childId 的 `bindChild`
+  静默失败、游离于编排之外，级联错乱。修复：销毁时代理类型移入有界墓碑表
+  （`disposedTypes`，FIFO 50 条）而非直接删除；`subagent/end` 类型取证
+  顺序改为 活登记 → 墓碑 → 编排台账（已有归属记录时以台账为准，迟到/
+  重复 end 忽略并留痕）；归随兜底仅作最后手段且必留 `console.warn`。
+
+### 隐患修复
+
+- `bindChild` 占位记录缺失时不再静默 `return undefined`，改发
+  `console.warn` 诊断（真实 childId 游离事件可观测）。
+- `finish` 无活记录可落账时（如已被 disposed 兜底清槽）补 `console.warn`。
+
+### 工程
+
+- `test/orchestration.test.mjs` 新增 2 例（bindChild 告警 / dropQueuedFailed
+  落账）；`test/bridge.test.mjs` 新增 3 例 apply 级回归（队列回补后重试
+  消化、重试超上限放弃并写历史、disposed-先于-end 竞态不串号）。
+- `npm test` 全绿；本批次未动 `src/client.js`，无需重建 dist。
+
+### 二次修复（tisitan.6 部署后实测，并入本批次）
+
+首次部署实测确认：重试/放弃/留痕机制工作正常，但暴露两处更深根因。
+
+- **队列路径派发必败 TypeError（真正根因）**：`advanceQueue` 以
+  `dispatchWork(work.agentType, work.prompt, parentAgent, undefined)` 调用，
+  第 4 参数 signal 为 `undefined`；而 dsh-subagent 的
+  `SubagentContinuationManager.startContinuable` 无条件调用
+  `spec.signal.throwIfAborted()`（其 lib/index.js:797），signal 缺失即抛
+  `TypeError: Cannot read properties of undefined (reading 'throwIfAborted')`。
+  直发路径 `exec.signal` 由 DSH 工具执行器恒提供所以从未失败；此前的
+  `inject: ['agents']` 增补并非真凶（父会话解析一直成功）。修复：
+  `dispatchWork` 内归一化 `signal ?? new AbortController().signal`——队列
+  路径没有调用方可取消，合成永不中止信号语义正确。
+- **正常完工子代理不进历史**：DSH continuable 生命周期中 `agent/disposed`
+  **恒先于** `subagent/end`（finishDisposal 内 `handle.dispose()` 先于
+  `observer.settle()`）。本批次初版的 disposed 兜底立即 `abort` 活记录，
+  导致紧随的合法 end 被判「no live record」、结论丢弃（实测：explore
+  完工但历史只有 hermes 的 failed 一条）。修复：disposed 时只立墓碑并挂
+  宽限期兜底定时器（默认 500ms；仅 lib 半经插件 config
+  `disposeEndGraceMs` 可调，preset 半 broker 行未暴露 config 字段）；end
+  到达即取消兜底并正常 `finish` 落账；end 真缺席才由兜底 abort 清槽
+  推进队列（防队列冻结的本意不变）。
+- **回归测试补强**：`test/bridge.test.mjs` 的 mock 复刻 dsh-subagent 真实
+  契约（`withRealSignalContract` 无条件解引用 `spec.signal`，exec 恒带
+  signal）——旧 mock 完全忽略 spec，正是「队列回补后重试消化」通过了但
+  实测败的原因；改写 disposed-先于-end 用例为生产时序（必须落账 +
+  不串号 + 兜底被取消）；新增 disposed 后 end 缺席用例（宽限期兜底
+  清槽并消化队列）。20/20 全绿，`tsc --noEmit` 干净。
+
 ## [0.2.3-tisitan.5] - 2026-08-25
 
 ### UI 中文化（Tisitan 环境）

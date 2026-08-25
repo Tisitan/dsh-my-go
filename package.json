@@ -1,17 +1,17 @@
 {
   "name": "dsh-my-go",
-  "version": "0.2.3-tisitan.5",
+  "version": "0.2.3-tisitan.8",
   "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 7 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
-  "author": "daizihan233",
+  "author": "Tisitan",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/daizihan233/dsh-my-go.git"
+    "url": "git+https://github.com/Tisitan/dsh-my-go.git"
   },
   "bugs": {
-    "url": "https://github.com/daizihan233/dsh-my-go/issues"
+    "url": "https://github.com/Tisitan/dsh-my-go/issues"
   },
-  "homepage": "https://github.com/daizihan233/dsh-my-go#readme",
+  "homepage": "https://github.com/Tisitan/dsh-my-go#readme",
   "keywords": ["deepseek-harness", "dsh", "plugin", "agent", "orchestration", "sisyphus", "subagent", "multi-agent"],
   "engines": { "node": ">=20" },
   "publishConfig": { "access": "public" },
@@ -22,7 +22,7 @@
     "./client": "./dist/client.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "dist", "src", "scripts", "prompts", "preset", "docs", "README.md", "LICENSE", "cordis.patch.yml"],
+  "files": ["lib", "dist", "src", "scripts", "prompts", "preset", "docs", "README.md", "CHANGELOG.md", "AGENTS.md", "LICENSE", "cordis.patch.yml"],
   "scripts": {
     "build": "bun run build:client",
     "build:client": "node scripts/build-client.mjs",

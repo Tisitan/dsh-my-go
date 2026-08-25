@@ -31,7 +31,7 @@ const AGENT_LABELS = {
   looker: '多模态看图 Looker',
   hephaestus: '代码编写 Hephaestus',
   prometheus: '需求规划 Prometheus',
-  oracle: '疑难兜底·终验 Oracle',
+  oracle: '疑难/极端复杂兜底 Oracle',
 }
 const typeLabel = (t) => AGENT_LABELS[t] ?? String(t ?? '?')
 const INTENT_LABELS = { explore: '检索', read_doc: '查文档', look_image: '看图', replan: '请求换工种', execute: '请求代执行', ask_user: '请求问用户' }
@@ -50,20 +50,34 @@ export function apply(ctx) {
   // ── shared state ────────────────────────────────────────────────────────
   let panelOpen = false
   let snapshot = { seq: 0, current: null, queue: [], helpRequests: [], history: [] }
+  // null=尚未探活, true=编排桥就绪, false=未就绪（面板显示提示态而非静默空白）
+  let bridgeOk = null
   const listeners = new Set()
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* noop */ } } }
 
   async function refresh() {
-    if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') return
+    if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') {
+      if (bridgeOk !== false) { bridgeOk = false; emit() }
+      return
+    }
     try {
       const res = await connection.rpc.call('/dsh-my-go', 'snapshot', {})
       if (res && res.ok) {
+        const wasOk = bridgeOk
+        bridgeOk = true
         const next = res.value
         const changed = next && next.seq !== snapshot.seq
         if (next) snapshot = next
-        if (changed) emit()
+        if (changed || wasOk !== true) emit()
+      } else if (bridgeOk !== false) {
+        bridgeOk = false
+        emit()
       }
-    } catch { /* host not ready */ }
+    } catch {
+      // host 未就绪（插件未激活/仍在启动/ RPC 未注册）：标记提示态，
+      // 仅状态迁移时 emit，避免 600ms 轮询每次重渲染
+      if (bridgeOk !== false) { bridgeOk = false; emit() }
+    }
   }
 
   const stopPolling = timer && typeof timer.interval === 'function'
@@ -134,6 +148,12 @@ export function apply(ctx) {
         React.createElement('button', { onClick: () => { panelOpen = false; emit() } }, '×'),
       ),
 
+      bridgeOk === false
+        ? React.createElement('div', {
+            style: { marginBottom: 8, padding: '6px 8px', borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 12 },
+          }, '⚠ 编排桥未就绪：host 端 /dsh-my-go RPC 无响应（插件未激活或仍在启动），面板将持续自动重试。')
+        : null,
+
       React.createElement('div', { style: { marginBottom: 8 } },
         React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '运行中'),
         current
@@ -143,7 +163,7 @@ export function apply(ctx) {
 
       React.createElement('div', { style: { marginBottom: 8 } },
         React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `队列 (${s.queue.length})`),
-        s.queue.map((w) => node(typeLabel(w.agentType), '⏳')),
+        s.queue.map((w) => node(typeLabel(w.agentType), '⏳', w.id)),
       ),
 
       React.createElement('div', { style: { marginBottom: 8 } },

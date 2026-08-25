@@ -125,3 +125,36 @@ test('followupPrompt updates last prompt for running and history records', () =>
   o.followupPrompt('sess-1', 'followup after done')
   assert.equal(o.history[0].prompt, 'followup after done')
 })
+
+test('bindChild on a missing placeholder warns and returns undefined', () => {
+  const o = new Orchestration()
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const result = o.bindChild('child-missing', 'sess-1')
+    assert.equal(result, undefined)
+    assert.equal(o.currentMap.size, 0)
+    assert.equal(warnings.length, 1)
+    assert.ok(warnings[0].includes('bindChild failed'))
+    assert.ok(warnings[0].includes('sess-1'))
+  } finally {
+    console.warn = origWarn
+  }
+})
+
+test('dropQueuedFailed removes the work item and records a failed history entry', () => {
+  const o = new Orchestration()
+  o.enqueue('hermes', 'a', 'parent-1')
+  o.enqueue('explore', 'b', 'parent-1')
+  const work = o.queue[0]
+  work.retries = 4
+  const done = o.dropQueuedFailed(work, new Error('spawn boom'))
+  assert.equal(o.queue.length, 1)
+  assert.equal(o.queue[0].agentType, 'explore')
+  assert.equal(done.status, 'failed')
+  assert.equal(done.agentType, 'hermes')
+  assert.ok(done.conclusion.includes('spawn boom'))
+  assert.equal(o.history.length, 1)
+  assert.equal(o.history[0].childId, work.id)
+})

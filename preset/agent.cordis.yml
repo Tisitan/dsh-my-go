@@ -1,7 +1,7 @@
 # dsh-my-go agent preset — Sisyphus orchestration (agent-plane composition).
 #
 # This file is an AGENT-PLANE composition, following the same conventions as
-# the builtin `standard` preset and tmp/liangshen/agent.cordis.yml:
+# the builtin `standard` preset (and internal experimental presets):
 #  - service rows MUST sit inside a group carrying an `isolate` realm;
 #  - the delegation group (subagent tools) resolves the HOST subagents
 #    registry and needs `isolate: workflowEngine` (one realm for the rows
@@ -164,9 +164,10 @@
     searchTimeoutMs: 60000
 
 # ── tool mask ────────────────────────────────────────────────────────────────
-# Hides Rei-persona memory tools and the OpenCode bridge from this preset's
-# catalog — applies to Sisyphus and every sub-agent on the preset (synced from
-# the `nova` preset recipe). Mask list lives in ./tool-mask.mjs (per-name
-# try/catch, so an absent tool cannot fail the mount).
+# Hides environment-specific tools from this preset's catalog — applies to
+# Sisyphus and every sub-agent on the preset. The mask list lives in
+# ./tool-mask.mjs (DEFAULT_DENY, per-name try/catch so an absent tool cannot
+# fail the mount); override it wholesale with a `config.deny` array on this
+# row to match your own deployment.
 - id: tool-mask
   name: ./tool-mask.mjs

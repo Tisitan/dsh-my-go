@@ -107,14 +107,17 @@ export function bindingFor(table: BindingTable, type: string | undefined): Agent
 /**
  * Default binding table matching AGENTS.md's suggested defaults.
  *
- * The provider defaults to the deployment's configured route where possible:
- * the octopus route is the user's OpenAI-completions gateway and serves
- * mimo-v2.5 / deepseek-v4-flash / deepseek-v4-pro (verified against
- * ~/.dsh/settings.yaml). `provider` stays `undefined` for the light agents so
- * the child inherits Sisyphus's provider route while the model is pinned.
- * Light agents leave `reasoningEffort` unset (their models may not expose
- * thinking levels); heavy agents request high/max, applied only when the
- * model supports it.
+ * ⚠️ Archived snapshot: the concrete provider/model values below are the
+ * original author's own deployment routes, kept here as historical reference
+ * only. The runtime defaults were generalized in tisitan.7 — the live
+ * implementations (preset/tools/broker.mjs, lib/index.js) now ship EMPTY
+ * defaults (every agent type inherits the environment's default route) and
+ * leave per-type binding entirely to user configuration.
+ *
+ * `provider` stays `undefined` for the light agents so the child inherits
+ * Sisyphus's provider route while the model is pinned. Light agents leave
+ * `reasoningEffort` unset (their models may not expose thinking levels);
+ * heavy agents request high/max, applied only when the model supports it.
  */
 export const DEFAULT_BINDINGS: BindingTable = {
   sisyphus: { dsv4p0813: false },
