@@ -3,6 +3,49 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.9] - 2026-08-25
+
+「失败附因时序性失效」修复批：`preset/tools/broker.mjs` 与 `lib/index.js`
+同构实施。
+
+### 根因
+
+`subagent/end` 的发射晚于 live store 摘除：continuable Activation 的销毁
+顺序（dsh-subagent/lib/types/continuation.js ~L1016-1050）是 capture →
+`handle.dispose()`（连带把子 session 从 sessions live store 摘除）→ 删
+activation → `observer.settle()` 才 emit `subagent/end`。因此 tisitan.8 经
+`sessions` 服务 API（`sessions.get(childId).events`）的失败附因读法在 end
+处理器里必然落空、静默退回 undefined——真机实测 failed 记录只有
+'(error)'。`'sessions'` 服务名与 API 形态均正确，唯一问题是时序。
+
+### 修复：失败附因改读持久化档案（主路径）
+
+- **主路径**：新增 `readArchivedTurnFailure(childId)`（模块级导出），按
+  dsh-session-persistence-jsonl 的目录规则拼出
+  `<DSH_HOME>/sessions/<projectKey(cwd)>/<encodeSegment(childId)>/
+  session.jsonl.zstd`——`projectKey` / `encodeSegment` / 帧扫描
+  `scanZstdFrameRanges` 逐行对齐其 lib/index.js:106-124 / :84-96 /
+  :503-566（root 解析惯例：dsh-home-paths/lib/index.js:73）。
+- **多帧逐帧解压**：`session.jsonl.zstd` 是多 zstd 帧追加容器，Node 的
+  zlib 单帧接口只吃首帧；先扫描完整帧界（末帧不完整则截断），倒序逐帧
+  `zstdDecompressSync`（最新帧最先，命中即早退），帧内倒序扫行取最后一条
+  `turn/end` 且 `reason.kind==='error'` 的 `reason.error {message, code}`。
+  持久化记录与 live events 同构（`{type, seq, time, data}`，真机档案实证）。
+- **live 读法保留为快路径**：先 live 后落盘，哪边先拿到用哪边；live 快
+  路径异常不再直接吞掉结果，而是放行档案主路径。
+- **可观测性**：找不到档案 / 帧扫描失败 / 解压失败 / 无 error 事件，均维持
+  静默退回 undefined（不阻塞 end 落账）但各加一条 `console.warn` 留痕，
+  不再静默吞。
+- 同步更新 FORK-GUIDE 已知陷阱（「读档兜底」→「读持久化档案兜底」+ 时序
+  根因）与 ARCHITECTURE 的失败附因来源描述。
+
+### 测试
+
+- `test/bridge.test.mjs` 新增 2 例：真实多帧 zstd fixture（两帧真实压缩
+  拼接，turn/end error 只在末帧，live store mock 摘除复刻销毁时序）断言
+  附因 message/code 落入 history 结论与父通知；无档案时断言静默退回
+  '(error)' + warn 留痕且不抛。
+
 ## [0.2.3-tisitan.8] - 2026-08-25
 
 「可观测性」批：补齐编排黑盒的四条观测缝（队列映射、失败附因、截断阈值、

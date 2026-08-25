@@ -3,9 +3,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { zstdCompressSync } from 'node:zlib'
 import * as broker from '../preset/tools/broker.mjs'
 
 // 测试隔离：台账持久化（tisitan.8）会在 apply 时从 DSH_HOME 读回 history——
@@ -418,5 +419,103 @@ test('orchestration ledger persists history to disk and reloads it on the next a
   } finally {
     process.env.DSH_HOME = prevHome ?? TEST_DSH_HOME
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ── tisitan.9 回归批：失败附因改读持久化档案 ─────────────────────────────
+// 根因：continuable 销毁顺序使 subagent/end 发射晚于 live store 摘除
+// （dsh-subagent/lib/types/continuation.js ~L1016-1050），tisitan.8 的 live
+// 读法必然落空。修复后主路径读 <DSH_HOME>/sessions/<projectKey(cwd)>/
+// <childId>/session.jsonl.zstd（多帧 zstd 追加容器，逐帧解压倒序找
+// turn/end 且 reason.kind==='error' 的 reason.error）。
+
+// 构造真实多帧 zstd 档案 fixture：两个独立压缩帧拼接（与 harness
+// dsh-session-persistence-jsonl 的追加格式一致），turn/end error 只放末帧——
+// 若实现只吃首帧（Node 单帧接口的默认行为），本 fixture 必抓不到附因。
+function writeArchiveFixture(home, childId, { errorMessage, errorCode }) {
+  const dir = join(home, 'sessions', broker.projectKey(process.cwd()), childId)
+  mkdirSync(dir, { recursive: true })
+  const line = (rec) => JSON.stringify(rec) + '\n'
+  const frame1 = zstdCompressSync(Buffer.from(
+    line({ type: 'session/header', seq: 0, time: 0, data: { version: 1 } }) +
+    line({ type: 'turn/end', seq: 1, time: 1, data: { turn: 1, reason: { kind: 'stop' } } }),
+  ))
+  const frame2 = zstdCompressSync(Buffer.from(
+    line({ type: 'assistant/message', seq: 2, time: 2, data: { turn: 2, message: { role: 'assistant', content: [] } } }) +
+    line({ type: 'turn/end', seq: 3, time: 3, data: { turn: 2, reason: { kind: 'error', error: { message: errorMessage, code: errorCode } } } }),
+  ))
+  writeFileSync(join(dir, 'session.jsonl.zstd'), Buffer.concat([frame1, frame2]))
+}
+
+test('live store 摘除后从持久化档案提取失败附因（多帧 zstd，error 在末帧）', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-my-go-arch-'))
+  const prevHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const injected = []
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const childId = 'sess-archived'
+    writeArchiveFixture(home, childId, { errorMessage: 'provider 429: rate limited', errorCode: 'PROVIDER_429' })
+    const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
+    const { ctx, listeners, tools } = mockCtxFull({
+      keepHome: true,
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      // 复刻销毁顺序：end 到达时子会话已从 live store 摘除
+      sessions: { get: () => undefined },
+      startContinuable: withRealSignalContract(async () => ({ childId })),
+    })
+    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    await tools.get('go_work').execute({ agent: 'explore', prompt: 'x' }, execOf(parent))
+    listeners.get('subagent/end')({ id: childId, stopReason: 'error', lastAssistantMessage: [] })
+    const snap = snapshotNow()
+    assert.equal(snap.history.length, 1)
+    assert.equal(snap.history[0].status, 'failed')
+    assert.ok(snap.history[0].conclusion.includes('provider 429: rate limited'), 'archive-sourced message lands in conclusion')
+    assert.ok(snap.history[0].conclusion.includes('[PROVIDER_429]'), 'archive-sourced code lands in conclusion')
+    const notice = injected.find((m) => m.content?.[0]?.text?.includes('子代理失败'))
+    assert.ok(notice, 'parent should receive the failure-reason notice')
+    assert.ok(notice.content[0].text.includes('provider 429: rate limited'))
+    assert.ok(notice.content[0].text.includes('[PROVIDER_429]'))
+    // 档案命中时不得留 warn（可观测性告警只留给真正的落空路径）
+    assert.ok(!warnings.some((line) => line.includes('readTurnFailure')), 'no warn when archive yields the failure')
+  } finally {
+    console.warn = origWarn
+    process.env.DSH_HOME = prevHome ?? TEST_DSH_HOME
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('无持久化档案时静默退回无附因（console.warn 留痕，不抛）', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-my-go-noarch-'))
+  const prevHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const injected = []
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
+    const { ctx, listeners, tools } = mockCtxFull({
+      keepHome: true,
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      sessions: { get: () => undefined },
+      startContinuable: withRealSignalContract(async () => ({ childId: 'sess-missing' })),
+    })
+    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    await tools.get('go_work').execute({ agent: 'explore', prompt: 'x' }, execOf(parent))
+    // 档案目录从未写入：readTurnFailure 静默退回，end 处理照常落账
+    listeners.get('subagent/end')({ id: 'sess-missing', stopReason: 'error', lastAssistantMessage: [] })
+    const snap = snapshotNow()
+    assert.equal(snap.history.length, 1)
+    assert.equal(snap.history[0].status, 'failed')
+    assert.equal(snap.history[0].conclusion, '(error)', 'no附因时结论退回 stopReason 占位')
+    assert.ok(warnings.some((line) => line.includes('readTurnFailure') && line.includes('持久化档案不可读')), 'warn 留痕，不静默吞')
+    assert.ok(!injected.some((m) => m.content?.[0]?.text?.includes('子代理失败')), '无附因时不发附因通知')
+  } finally {
+    console.warn = origWarn
+    process.env.DSH_HOME = prevHome ?? TEST_DSH_HOME
+    await rm(home, { recursive: true, force: true })
   }
 })

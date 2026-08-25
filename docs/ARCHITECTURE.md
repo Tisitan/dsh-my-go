@@ -76,9 +76,12 @@ interface OrchestrationState {
   dsh-subagent 硬编码模板，插件不可抑制/改写；broker 经公开 API
   `parent.inject`（非唤醒）自行注入两条低频高价值短通知——队列上岗映射
   （`work-* → childId`）与失败附因。失败附因来源：`subagent/end` 载荷无
-  error 字段，broker 经 `sessions` 服务读子会话最后一条 `turn/end` 的
-  `reason.error` 兜底（读档失败静默退回无附因），同一原因同时追加进
-  history 结论尾部。
+  error 字段，broker 读子会话最后一条 `turn/end` 的 `reason.error`——
+  tisitan.9 起 live store（`sessions` 服务）降级为快路径，主路径读持久化
+  档案 `<DSH_HOME>/sessions/<projectKey(cwd)>/<childId>/session.jsonl.zstd`
+  （多帧 zstd 逐帧解压；continuable 销毁顺序使 end 发射晚于 live store
+  摘除，live 读法必然落空）。读档失败静默退回无附因（console.warn 留痕），
+  同一原因同时追加进 history 结论尾部。
 
 ### 2.2 模型与 effort 绑定
 

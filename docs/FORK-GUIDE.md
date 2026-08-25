@@ -45,7 +45,7 @@
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.2.3-tisitan.7；test = 冒烟 + 单测
+├── package.json              # 包声明；版本 0.2.3-tisitan.9；test = 冒烟 + 单测
 ├── cordis.patch.yml          # bundle patch：dsh plugin add 后自动把 lib 挂进 profile（global 层）
 ├── CHANGELOG.md              # fork 修复台账（相对上游的全部差异）
 ├── README.md                 # 项目说明（含 fork 标识段）
@@ -183,10 +183,20 @@ dsh-my-go/
   模板（dsh-subagent/lib/index.js 的 `deliverReport` / `notifySettlement`），
   插件层无法抑制或改写，只能并存。tisitan.8 的补充通知（队列上岗映射 /
   失败附因）因此走自己的 `plugin/notice` inject 通道，不去碰 harness 模板。
-- **harness 通知层丢失 error.message**：`subagent/end` 载荷的
-  `stopReason` 只有 kind（completed/error/...），不带 error 字段；完整的
-  `error.message` / `code` 只存在于子会话档案的 `turn/end` 事件
-  `reason.error` 里。broker 的兜底路径是经 `sessions` 服务 API
-  （`sessions.get(childId).events`）倒序读最后一条 `turn/end`——不要手解
-  `session.jsonl.zstd` 多帧；读档失败（子会话已退出 live store）静默退回
-  无附因。
+- **harness 通知层丢失 error.message，且 live store 读档有时序性失效**：
+  `subagent/end` 载荷的 `stopReason` 只有 kind（completed/error/...），
+  不带 error 字段；完整的 `error.message` / `code` 只存在于子会话档案的
+  `turn/end` 事件 `reason.error` 里。更隐蔽的是：continuable Activation
+  的销毁顺序（dsh-subagent/lib/types/continuation.js ~L1016-1050）是先
+  `handle.dispose()`（连带把子 session 从 sessions live store 摘除）、删
+  activation，最后 `observer.settle()` 才发射 `subagent/end`——所以经
+  `sessions` 服务 API（`sessions.get(childId).events`）的 live 读法在 end
+  处理器里**必然落空**（tisitan.8 实锤：failed 记录只有 '(error)'）。
+  tisitan.9 起 live 读法降级为快路径，主路径改读**持久化档案**：
+  `<DSH_HOME>/sessions/<projectKey(cwd)>/<encodeSegment(childId)>/
+  session.jsonl.zstd`（目录规则与 dsh-session-persistence-jsonl 同算法，
+  broker 内 `projectKey`/`encodeSegment` 逐行对齐其 lib/index.js:106-124/
+  84-96）；该文件是多 zstd 帧追加容器，Node 的 zlib 单帧接口只吃首帧，
+  必须扫描帧界逐帧解压（broker 内 `scanZstdFrameRanges` 对齐其
+  scanZstdFrames :503-566），倒序取最后一条 `turn/end` error。找不到
+  档案/解压失败/无 error 事件均静默退回无附因 + `console.warn` 留痕。
