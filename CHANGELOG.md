@@ -3,6 +3,18 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.5] - 2026-08-25
+
+### UI 中文化（Tisitan 环境）
+
+- 设置页全面汉化：工种卡片改为「总调度·质检 Sisyphus / 快速执行 Hermes /
+  快速检索 Explore / 文档查询 Librarian / 多模态看图 Looker / 代码编写
+  Hephaestus / 需求规划 Prometheus / 疑难兜底·终验 Oracle」；字段标签
+  Provider/Model/Reasoning Effort → 渠道/模型/思考档位；思考档位选项
+  low/high/max → 低/高/最高；头部补充字段说明与 DSV4P0813 补丁的人类注释。
+- 树状图面板汉化：工种名用中文角色标签，求助 intent 显示为
+  「检索/查文档/看图/请求换工种/请求代执行/请求问用户」。
+
 ## [0.2.3-tisitan.4] - 2026-08-25
 
 ### 部署适配（Tisitan 环境）

@@ -23,7 +23,19 @@ export const name = 'dsh-my-go'
 export const inject = ['slots', 'settingsScope', 'connection']
 
 const AGENT_TYPES = ['sisyphus', 'hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
-const AGENT_LABELS = { sisyphus: 'Sisyphus', hermes: 'Hermes', explore: 'Explore', librarian: 'Librarian', looker: 'Looker', hephaestus: 'Hephaestus', prometheus: 'Prometheus', oracle: 'Oracle' }
+const AGENT_LABELS = {
+  sisyphus: '总调度·质检 Sisyphus',
+  hermes: '快速执行 Hermes',
+  explore: '快速检索 Explore',
+  librarian: '文档查询 Librarian',
+  looker: '多模态看图 Looker',
+  hephaestus: '代码编写 Hephaestus',
+  prometheus: '需求规划 Prometheus',
+  oracle: '疑难兜底·终验 Oracle',
+}
+const typeLabel = (t) => AGENT_LABELS[t] ?? String(t ?? '?')
+const INTENT_LABELS = { explore: '检索', read_doc: '查文档', look_image: '看图', replan: '请求换工种', execute: '请求代执行', ask_user: '请求问用户' }
+const intentLabel = (i) => INTENT_LABELS[i] ?? String(i ?? '?')
 
 export function apply(ctx) {
   const client = ctx
@@ -125,25 +137,25 @@ export function apply(ctx) {
       React.createElement('div', { style: { marginBottom: 8 } },
         React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '运行中'),
         current
-          ? node(current.agentType ?? '?', statusGlyph(current.status), current.childId, () => current.childId && jump(current.childId))
+          ? node(typeLabel(current.agentType), statusGlyph(current.status), current.childId, () => current.childId && jump(current.childId))
           : React.createElement('div', { style: { color: '#888' } }, '○ 空闲'),
       ),
 
       React.createElement('div', { style: { marginBottom: 8 } },
         React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `队列 (${s.queue.length})`),
-        s.queue.map((w) => node(String(w.agentType ?? '?'), '⏳')),
+        s.queue.map((w) => node(typeLabel(w.agentType), '⏳')),
       ),
 
       React.createElement('div', { style: { marginBottom: 8 } },
         React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `求助 (${s.helpRequests.length})`),
-        s.helpRequests.map((h) => node(`[${h.intent ?? '?'}]`, '❓', h.childId, () => h.childId && jump(h.childId))),
+        s.helpRequests.map((h) => node(`[${intentLabel(h.intent)}]`, '❓', h.childId, () => h.childId && jump(h.childId))),
       ),
 
       React.createElement('div', null,
         React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `历史 (${s.history.length})`),
         s.history.slice(-8).map((r) => {
           const rec = r
-          return node(`${rec.agentType ?? '?'} — ${String(rec.conclusion ?? '').replace(/\s+/g, ' ').slice(0, 60)}`, statusGlyph(rec.status), rec.childId, () => rec.childId && jump(rec.childId))
+          return node(`${typeLabel(rec.agentType)} — ${String(rec.conclusion ?? '').replace(/\s+/g, ' ').slice(0, 60)}`, statusGlyph(rec.status), rec.childId, () => rec.childId && jump(rec.childId))
         }),
       ),
     )
@@ -242,9 +254,9 @@ export function apply(ctx) {
 
     const EFFORTS = ['', 'low', 'high', 'max']
     const providers = available.providers
-    const providerLabel = (v) => v === '' ? '跟随 Sisyphus' : v
-    const modelLabel = (v) => v === '' ? '跟随 Sisyphus' : v
-    const effortLabel = (v) => v === '' ? '跟随模型默认' : v
+    const providerLabel = (v) => v === '' ? '跟随 Sisyphus（对话框所选模型）' : v
+    const modelLabel = (v) => v === '' ? '跟随 Sisyphus（对话框所选模型）' : v
+    const effortLabel = (v) => v === '' ? '跟随模型默认' : ({ low: '低（low）', high: '高（high）', max: '最高（max）' }[v] ?? v)
 
     const makeSelect = (value, options, labelFn, onChange) =>
       React.createElement('select', { style: selectStyle, value: value ?? '', onChange: (e) => onChange(e.target.value) },
@@ -264,7 +276,8 @@ export function apply(ctx) {
 
     return React.createElement('div', { style: { padding: 16, maxWidth: 600 } },
       React.createElement('h2', { style: { margin: '0 0 4px' } }, 'MyGO 编排配置'),
-      React.createElement('p', { style: { margin: '0 0 16px', fontSize: 13, color: 'var(--text-secondary, #888)' } }, '每个子智能体的模型 / Provider / 思考程度 / DSV4P0813 补丁开关。修改后点保存，下次派发生效。'),
+      React.createElement('p', { style: { margin: '0 0 6px', fontSize: 13, color: 'var(--text-secondary, #888)' } }, '给每个工种单独指定模型。留空 = 跟随 Sisyphus（即您在对话框里选的模型）；改完点「立即保存」，下次派发生效。'),
+      React.createElement('p', { style: { margin: '0 0 16px', fontSize: 12, color: 'var(--text-secondary, #888)' } }, '字段说明：渠道 = 模型从哪个网关/账号走；思考档位 = 推理强度（越高越贵越聪明）；DSV4P0813 补丁 = 两阶段锚定上下文注入，专门压榨 DeepSeek V4 Pro 0813 的实力，其他模型别开。'),
       fetchFailed ? React.createElement('div', {
         style: { padding: 12, marginBottom: 16, borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 13 },
       }, '⚠ 无法从 DSH 获取 Provider/Model 列表。请确认：1) 已重启 dsh web；2) LLM 插件已配置并激活。下拉框仍可手动输入自定义值。') : null,
@@ -274,23 +287,23 @@ export function apply(ctx) {
           React.createElement('div', { style: { fontWeight: 600, marginBottom: 8 } }, AGENT_LABELS[type] || type),
           React.createElement('div', { style: rowStyle },
             React.createElement('div', null,
-              React.createElement('div', { style: labelStyle }, 'Provider'),
+              React.createElement('div', { style: labelStyle }, '渠道（Provider）'),
               makeSelect(cfg.provider ?? '', ['', ...providers], providerLabel, (v) => set(type, 'provider', v)),
             ),
             React.createElement('div', null,
-              React.createElement('div', { style: labelStyle }, 'Model'),
+              React.createElement('div', { style: labelStyle }, '模型（Model）'),
               makeSelect(cfg.model ?? '', ['', ...modelsForProvider(cfg.provider ?? '')], modelLabel, (v) => set(type, 'model', v)),
             ),
           ),
           React.createElement('div', { style: rowStyle },
             React.createElement('div', null,
-              React.createElement('div', { style: labelStyle }, 'Reasoning Effort'),
+              React.createElement('div', { style: labelStyle }, '思考档位（Reasoning Effort）'),
               makeSelect(cfg.reasoningEffort ?? '', EFFORTS, effortLabel, (v) => set(type, 'reasoningEffort', v)),
             ),
             React.createElement('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
               React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, paddingTop: 18 } },
                 React.createElement('input', { type: 'checkbox', checked: cfg.dsv4p0813 === true, onChange: (e) => set(type, 'dsv4p0813', e.target.checked) }),
-                'DSV4P0813',
+                'DSV4P0813 补丁',
               ),
             ),
           ),
