@@ -3,6 +3,28 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.2] - 2026-08-25
+
+在 tisitan.1 基础上的稳步升级批（全部经测试验证；评估后不安全的改动仅文档化）。
+
+### 功能补全
+
+- **client 自动跳回父会话**：子智能体结束后 `sessions.open(parentSessionId)`
+  跳回 Sisyphus（ARCHITECTURE.md §3 的闭环此前未实现）；手动跳转不再传空
+  `parentSessionId`（读快照字段）。
+
+### 清理
+
+- 删除 `lib/index.js` 与 `preset/tools/broker.mjs` 中的死代码 `parseAgentType`
+  （仅归档的 TS 参考实现使用，保留在 `broker/src`）。
+- `broker/README.md`：明确标注 TS 目录为归档参考实现，不参与构建运行。
+
+### 文档
+
+- 新增 `docs/FORK-GUIDE.md`：全景逻辑图 + 文件目录树 + 机制映射表
+  （什么功能由哪个文件通过什么原理实现）+ 未实施升级的评估结论
+  （need_help 真 interrupt / isolate 服务桥 / projection 推流）。
+
 ## [0.2.3-tisitan.1] - 2026-08-25
 
 基于上游 v0.2.3（main @ cf2d802）。修复来源：全项目三方交叉审查（详见审查报告）。

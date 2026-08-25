@@ -56,13 +56,6 @@ function agentLabel(type, summary) {
   return `${AGENT_TYPE_PREFIX}${type}${summary ? `: ${summary}` : ''}`
 }
 
-function parseAgentType(label) {
-  if (typeof label !== 'string') return undefined
-  const match = /^dsh-my-go:([a-z-]+)/.exec(label)
-  if (!match) return undefined
-  return AGENT_TYPES.includes(match[1]) ? match[1] : undefined
-}
-
 /** Default bindings per AGENTS.md. Provider stays unset for light agents so
  * they inherit Sisyphus's route; heavy agents pin the octopus gateway.
  * reasoningEffort is only ever applied when the exact model supports that

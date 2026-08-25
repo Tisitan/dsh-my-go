@@ -95,7 +95,7 @@ export function apply(ctx) {
 
     const jump = (childId) => {
       if (sessions && typeof sessions.openSubagent === 'function') {
-        sessions.openSubagent({ parentSessionId: '', childSessionId: childId, mode: 'continuable' })
+        sessions.openSubagent({ parentSessionId: snapshot.parentSessionId ?? '', childSessionId: childId, mode: 'continuable' })
       }
     }
 
@@ -328,7 +328,12 @@ export function apply(ctx) {
             } catch { /* fallback: just open the child session directly */ }
           }
         } else if (!current && lastJumpedTo && sessions) {
+          // 子智能体结束：跳回 Sisyphus 父会话（ARCHITECTURE.md §3 的闭环）
+          const parentSessionId = snapshot.parentSessionId
           lastJumpedTo = null
+          if (parentSessionId && typeof sessions.open === 'function') {
+            try { sessions.open(parentSessionId) } catch { /* parent session may be gone */ }
+          }
         }
       }, 800)
     : undefined
