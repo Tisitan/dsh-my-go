@@ -31,7 +31,8 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 > 空绑定，全部继承环境路由），具体模型由使用者在设置中按工种配置。
 
 - **所有子智能体（叶子）不直接通信**，必须经由 Sisyphus 中转。
-- **执行模式**：单线阻塞，同一时段只能有一个子智能体运行。
+- **执行模式**：单线阻塞，同一时段只能有一个子智能体运行；tisitan.10 起按
+  编排会话隔离——每个父会话一条独立流水线，互不排队。
 - **Sisyphus = 主会话**：用户对话所选模型即 Sisyphus 的模型；它不单独创建。
 - **子智能体 = DSH continuable subagent**：通过 `subagents.startContinuable`
   创建，持久化到独立 Session，支持后续 `followup`（对应 continue）。
@@ -46,9 +47,13 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 | `forward`（Sisyphus 转发 need_help） | 读 helpRequest 记录 → 对既有 childId 用 continue，对类型用 go_work | broker 状态 + followup/startContinuable |
 | 结论（子→Sisyphus） | 子智能体最后输出经 `subagent/end`（或 reportFrom）注入父会话，带 conclusionId | `subagent/end` 事件 |
 
-### 2.1 单线阻塞
+### 2.1 单线阻塞与会话隔离
 
-broker 的 `Orchestration` 状态机维护：
+编排状态按编排会话分桶维护（tisitan.10 起）：`orchestrations:
+Map<parentSessionId, Orchestration>` 惰性创建——每个 Sisyphus 会话独立一条
+流水线（队列/槽位/求助单/历史互不共享）；另有 `childOwner:
+Map<childId, parentSessionId>` 路由表把子代理侧事件与工具调用送回属主流水线。
+单个 Orchestration 维护：
 
 ```ts
 interface OrchestrationState {
@@ -68,10 +73,17 @@ interface OrchestrationState {
   提问澄清需求时，将问题清单发给 Sisyphus 代为转达给用户，拿到答案后续回请求者。
 - `continue` 唤醒挂起/已结束的子智能体（`followup`）；对已结束的子智能体会
   重新入册（revive 回 currentMap + 恢复类型登记），保持单线阻塞与结论回收。
+- **属主路由与竞态墓碑（tisitan.10）**：`subagent/end` 经 `childOwner` 直达
+  属主实例（未登记则全局扫描活记录/历史兜底）；`agent/disposed` 恒先于 end
+  到达的竞态由有界墓碑表（`disposedTypes`，cap 50）+ 宽限期兜底消化——宽限
+  期内 end 正常落账，真缺席才清槽推进队列。多个 spawning 占位并存时仅在
+  「恰有一个可归因」时绑定，歧义即留痕忽略（绝不串号）。
 - **台账持久化（tisitan.8）**：history（done/failed，上限 200 条）防抖落盘
   `<DSH_HOME>/dsh-my-go/orchestration-ledger.json`，插件加载时读回——进程
   重启后 `continue` 已完工 childId 仍能命中台账（revive → harness coldResume
-  续聊），而不是报 unknown sub-agent id。
+  续聊），而不是报 unknown sub-agent id。tisitan.10 起落盘形状为
+  `{ version: 2, parents: { [parentSessionId]: history[] } }` 分桶；v1 旧档
+  载入 'legacy' 兜底桶，跨重启经全局扫描命中。
 - **父会话补充通知（tisitan.8）**：harness 的双通知（reported/settled）是
   dsh-subagent 硬编码模板，插件不可抑制/改写；broker 经公开 API
   `parent.inject`（非唤醒）自行注入两条低频高价值短通知——队列上岗映射
@@ -125,11 +137,14 @@ Sisyphus 本身不启用（它是调度者）。
   （current / queue / help / history），由侧栏底部 🧭 按钮开关，
   点击节点可跳转子会话（经 host 半的 connection.rpc 快照桥轮询）。
   队列节点渲染 work-id 占位；快照桥未就绪时显示「编排桥未就绪」提示态
-  而非静默空白（tisitan.8）。
+  而非静默空白（tisitan.8）。tisitan.10 起面板摊平展示所有编排会话的
+  条目，parents 多于一个时每条附会话短后缀区分。
 - **自动跳转**：子智能体运行时，client 通过 `sessions.openSubagent({
   parentSessionId, childSessionId, mode: 'continuable' })` 自动跳转到子会话，
   展示其上下文；子智能体结束（`subagent/end`）后跳回 Sisyphus 父会话。
-  中间保持 DSH 原生会话视图，不自建上下文面板。
+  中间保持 DSH 原生会话视图，不自建上下文面板。tisitan.10 起加**会话门禁**：
+  只跟随当前打开会话的子代理（读 `sessions.list.getSnapshot().current`），
+  跳回父会话同受门禁约束——多会话并行时绝不把用户拽去别的会话。
 - **设置页**：client 半（`src/client.js`）注册「MyGO 编排」设置页 UI；
   settings 命名空间 `dsh-my-go` 由 host 半（`lib/index.js`）注册，
   broker 半只读取，配置每个智能体的 provider / model /

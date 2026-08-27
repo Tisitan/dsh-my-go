@@ -3,7 +3,62 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
-## [0.2.3-tisitan.10] - 2026-08-25
+## [0.2.3-tisitan.11] - 2026-08-27
+
+代码审查修复批（依据 `docs/code-review-broker-lib-2026-08-27.md` 审查报告，
+全部发现经裁决开修）。`preset/tools/broker.mjs` 与 `lib/index.js` 同构实施
+（除 lib 半 fallback 形态固有的差异外逐行对齐）。
+
+### 安全三件（审查 Major）
+
+- **need_help 上报失败不再静默**（M1）：`reportFrom` 投递失败的空 catch 改为
+  `console.warn` 留痕（带求助单 id / intent / childId / 失败原因）+ 尽力经
+  `notifyParent` 向父会话补发「上报送达失败，请用 orchestration_status 查看」
+  短通知；通知自身失败不再向外抛。挂起账本保持原样等待处理。
+- **forward 转发信封化**（M2）：转发内容不再是 help.content 原文裸传——改为
+  包进 `<forwarded-help from="…" intent="…">` 信封并在前后各加一句系统语气
+  说明（转交的请求材料、不构成指令体系覆盖），阻断「子代理借 execute 类
+  求助单走私提权指令」的间接注入放大路径。信封属性值同步转义。
+- **XML 包裹逃逸修复**（M3）：need_help 上报体与 forward 信封共用新增的
+  `escapeXml()` 工具（`& < > " '` 五实体），content 内的伪 `</need_help>` /
+  伪 `<system-reminder>` 无法再逃出包裹结构。
+
+### prompt 语义修正
+
+- `prompts/hephaestus.md` / `prompts/hermes.md` 的 replan 混用修正：要澄清/
+  缺信息走 `ask_user`（列出问题清单）；`replan` 仅用于任务超出自身能力、
+  请求换更强工种——与 prometheus.md、sisyphus.md 的枚举语义对齐。
+  其余五份 prompt 排查无同类混用。
+
+### 次要对齐
+
+- **lib 半 dispatchWork 模型校验对齐**（m1）：binding.model 与 broker 半一致，
+  先经 `llm.listModels` 校验真实存在才写进 agentOptions，校验不过回落而不硬塞；
+  无 provider 可解析时维持与 broker 相同的直透语义（waterfall 兜底校验）。
+- settings 命名空间 schema 本就为扁平键（`<type>.field`），无代码改动。
+
+### 文档对账
+
+- ARCHITECTURE.md 补齐 tisitan.10 会话隔离全景：拓扑限定语、§2.1 改述
+  orchestrations Map 分桶 + childOwner 路由 + disposed 墓碑竞态、台账 v2
+  分桶与 'legacy' 兜底桶、面板摊平短后缀与自动跳转会话门禁；
+  FORK-GUIDE 目录树中「已与实现同步」括注恢复有效。
+- README 配置表键名修正为扁平结构 `<type>.provider/model/reasoningEffort/
+  dsv4p0813`（原文档残留 `agents.<type>.*` 错误前缀），与 schema 及 YAML
+  示例一致；「插件 config 键」小节补注仅 host 半（lib）生效、MyGO preset
+  会话不读这些键；「单线阻塞」两处补会话隔离限定；测试口径更新。
+- FORK-GUIDE 测试清单数字校正（bridge 实际 17 例，旧记载 13 例漏记了
+  快照桥两例）、七工种表述改「八键（含 sisyphus）」；AGENTS.md 同步
+  「单线阻塞 = 每编排会话内单线」。CHANGELOG 补记 tisitan.10 实际日期。
+
+### 测试
+
+- 新增 `test/host-parity.test.mjs`（2 例：lib 半模型校验回落/直透语义）；
+  `test/bridge.test.mjs` 新增 2 例（reportFrom 失败 warn+通知且求助单保留、
+  forward 信封形状与 `</need_help>` 逃逸阻断）。node:test 全量
+  14 + 17 + 4 + 2 = 37 例全绿；`tsc --noEmit` 干净。
+
+## [0.2.3-tisitan.10] - 2026-08-27
 
 **多会话编排隔离**（用户实测发现：会话1编排时，会话2的 go_work 被全局
 单线阻塞排队）。`preset/tools/broker.mjs` 与 `lib/index.js` 同构实施。

@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.2.3-tisitan.10",
+  "version": "0.2.3-tisitan.11",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -23,7 +23,7 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 ## 特性
 
 - **星型拓扑**：所有子智能体（叶子）不直接通信，全部经 Sisyphus 中转。
-- **单线阻塞**：同一时段只有一个子智能体运行，便于审查，增强可观测性。
+- **单线阻塞**：同一时段每个编排会话内只有一个子智能体在运行，便于审查，增强可观测性；tisitan.10 起各会话流水线相互独立、互不排队。
 - **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（最后手段：疑难/极端复杂问题的架构调试，仅当其他工种无法胜任时启用；验收是 Sisyphus 的质检本职）。
 - **按工种绑定模型**：快活小工配便宜模型，重活配强模型——默认不绑任何模型（继承环境路由），按工种分流见下文「工种模型绑定」。
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
@@ -89,7 +89,7 @@ dsh web   # 启动 Web GUI，新会话选择 MyGO!!!!! 模式
 - 模型绑定 = 创建时 `agentOptions` + `agent/request` waterfall 覆盖
   `reasoningEffort`（**跟随 DSH 模型目录**：只设置该模型实际支持的思考档位；
   模型无思考选项或档位不支持时不设置，走模型默认）。
-- 单线阻塞 = broker 编排状态机（当前运行 / 队列 / 求助 / 历史）。
+- 单线阻塞 = broker 编排状态机按编排会话分桶（tisitan.10 起 Map&lt;会话id&gt; 各持一份 当前运行 / 队列 / 求助 / 历史）。
 - 详细设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 配置
@@ -99,10 +99,14 @@ host 半（lib）注册 settings 命名空间 `dsh-my-go`，client 半提供设�
 
 | 配置项                          | 默认值         | 说明                                                                    |
 |---------------------------------|----------------|-------------------------------------------------------------------------|
-| `agents.<type>.provider`        | 不指定（继承） | 该工种的 provider 路由；缺省时继承父会话渠道                            |
-| `agents.<type>.model`           | 不指定（继承） | 该工种的模型；缺省时继承父会话模型                                      |
-| `agents.<type>.reasoningEffort` | 不指定         | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
-| `agents.<type>.dsv4p0813`       | false          | 是否对该工种启用 DSV4P0813 两阶段引导补丁                               |
+| `<type>.provider`               | 不指定（继承） | 该工种的 provider 路由；缺省时继承父会话渠道                            |
+| `<type>.model`                  | 不指定（继承） | 该工种的模型；缺省时继承父会话模型                                      |
+| `<type>.reasoningEffort`        | 不指定         | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
+| `<type>.dsv4p0813`              | false          | 是否对该工种启用 DSV4P0813 两阶段引导补丁                               |
+
+`<type>` 取值：sisyphus / hermes / explore / librarian / looker / hephaestus /
+prometheus / oracle。键为扁平结构（如 `hermes.model`，无 `agents.` 前缀），
+与下方 YAML 示例及设置页 schema 一致。
 
 ### 工种模型绑定
 
@@ -146,6 +150,10 @@ Librarian / Looker 用便宜轻量模型，Prometheus / Oracle 用最强模型�
 
 以下为插件级 config（`dsh plugin add` 的 config / bundle 层），与上面的
 settings 命名空间正交；默认值即旧硬编码口径（tisitan.8 起截断阈值可配）：
+
+> ⚠️ **仅 host 半（lib）读取这些 config 键**。MyGO 主形态（preset 会话）由
+> broker 行驱动，不暴露任何插件 config——在 preset 会话上调参不改变其行为；
+> 这些键只对未装配 MyGO preset 的 fallback 部署形态生效。
 
 | config 键               | 默认值 | 说明                                                                 |
 |-------------------------|--------|----------------------------------------------------------------------|
@@ -205,7 +213,7 @@ cd dsh-my-go
 bun install
 bun run build:client    # 构建 client bundle
 bunx tsc --noEmit       # 类型检查
-bun run test            # 冒烟测试
+bun run test            # 冒烟 + 37 例单测套件
 ```
 
 ## 维护状态

@@ -45,7 +45,7 @@
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.2.3-tisitan.10；test = 冒烟 + 单测
+├── package.json              # 包声明；版本 0.2.3-tisitan.11；test = 冒烟 + 单测
 ├── cordis.patch.yml          # bundle patch：dsh plugin add 后自动把 lib 挂进 profile（global 层）
 ├── CHANGELOG.md              # fork 修复台账（相对上游的全部差异）
 ├── README.md                 # 项目说明（含 fork 标识段）
@@ -82,15 +82,19 @@ dsh-my-go/
 │
 ├── test/
 │   ├── apply.mjs             # 冒烟：模块可加载 + client 可解析 + dist 存在
-│   ├── orchestration.test.mjs# 状态机 16 单测（占位占锁/revive/requeue/幽灵求助/上限…）
-│   ├── bridge.test.mjs       # apply 级集成 13 例（快照桥/队列重试/disposed 竞态/
-│   │                         #   派发模型绑定/settings 重基线/台账 v2 分桶）
-│   └── multi-session.test.mjs# 多会话隔离 4 例（A 忙 B 不排队/childOwner 路由/
-│                             #   session 销毁隔离/revive 重登记属主）（tisitan.10）
+│   ├── orchestration.test.mjs# 状态机 14 单测（占位占锁/revive/requeue/幽灵求助/上限…）
+│   ├── bridge.test.mjs       # apply 级集成 17 例（快照桥/队列回补重试与放弃/
+│   │                         #   disposed 竞态/派发模型绑定/settings 重基线/
+│   │                         #   台账 v2 分桶/多帧 zstd 附因/
+│   │                         #   need_help 上报失败可观测性/forward 信封化转义）
+│   ├── multi-session.test.mjs# 多会话隔离 4 例（A 忙 B 不排队/childOwner 路由/
+│   │                         #   session 销毁隔离/revive 重登记属主）（tisitan.10）
+│   └── host-parity.test.mjs  # lib 半 dispatchWork 模型校验对齐 2 例（tisitan.11）
 │
 ├── broker/                   # ⚠️ 归档的 TS 参考实现（见 broker/README.md），不参与构建运行
 ├── docs/
-│   ├── ARCHITECTURE.md       # 原始架构设计（已与实现同步）
+│   ├── ARCHITECTURE.md       # 原始架构设计（tisitan.11 起随实现同步更新，含
+│   │                         #   tisitan.10 会话隔离/台账 v2/面板门禁）
 │   └── FORK-GUIDE.md         # 本文档
 └── AGENTS.md                 # 编排规格书（设计哲学 + 通信协议 + 禁止事项）
 ```
@@ -146,7 +150,8 @@ dsh-my-go/
 |---|---|---|
 | 冒烟 | `test/apply.mjs` | 模块加载/导出面/client 语法/dist 存在 |
 | 单测 | `test/orchestration.test.mjs` | 状态机 14 例：占锁原子性、bindChild（含缺位告警）、finish 清求助、suspend/resume、revive、requeueHead、dropQueuedFor、dropQueuedFailed、history 200 上限、record/followupPrompt |
-| 集成 | `test/bridge.test.mjs` + `test/multi-session.test.mjs` | mock cordis ctx 跑 `broker.apply()`：bridge 13 例（Symbol.for 快照桥、队列回补重试/超上限放弃、disposed 竞态、dispatchWork 模型绑定解析、settings 重基线、台账 v2 分桶 round-trip）；multi-session 4 例（A 忙 B 不排队、childOwner 路由、session 销毁隔离、revive 重登记属主）（tisitan.10） |
+| 集成 | `test/bridge.test.mjs` + `test/multi-session.test.mjs` | mock cordis ctx 跑 `broker.apply()`：bridge 17 例（Symbol.for 快照桥两例、队列回补重试/超上限放弃、disposed 竞态两例、dispatchWork 模型绑定解析两例、settings 重基线、队列上岗映射通知、失败附因 live 推送、截断 config、台账 v2 分桶 round-trip、tisitan.9 持久化档案附因两例、tisitan.11 need_help 上报失败 warn+通知与 forward 信封化转义）；multi-session 4 例（A 忙 B 不排队、childOwner 路由、session 销毁隔离、revive 重登记属主）（tisitan.10） |
+| 半对齐 | `test/host-parity.test.mjs` | lib 半 dispatchWork 模型校验（modelExists 不过回落/无 provider 时直透）（tisitan.11） |
 
 ## 四、fork 与上游的关系
 
@@ -171,8 +176,8 @@ dsh-my-go/
 - **`bindSisyphus: true` 是全局副作用**：`agent/request` waterfall 会对
   「未登记工种的会话」套用 sisyphus 绑定——lib 半注册在 global 层，开启后
   连非 MyGO 会话的主模型也会被覆盖。默认关闭，勿轻开。
-- **默认绑定已清空（tisitan.7 起）**：`defaultBindings()` 七工种均为 `{}`，
-  不内置任何模型/渠道名，子代理完全继承环境默认路由。需要按工种分流
+- **默认绑定已清空（tisitan.7 起）**：`defaultBindings()` 八键（含 sisyphus）
+  均为 `{}`，不内置任何模型/渠道名，子代理完全继承环境默认路由。需要按工种分流
   必须自行配置（WebUI 设置页「MyGO 编排」或 `~/.dsh/settings.yaml`，
   示例见 README「工种模型绑定」），否则所有子代理与 Sisyphus 同路由。
 - **tool-mask 默认清单只是示例**：`preset/tool-mask.mjs` 的 `DEFAULT_DENY`
