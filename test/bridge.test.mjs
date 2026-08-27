@@ -34,9 +34,8 @@ test('broker.apply publishes Symbol.for("dsh-my-go.snapshot") accessor', async (
   assert.ok(snapshot === null || typeof snapshot === 'object')
   if (snapshot) {
     assert.equal(typeof snapshot.seq, 'number')
-    assert.ok(Array.isArray(snapshot.queue))
-    assert.ok(Array.isArray(snapshot.helpRequests))
-    assert.ok(Array.isArray(snapshot.history))
+    // 多会话聚合形状：{ seq, parents: { [parentSessionId]: {...} } }
+    assert.ok(snapshot.parents && typeof snapshot.parents === 'object' && !Array.isArray(snapshot.parents))
   }
 })
 
@@ -97,6 +96,8 @@ const withRealSignalContract = (fn) => async (spec) => {
 const execOf = (agent) => ({ agent, signal: new AbortController().signal })
 
 const snapshotNow = () => globalThis[Symbol.for('dsh-my-go.snapshot')]()
+// 多会话聚合形状下取某编排会话的分桶快照
+const snapOf = (pid) => snapshotNow()?.parents?.[pid]
 
 test('queued dispatch failure requeues and the retry timer drains the queue', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
@@ -120,7 +121,7 @@ test('queued dispatch failure requeues and the retry timer drains the queue', as
   // withRealSignalContract 会让每次重试都抛 TypeError，本断言必败）
   listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done-1' }] })
   await new Promise((r) => setTimeout(r, 100))
-  const snap = snapshotNow()
+  const snap = snapOf('parent-1')
   assert.equal(snap.queue.length, 0)
   assert.equal(snap.current?.agentType, 'hermes')
   assert.equal(snap.current?.status, 'running')
@@ -145,7 +146,7 @@ test('queued dispatch abandoned after retry cap: failed history + console.error'
     assert.equal(r2.status, 'queued')
     listeners.get('subagent/end')({ id: 'sess-x', stopReason: 'completed', lastAssistantMessage: [] })
     await new Promise((r) => setTimeout(r, 200))
-    const snap = snapshotNow()
+    const snap = snapOf('parent-gone')
     assert.equal(snap.queue.length, 0)
     assert.equal(snap.current, null)
     const failed = snap.history.filter((h) => h.status === 'failed')
@@ -188,7 +189,7 @@ test('agent/disposed before subagent/end (production order) still lands the conc
     assert.equal(r2.status, 'queued')
     // explore 的 end 紧随而至——必须正常落账，且不得串号到 hermes
     listeners.get('subagent/end')({ id: 'sess-explore', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'scout done' }] })
-    const snap = snapshotNow()
+    const snap = snapOf('parent-1')
     assert.equal(snap.history.length, 1)
     assert.equal(snap.history[0].agentType, 'explore')
     assert.equal(snap.history[0].status, 'done')
@@ -199,10 +200,10 @@ test('agent/disposed before subagent/end (production order) still lands the conc
     assert.ok(!warnings.some((line) => line.includes('no live record')))
     heldResolve({ childId: 'sess-hermes' })
     await new Promise((r) => setTimeout(r, 50))
-    assert.equal(snapshotNow().current?.status, 'running')
+    assert.equal(snapOf('parent-1').current?.status, 'running')
     // 宽限期兜底定时器已被 end 取消：grace 过后 explore 记录不被二次动刀
     await new Promise((r) => setTimeout(r, 100))
-    const after = snapshotNow()
+    const after = snapOf('parent-1')
     assert.equal(after.history.length, 1)
     assert.equal(after.current?.agentType, 'hermes')
   } finally {
@@ -232,7 +233,7 @@ test('agent/disposed without subagent/end: grace fallback frees the slot and dra
   // 子代理被销毁且 subagent/end 永远不到达
   listeners.get('agent/disposed')({ agent: { id: 'sess-1' } })
   await new Promise((r) => setTimeout(r, 150))
-  const snap = snapshotNow()
+  const snap = snapOf('parent-1')
   assert.equal(snap.queue.length, 0)
   assert.equal(snap.current?.agentType, 'hermes')
   assert.equal(snap.current?.status, 'running')
@@ -329,7 +330,7 @@ test('queued dispatch binds the real childId and notifies the parent with the wo
   assert.ok(r2.childId.startsWith('work-'))
   listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done-1' }] })
   await new Promise((r) => setTimeout(r, 50))
-  assert.equal(snapshotNow().current?.childId, 'sess-2')
+  assert.equal(snapOf('parent-1').current?.childId, 'sess-2')
   const notice = injected.find((m) => m.content?.[0]?.text?.includes('队列任务上岗'))
   assert.ok(notice, 'parent should receive the queue mapping notice')
   assert.ok(notice.content[0].text.includes(r2.childId), 'notice maps the work-* placeholder')
@@ -353,7 +354,7 @@ test('error stopReason reads the child session log: history conclusion and paren
   await tools.get('go_work').execute({ agent: 'explore', prompt: 'x' }, execOf(parent))
   // subagent/end 载荷无 error 字段——broker 必须读子会话档兜底
   listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  const snap = snapshotNow()
+  const snap = snapOf('parent-1')
   assert.equal(snap.history.length, 1)
   assert.equal(snap.history[0].status, 'failed')
   assert.ok(snap.history[0].conclusion.includes('provider 500: capacity exhausted'))
@@ -404,7 +405,9 @@ test('orchestration ledger persists history to disk and reloads it on the next a
     first.listeners.get('subagent/end')({ id: 'sess-p1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'durable conclusion' }] })
     await new Promise((r) => setTimeout(r, 400)) // 台账防抖落盘窗口
     const onDisk = JSON.parse(await readFile(join(dir, 'dsh-my-go', 'orchestration-ledger.json'), 'utf-8'))
-    assert.ok(onDisk.history.some((r) => r.childId === 'sess-p1'), 'ledger file should contain the finished record')
+    // v2 落盘形状：{ version: 2, parents: { [parentId]: [...history] } }
+    assert.equal(onDisk.version, 2)
+    assert.ok(onDisk.parents?.['parent-1']?.some((r) => r.childId === 'sess-p1'), 'ledger file should contain the finished record under its parent bucket')
     // 进程重启等价：全新 apply 从落盘台账读回 history
     const second = mockCtxFull({
       keepHome: true,
@@ -412,7 +415,7 @@ test('orchestration ledger persists history to disk and reloads it on the next a
       startContinuable: withRealSignalContract(async () => ({ childId: 'sess-p2' })),
     })
     await broker.apply(second.ctx, { queueRetryBaseMs: 5 })
-    const revived = snapshotNow().history.find((r) => r.childId === 'sess-p1')
+    const revived = snapOf('parent-1')?.history.find((r) => r.childId === 'sess-p1')
     assert.ok(revived, 'reloaded ledger should contain the finished child')
     assert.equal(revived.status, 'done')
     assert.equal(revived.conclusion, 'durable conclusion')
@@ -469,7 +472,7 @@ test('live store 摘除后从持久化档案提取失败附因（多帧 zstd，e
     await broker.apply(ctx, { queueRetryBaseMs: 5 })
     await tools.get('go_work').execute({ agent: 'explore', prompt: 'x' }, execOf(parent))
     listeners.get('subagent/end')({ id: childId, stopReason: 'error', lastAssistantMessage: [] })
-    const snap = snapshotNow()
+    const snap = snapOf('parent-1')
     assert.equal(snap.history.length, 1)
     assert.equal(snap.history[0].status, 'failed')
     assert.ok(snap.history[0].conclusion.includes('provider 429: rate limited'), 'archive-sourced message lands in conclusion')
@@ -507,7 +510,7 @@ test('无持久化档案时静默退回无附因（console.warn 留痕，不抛�
     await tools.get('go_work').execute({ agent: 'explore', prompt: 'x' }, execOf(parent))
     // 档案目录从未写入：readTurnFailure 静默退回，end 处理照常落账
     listeners.get('subagent/end')({ id: 'sess-missing', stopReason: 'error', lastAssistantMessage: [] })
-    const snap = snapshotNow()
+    const snap = snapOf('parent-1')
     assert.equal(snap.history.length, 1)
     assert.equal(snap.history[0].status, 'failed')
     assert.equal(snap.history[0].conclusion, '(error)', 'no附因时结论退回 stopReason 占位')

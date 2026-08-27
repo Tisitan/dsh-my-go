@@ -3,6 +3,42 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.10] - 2026-08-25
+
+**多会话编排隔离**（用户实测发现：会话1编排时，会话2的 go_work 被全局
+单线阻塞排队）。`preset/tools/broker.mjs` 与 `lib/index.js` 同构实施。
+
+### 根因
+
+MyGO preset 的 broker 是 standing-scope 全进程单例（每进程挂载一次、所有
+会话共享），`new Orchestration()` 只有一份——「单线阻塞」实际是全进程
+单线，而非每个编排会话各一条流水线。
+
+### 改造
+
+- **流水线按会话拆分**：`orchestrations = Map<parentSessionId, Orchestration>`
+  惰性创建；每个 Sisyphus 会话独立的 current/queue/helpRequests/history，
+  会话销毁（session/disposed）时整条流水线回收。新增 `childOwner`
+  （childId→属主会话）路由表，所有工具与生命周期事件按调用方精准路由。
+- **台账持久化升级 v2**：按 parentSessionId 分桶落盘；v1 旧档载入
+  'legacy' 桶，供 continue/forward 全局扫描兜底命中。
+- **快照桥形状升级**：`{ seq, parents: { [pid]: {...} } }`，lib RPC 端点
+  两侧形状严格一致。
+- **面板多会话并列**：摊平所有会话的运行/队列/求助/历史，多会话时附
+  会话短后缀区分。
+- **自动跳转会话门禁**：只跟随「当前打开会话」的子代理（读
+  `sessions.list.getSnapshot().current`），拿不到可靠 id 时退化为
+  单 parent 才跳——多会话下绝不把用户拽去别的会话。
+- **spawning 竞态归因加固**：多会话并行派发可能出现多个 in-flight
+  spawning，恰有一个可归因时才绑定，多个则留痕忽略（绝不乱绑），
+  靠 disposed 宽限期兜底清槽。
+
+### 测试
+
+- 新增 `test/multi-session.test.mjs`（4 例：A 忙 B 不排队、childOwner
+  路由、session 销毁隔离、revive 重登记属主）；`test/bridge.test.mjs`
+  适配新快照形状。npm test 33/33 绿，tsc 通过。
+
 ## [0.2.3-tisitan.9] - 2026-08-25
 
 「失败附因时序性失效」修复批：`preset/tools/broker.mjs` 与 `lib/index.js`

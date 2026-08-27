@@ -49,7 +49,9 @@ export function apply(ctx) {
 
   // ── shared state ────────────────────────────────────────────────────────
   let panelOpen = false
-  let snapshot = { seq: 0, current: null, queue: [], helpRequests: [], history: [] }
+  // 多会话聚合形状：{ seq, parents: { [parentSessionId]: { parentSessionId,
+  // current, queue, helpRequests, history } } }
+  let snapshot = { seq: 0, parents: {} }
   // null=尚未探活, true=编排桥就绪, false=未就绪（面板显示提示态而非静默空白）
   let bridgeOk = null
   const listeners = new Set()
@@ -108,6 +110,12 @@ export function apply(ctx) {
 
     if (!panelOpen) return null
     const s = snapshot
+    // 面板扁平化展示所有编排会话的条目；parents 数量 >1 时每条附
+    // parentSessionId 短后缀区分归属
+    const parents = s.parents && typeof s.parents === 'object' ? s.parents : {}
+    const parentList = Object.values(parents)
+    const multi = parentList.length > 1
+    const tag = (pid) => (multi ? ` ·${String(pid).slice(-6)}` : '')
 
     const node = (label, status, childId, onClick) =>
       React.createElement('div', {
@@ -119,13 +127,18 @@ export function apply(ctx) {
         childId ? React.createElement('span', { style: { color: '#888', fontSize: 11 } }, childId) : null,
       )
 
-    const jump = (childId) => {
+    const jump = (childId, parentSessionId) => {
       if (sessions && typeof sessions.openSubagent === 'function') {
-        sessions.openSubagent({ parentSessionId: snapshot.parentSessionId ?? '', childSessionId: childId, mode: 'continuable' })
+        sessions.openSubagent({ parentSessionId: parentSessionId ?? '', childSessionId: childId, mode: 'continuable' })
       }
     }
 
-    const current = s.current
+    const currents = parentList.filter((p) => p && p.current)
+    const queues = parentList.flatMap((p) => (Array.isArray(p?.queue) ? p.queue.map((w) => ({ ...w, parentSessionId: p.parentSessionId })) : []))
+    const helps = parentList.flatMap((p) => (Array.isArray(p?.helpRequests) ? p.helpRequests.map((h) => ({ ...h, parentSessionId: p.parentSessionId })) : []))
+    const histories = parentList
+      .flatMap((p) => (Array.isArray(p?.history) ? p.history.map((r) => ({ ...r, parentSessionId: p.parentSessionId })) : []))
+      .sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0))
     return React.createElement('div', {
       style: {
         position: 'fixed',
@@ -156,26 +169,29 @@ export function apply(ctx) {
 
       React.createElement('div', { style: { marginBottom: 8 } },
         React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '运行中'),
-        current
-          ? node(typeLabel(current.agentType), statusGlyph(current.status), current.childId, () => current.childId && jump(current.childId))
+        currents.length > 0
+          ? currents.map((p) => {
+              const c = p.current
+              return node(`${typeLabel(c.agentType)}${tag(p.parentSessionId)}`, statusGlyph(c.status), c.childId, () => c.childId && jump(c.childId, p.parentSessionId))
+            })
           : React.createElement('div', { style: { color: '#888' } }, '○ 空闲'),
       ),
 
       React.createElement('div', { style: { marginBottom: 8 } },
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `队列 (${s.queue.length})`),
-        s.queue.map((w) => node(typeLabel(w.agentType), '⏳', w.id)),
+        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `队列 (${queues.length})`),
+        queues.map((w) => node(`${typeLabel(w.agentType)}${tag(w.parentSessionId)}`, '⏳', w.id)),
       ),
 
       React.createElement('div', { style: { marginBottom: 8 } },
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `求助 (${s.helpRequests.length})`),
-        s.helpRequests.map((h) => node(`[${intentLabel(h.intent)}]`, '❓', h.childId, () => h.childId && jump(h.childId))),
+        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `求助 (${helps.length})`),
+        helps.map((h) => node(`[${intentLabel(h.intent)}]${tag(h.parentSessionId)}`, '❓', h.childId, () => h.childId && jump(h.childId, h.parentSessionId))),
       ),
 
       React.createElement('div', null,
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `历史 (${s.history.length})`),
-        s.history.slice(-8).map((r) => {
+        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `历史 (${histories.length})`),
+        histories.slice(-8).map((r) => {
           const rec = r
-          return node(`${typeLabel(rec.agentType)} — ${String(rec.conclusion ?? '').replace(/\s+/g, ' ').slice(0, 60)}`, statusGlyph(rec.status), rec.childId, () => rec.childId && jump(rec.childId))
+          return node(`${typeLabel(rec.agentType)}${tag(rec.parentSessionId)} — ${String(rec.conclusion ?? '').replace(/\s+/g, ' ').slice(0, 60)}`, statusGlyph(rec.status), rec.childId, () => rec.childId && jump(rec.childId, rec.parentSessionId))
         }),
       ),
     )
@@ -341,33 +357,63 @@ export function apply(ctx) {
   }
 
   // ── auto-jump: follow running sub-agent, jump back on settle ────────────
-  let lastJumpedTo = null
+  // 门禁：只有 running 条目的 parentSessionId === 当前打开的会话时才跳——
+  // 多会话并行时绝不把用户从别的会话拽走。当前会话 id 读法：
+  // sessions.list（SnapshotStore<SessionListState>）的 getSnapshot().current
+  // （dsh-client-runtime types/client/sessions/service.d.ts:158,72）。
+  // 拿不到可靠 id 时退化：仅当恰好只有一个 parent 有 running current 才跳
+  // （保持单会话老行为）。跳回父会话同理加门禁。
+  let lastJumped = null // { childId, parentSessionId } | null
+  const currentSessionId = () => {
+    try {
+      const list = sessions?.list
+      if (list && typeof list.getSnapshot === 'function') {
+        const current = list.getSnapshot()?.current
+        if (typeof current === 'string' && current) return current
+      }
+    } catch { /* store shape drift: fall through to degraded mode */ }
+    return undefined
+  }
   const unsub = () => { listeners.delete(refresh) }
   listeners.add(refresh)
 
   const stopAutoJump = timer && typeof timer.interval === 'function'
     ? timer.interval(() => {
-        const current = snapshot.current
-        if (current && current.childId && current.status === 'running' && lastJumpedTo !== current.childId && sessions) {
-          lastJumpedTo = current.childId
-          const parentSessionId = snapshot.parentSessionId
-          if (parentSessionId) {
-            try {
-              sessions.openSubagent({
-                parentSessionId,
-                childSessionId: current.childId,
-                mode: 'continuable',
-              })
-            } catch { /* fallback: just open the child session directly */ }
+        if (!sessions) return
+        const parents = snapshot.parents && typeof snapshot.parents === 'object' ? snapshot.parents : {}
+        const running = Object.values(parents).filter((p) => p?.current?.childId && p.current.status === 'running')
+        const myId = currentSessionId()
+        if (lastJumped) {
+          const owner = parents[lastJumped.parentSessionId]
+          const stillRunning = owner?.current?.childId === lastJumped.childId && owner.current.status === 'running'
+          if (stillRunning) return
+          // 子智能体结束：跳回 Sisyphus 父会话（ARCHITECTURE.md §3 的闭环）。
+          // 门禁通过条件：当前停在父会话，或停在刚刚跟随的那个子会话上；
+          // 拿不到当前会话 id 时退化为仅单 parent 场景跳回（单会话老行为）。
+          const { childId, parentSessionId: pid } = lastJumped
+          lastJumped = null
+          const gated = myId !== undefined ? (myId === pid || myId === childId) : Object.keys(parents).length <= 1
+          if (gated && pid && typeof sessions.open === 'function') {
+            try { sessions.open(pid) } catch { /* parent session may be gone */ }
           }
-        } else if (!current && lastJumpedTo && sessions) {
-          // 子智能体结束：跳回 Sisyphus 父会话（ARCHITECTURE.md §3 的闭环）
-          const parentSessionId = snapshot.parentSessionId
-          lastJumpedTo = null
-          if (parentSessionId && typeof sessions.open === 'function') {
-            try { sessions.open(parentSessionId) } catch { /* parent session may be gone */ }
-          }
+          return
         }
+        if (running.length === 0) return
+        let target
+        if (myId !== undefined) {
+          target = running.find((p) => p.parentSessionId === myId)
+        } else if (running.length === 1) {
+          target = running[0]
+        }
+        if (!target) return
+        lastJumped = { childId: target.current.childId, parentSessionId: target.parentSessionId }
+        try {
+          sessions.openSubagent({
+            parentSessionId: target.parentSessionId,
+            childSessionId: target.current.childId,
+            mode: 'continuable',
+          })
+        } catch { /* fallback: just open the child session directly */ }
       }, 800)
     : undefined
 

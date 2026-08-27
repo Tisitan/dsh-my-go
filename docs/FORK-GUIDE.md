@@ -45,7 +45,7 @@
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.2.3-tisitan.9；test = 冒烟 + 单测
+├── package.json              # 包声明；版本 0.2.3-tisitan.10；test = 冒烟 + 单测
 ├── cordis.patch.yml          # bundle patch：dsh plugin add 后自动把 lib 挂进 profile（global 层）
 ├── CHANGELOG.md              # fork 修复台账（相对上游的全部差异）
 ├── README.md                 # 项目说明（含 fork 标识段）
@@ -82,9 +82,11 @@ dsh-my-go/
 │
 ├── test/
 │   ├── apply.mjs             # 冒烟：模块可加载 + client 可解析 + dist 存在
-│   ├── orchestration.test.mjs# 状态机 14 单测（占位占锁/revive/requeue/幽灵求助/上限…）
-│   └── bridge.test.mjs       # apply 级集成 9 例（快照桥/队列重试/disposed 竞态/
-│                             #   派发模型绑定/settings 重基线）
+│   ├── orchestration.test.mjs# 状态机 16 单测（占位占锁/revive/requeue/幽灵求助/上限…）
+│   ├── bridge.test.mjs       # apply 级集成 13 例（快照桥/队列重试/disposed 竞态/
+│   │                         #   派发模型绑定/settings 重基线/台账 v2 分桶）
+│   └── multi-session.test.mjs# 多会话隔离 4 例（A 忙 B 不排队/childOwner 路由/
+│                             #   session 销毁隔离/revive 重登记属主）（tisitan.10）
 │
 ├── broker/                   # ⚠️ 归档的 TS 参考实现（见 broker/README.md），不参与构建运行
 ├── docs/
@@ -99,9 +101,9 @@ dsh-my-go/
 
 | 功能 | 实现位置 | 原理 |
 |---|---|---|
-| 派发子代理（go_work） | `preset/tools/broker.mjs` `dispatchWork()` | 检查 `isBusy()` → 忙则 `enqueue()` 排队（返回 `work-*` 占位 id）；闲则 `beginSpawning()` 占位占锁（同步原子）→ `ctx.subagents.startContinuable()` 创建持久子会话 → `bindChild()` 绑定真实 childId |
-| 单线阻塞 | `broker.mjs` `Orchestration.currentMap` | 单槽 Map；`isBusy()` 到 `beginSpawning()` 之间无 await，Node 单线程下天然原子 |
-| 队列推进 | `broker.mjs` `advanceQueue()` | `subagent/end` 或 spawn 失败时触发：dequeue 队首 → dispatch；**失败自动 `requeueHead()` 回补**（fork 修复：任务不再蒸发） |
+| 派发子代理（go_work） | `preset/tools/broker.mjs` `dispatchWork()` | 检查属主会话实例的 `isBusy()` → 忙则 `enqueue()` 排队（返回 `work-*` 占位 id）；闲则 `beginSpawning()` 占位占锁（同步原子）→ `ctx.subagents.startContinuable()` 创建持久子会话 → `bindChild()` 绑定真实 childId 并登记 `childOwner` 属主映射 |
+| 单线阻塞（tisitan.10 起按会话隔离） | `broker.mjs` `orchestrations: Map<会话id, Orchestration>` | 每个 Sisyphus 会话惰性建独立流水线（current/queue/history 各自为政，互不排队）；`childOwner` 路由表把子代理事件精准路由回属主流水线；会话销毁时整条回收。单槽内 `isBusy()` 到 `beginSpawning()` 之间无 await，Node 单线程下天然原子 |
+| 队列推进 | `broker.mjs` `advanceQueue(orch)` | 属主实例的 `subagent/end` 或 spawn 失败时触发：dequeue 队首 → 按 `work.parentId` 重解析父会话 → dispatch；**失败自动 `requeueHead()` 回补**（fork 修复：任务不再蒸发） |
 | 求助挂起（need_help） | `broker.mjs` need_help 工具 | `suspend()` 标记 waiting + `reportFrom` 把求助单注入 Sisyphus 下一步。注：台账层挂起，无强制 interrupt（评估结论见第五节） |
 | 驳回/追问（continue） | `broker.mjs` continue 工具 | **先 `followup` 投递成功，后落账**（fork 修复时序病）；目标 waiting 则 resolveHelp+resume；目标已结束则 `revive()` 重新入册 + 恢复 sessionTypes 登记（fork 修复：结论不再丢失、单线不再被打破） |
 | 转发（forward） | `broker.mjs` forward 工具 | 同上「先投递后销账」；target 为工种名时等效 go_work，为 childId 时等效 continue |
@@ -132,8 +134,8 @@ dsh-my-go/
 | 功能 | 实现位置 | 原理 |
 |---|---|---|
 | 树状图面板 | `src/client.js` `TreePanel` | `shell.overlay` 浮层 + 侧栏 🧭 开关；600ms 轮询 RPC `snapshot` 端点，seq 变化才重渲染（fork 修复：开关脱钩 + force bailout） |
-| 快照桥（fork 新增） | `broker.mjs` 发布 ↔ `lib/index.js` RPC 消费 | broker 把 `() => latestSnapshot` 挂到 `globalThis[Symbol.for('dsh-my-go.snapshot')]`；lib 的 RPC handler 优先实时读取（零副本），桥不在则回落自身状态机 |
-| 自动跳转 | `src/client.js` 定时器 | 子代理 running → `sessions.openSubagent()` 跟跳子会话；结束后 `sessions.open(parentSessionId)` 跳回（fork 补全跳回闭环 + 快照补上 parentSessionId） |
+| 快照桥（fork 新增） | `broker.mjs` 发布 ↔ `lib/index.js` RPC 消费 | broker 把 `() => latestSnapshot` 挂到 `globalThis[Symbol.for('dsh-my-go.snapshot')]`；lib 的 RPC handler 优先实时读取（零副本），桥不在则回落自身状态机。tisitan.10 起形状为 `{ seq, parents: { [会话id]: { current, queue, helpRequests, history } } }`（多会话聚合） |
+| 自动跳转 | `src/client.js` 定时器 | 子代理 running → `sessions.openSubagent()` 跟跳子会话；结束后 `sessions.open(parentSessionId)` 跳回。tisitan.10 起加**会话门禁**：只跟随当前打开的会话（`sessions.list.getSnapshot().current`），多会话并行时绝不把用户拽去别的会话 |
 | 设置页 | `src/client.js` `SettingsPage` ↔ `lib/index.js` RPC | 8 工种 × 4 字段；loadSettings 失败时 `draft=null` 禁止保存（fork 修复：不再一键清空配置）；saveSettings 空值 unset、显式 false 可表达（fork 修复） |
 | settings 合并 | `broker.mjs` / `lib/index.js` | 永远从 `baseBindings`（默认值+插件 config）起算合并 stored（fork 修复：WebUI 取消配置可回落）；`||` 语义统一（空串=未设置） |
 | preset 同步 | `lib/index.js` `ensurePresetInstalled()` | 版本标记文件 `.dsh-my-go-version`：版本不变则跳过（fork 修复：不再每次强制覆盖用户手改） |
@@ -144,7 +146,7 @@ dsh-my-go/
 |---|---|---|
 | 冒烟 | `test/apply.mjs` | 模块加载/导出面/client 语法/dist 存在 |
 | 单测 | `test/orchestration.test.mjs` | 状态机 14 例：占锁原子性、bindChild（含缺位告警）、finish 清求助、suspend/resume、revive、requeueHead、dropQueuedFor、dropQueuedFailed、history 200 上限、record/followupPrompt |
-| 集成 | `test/bridge.test.mjs` | mock cordis ctx 跑 `broker.apply()` 共 9 例：Symbol.for 快照桥 ×2、队列回补重试/超上限放弃/disposed 竞态 ×4（tisitan.6）、dispatchWork 模型绑定解析 ×2、settings 重基线 ×1（tisitan.7） |
+| 集成 | `test/bridge.test.mjs` + `test/multi-session.test.mjs` | mock cordis ctx 跑 `broker.apply()`：bridge 13 例（Symbol.for 快照桥、队列回补重试/超上限放弃、disposed 竞态、dispatchWork 模型绑定解析、settings 重基线、台账 v2 分桶 round-trip）；multi-session 4 例（A 忙 B 不排队、childOwner 路由、session 销毁隔离、revive 重登记属主）（tisitan.10） |
 
 ## 四、fork 与上游的关系
 
