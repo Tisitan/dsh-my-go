@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.2.3-tisitan.11",
+  "version": "0.2.3-tisitan.12",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -145,6 +145,41 @@ dsh-my-go:
 
 建议分工：Sisyphus / Hephaestus 用中等能力模型，Hermes / Explore /
 Librarian / Looker 用便宜轻量模型，Prometheus / Oracle 用最强模型。
+
+### 备选链（fallbacks，自动重派）
+
+每个工种可配 `fallbacks` 备选链：链首是上文的 `provider`/`model` 主绑定
+（attempt 0），其后每条备选依次为 attempt 1、2、…：
+
+```yaml
+dsh-my-go:
+  hermes:
+    provider: your-primary-gateway
+    model: your-cheap-model
+    fallbacks:                      # 主绑定失败时依序切换
+      - provider: your-backup-gateway
+        model: your-cheap-model-b
+      - provider: your-backup-gateway
+        model: your-cheap-model-c
+```
+
+重派语义：
+
+- **触发**：子代理以 `error` 终局（404/模型不存在等立即败，或 429/5xx/
+  超时在 DSH 内建重试耗尽后）且错误分类器放行。用户中断/abort 类绝不切换；
+  附因读不到（档案缺失）但有链时保守切换，日志注明「未读到附因，保守切换」。
+- **动作**：同 prompt、同父会话、同工种自动重派，`agentOptions` 覆盖为备选
+  条目；不入队、不占新槽位（原槽位语义内换键），不与单线阻塞/队列交互。
+- **预检**：备选条目同样经 `llm.listModels` 校验，无效条目 warn 跳过并尝试
+  下一条；链尽即止（attempt 严格递增，绝无无限循环），全部失败落既有失败
+  历史并保留失败附因。
+- **留痕**：每次切换在历史/台账标注 `[备选 n/m] 失败 → 自动切换备选
+  provider/model 重派`，并向原父会话推送一行重派通知。
+- **已知限制**：备选重派的历史结论措辞先于 spawn 成功落史——重派 spawn
+  失败时不改写已落历史，以 `console.error` 留痕并向原父会话推送修正通知。
+
+设置页「MyGO 编排」每工种卡片内置备选链可视化编辑器：逐行编辑备选
+provider/model、↑↓ 调整链序、模型下拉按所选渠道过滤，与 YAML 手工编辑等价。
 
 ### 插件 config 键（broker 行为调参）
 

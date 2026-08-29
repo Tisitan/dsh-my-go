@@ -18,6 +18,9 @@
 
 import * as React from 'react'
 
+import { normalizeFallbackRows, addFallbackRow, removeFallbackRow, moveFallbackRow, updateFallbackRow } from './fallback-rows.js'
+import { shortId, oneLine, formatRelativeTime, extractFallbackNote } from './panel-format.js'
+
 export const name = 'dsh-my-go'
 
 export const inject = ['slots', 'settingsScope', 'connection']
@@ -34,6 +37,35 @@ const AGENT_LABELS = {
   oracle: '疑难/极端复杂兜底 Oracle',
 }
 const typeLabel = (t) => AGENT_LABELS[t] ?? String(t ?? '?')
+// 工种徽章色板（面板 chip / 设置页共用）：深色底上取中亮度、彼此可辨的克制色
+const AGENT_COLORS = {
+  sisyphus: '#64b5f6',
+  hermes: '#4db6ac',
+  explore: '#4dd0e1',
+  librarian: '#81c784',
+  looker: '#ba68c8',
+  hephaestus: '#ffb74d',
+  prometheus: '#7986cb',
+  oracle: '#e57373',
+}
+// 设置页卡片标题行的一句话角色说明
+const AGENT_BLURBS = {
+  sisyphus: '接需求、派活、验收把关',
+  hermes: '指令明确、步骤具体的体力活',
+  explore: 'grep、读文件、定位符号',
+  librarian: '读文档、API 参考、历史资料',
+  looker: '识别截图、设计稿、图表',
+  hephaestus: '单文件重构、模块实现、写测试',
+  prometheus: '理解模糊需求，拆解成步骤',
+  oracle: '其他工种都搞不定时再上',
+}
+const typeName = (t) => { const s = String(t ?? '?'); return s.charAt(0).toUpperCase() + s.slice(1) }
+// 面板状态色（左缘色条）：运行=青，队列=琥珀，求助=红，历史无条
+const ACCENT_RUNNING = '#26a69a'
+const ACCENT_QUEUE = '#e6a23c'
+const ACCENT_HELP = '#ef5350'
+const ACCENT_FALLBACK = '#ce93d8'
+const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
 const INTENT_LABELS = { explore: '检索', read_doc: '查文档', look_image: '看图', replan: '请求换工种', execute: '请求代执行', ask_user: '请求问用户' }
 const intentLabel = (i) => INTENT_LABELS[i] ?? String(i ?? '?')
 
@@ -105,27 +137,82 @@ export function apply(ctx) {
     React.useEffect(() => {
       const rerender = () => force((c) => c + 1)
       listeners.add(rerender)
-      return () => listeners.delete(rerender)
+      // 相对时间（「3 分钟前」）需要自刷新：快照不变时不触发重渲染
+      const tick = setInterval(() => force((c) => c + 1), 30_000)
+      return () => { listeners.delete(rerender); clearInterval(tick) }
     }, [])
 
     if (!panelOpen) return null
     const s = snapshot
     // 面板扁平化展示所有编排会话的条目；parents 数量 >1 时每条附
-    // parentSessionId 短后缀区分归属
+    // parentSessionId 短后缀 chip 区分归属
     const parents = s.parents && typeof s.parents === 'object' ? s.parents : {}
     const parentList = Object.values(parents)
     const multi = parentList.length > 1
-    const tag = (pid) => (multi ? ` ·${String(pid).slice(-6)}` : '')
 
-    const node = (label, status, childId, onClick) =>
-      React.createElement('div', {
-        style: { padding: '2px 8px', cursor: onClick ? 'pointer' : 'default', display: 'flex', gap: 8, alignItems: 'center' },
-        onClick,
+    // 统一徽章（chip）：标识符一律等宽小字、浅底圆角；title 悬浮给全量值
+    const chip = (text, full, color) => React.createElement('span', {
+      title: full ?? text,
+      style: {
+        flexShrink: 0,
+        maxWidth: 110,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        fontFamily: MONO_FONT,
+        fontSize: 10,
+        lineHeight: '15px',
+        padding: '0 5px',
+        borderRadius: 4,
+        color: color ?? '#9e9e9e',
+        background: color ? `${color}22` : 'rgba(255,255,255,0.07)',
       },
-        React.createElement('span', null, status),
-        React.createElement('span', null, label),
-        childId ? React.createElement('span', { style: { color: '#888', fontSize: 11 } }, childId) : null,
-      )
+    }, text)
+
+    // 工种彩色徽章：每工种固定色，悬浮 title 给完整中文名
+    const typeChip = (t) => React.createElement('span', {
+      title: typeLabel(t),
+      style: {
+        flexShrink: 0,
+        fontFamily: MONO_FONT,
+        fontSize: 10,
+        lineHeight: '15px',
+        padding: '0 5px',
+        borderRadius: 4,
+        fontWeight: 600,
+        color: AGENT_COLORS[t] ?? '#9e9e9e',
+        background: `${AGENT_COLORS[t] ?? '#9e9e9e'}22`,
+      },
+    }, typeName(t))
+
+    const suffixChip = (pid) => (multi ? chip(`·${String(pid ?? '').slice(-6)}`, String(pid ?? '')) : null)
+
+    // 统一行：左侧 2px 状态色条 + 状态字形 + 内容 cells，间距/行高全面板一致
+    const row = (opts, ...cells) => React.createElement('div', {
+      key: opts.key,
+      onClick: opts.onClick,
+      title: opts.title,
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        minWidth: 0,
+        padding: '3px 6px 3px 8px',
+        marginBottom: 2,
+        borderRadius: 4,
+        borderLeft: `2px solid ${opts.accent ?? 'transparent'}`,
+        cursor: opts.onClick ? 'pointer' : 'default',
+      },
+    },
+      React.createElement('span', { style: { flexShrink: 0, width: 14, textAlign: 'center', color: opts.glyphColor } }, opts.glyph),
+      ...cells,
+    )
+
+    // 单行省略号的收尾文本（结论等长内容），完整文本走 title
+    const tail = (text, title) => React.createElement('span', {
+      title,
+      style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#a0a0a0', fontSize: 12 },
+    }, text)
 
     const jump = (childId, parentSessionId) => {
       if (sessions && typeof sessions.openSubagent === 'function') {
@@ -139,6 +226,13 @@ export function apply(ctx) {
     const histories = parentList
       .flatMap((p) => (Array.isArray(p?.history) ? p.history.map((r) => ({ ...r, parentSessionId: p.parentSessionId })) : []))
       .sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0))
+
+    // 区块标题 + 计数徽章
+    const sectionHeader = (title, count, hint) => React.createElement('div', { title: hint, style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 } },
+      React.createElement('span', { style: { fontWeight: 600, fontSize: 12 } }, title),
+      React.createElement('span', { style: { fontSize: 11, lineHeight: '15px', padding: '0 6px', borderRadius: 8, background: 'rgba(255,255,255,0.08)', color: '#999' } }, String(count)),
+    )
+
     return React.createElement('div', {
       style: {
         position: 'fixed',
@@ -156,44 +250,99 @@ export function apply(ctx) {
         fontSize: 13,
       },
     },
-      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 8 } },
+      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
         React.createElement('strong', null, 'Sisyphus 编排'),
         React.createElement('button', { onClick: () => { panelOpen = false; emit() } }, '×'),
       ),
 
       bridgeOk === false
         ? React.createElement('div', {
-            style: { marginBottom: 8, padding: '6px 8px', borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 12 },
+            style: { marginBottom: 10, padding: '6px 8px', borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 12 },
           }, '⚠ 编排桥未就绪：host 端 /dsh-my-go RPC 无响应（插件未激活或仍在启动），面板将持续自动重试。')
         : null,
 
-      React.createElement('div', { style: { marginBottom: 8 } },
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '运行中'),
+      // 运行中：保留区块（空时显示「空闲」，用户习惯看它），等待求助的条目用红色
+      React.createElement('div', { style: { marginBottom: 10 } },
+        sectionHeader('运行中', currents.length),
         currents.length > 0
           ? currents.map((p) => {
               const c = p.current
-              return node(`${typeLabel(c.agentType)}${tag(p.parentSessionId)}`, statusGlyph(c.status), c.childId, () => c.childId && jump(c.childId, p.parentSessionId))
+              const waiting = c.status === 'waiting'
+              return row({
+                key: `cur-${p.parentSessionId}-${c.childId ?? ''}`,
+                glyph: statusGlyph(c.status),
+                glyphColor: waiting ? ACCENT_HELP : ACCENT_RUNNING,
+                accent: waiting ? ACCENT_HELP : ACCENT_RUNNING,
+                onClick: c.childId ? () => jump(c.childId, p.parentSessionId) : undefined,
+                title: c.childId ? `${typeLabel(c.agentType)}\n${c.childId}` : typeLabel(c.agentType),
+              },
+                typeChip(c.agentType),
+                suffixChip(p.parentSessionId),
+                c.childId ? chip(shortId(c.childId), c.childId) : null,
+              )
             })
-          : React.createElement('div', { style: { color: '#888' } }, '○ 空闲'),
+          : React.createElement('div', { style: { color: '#888', fontSize: 12, padding: '2px 8px' } }, '○ 空闲'),
       ),
 
-      React.createElement('div', { style: { marginBottom: 8 } },
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `队列 (${queues.length})`),
-        queues.map((w) => node(`${typeLabel(w.agentType)}${tag(w.parentSessionId)}`, '⏳', w.id)),
-      ),
+      // 队列 / 求助：空时整区折叠隐藏（比显示「无」更干净）
+      queues.length > 0
+        ? React.createElement('div', { style: { marginBottom: 10 } },
+            sectionHeader('队列', queues.length),
+            queues.map((w, i) => row({
+              key: `q-${w.parentSessionId}-${w.id ?? i}`,
+              glyph: '⏳',
+              accent: ACCENT_QUEUE,
+              title: String(w.id ?? ''),
+            },
+              typeChip(w.agentType),
+              suffixChip(w.parentSessionId),
+              chip(shortId(w.id), w.id),
+            )),
+          )
+        : null,
 
-      React.createElement('div', { style: { marginBottom: 8 } },
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `求助 (${helps.length})`),
-        helps.map((h) => node(`[${intentLabel(h.intent)}]${tag(h.parentSessionId)}`, '❓', h.childId, () => h.childId && jump(h.childId, h.parentSessionId))),
-      ),
+      helps.length > 0
+        ? React.createElement('div', { style: { marginBottom: 10 } },
+            sectionHeader('求助', helps.length),
+            helps.map((h, i) => row({
+              key: `hlp-${h.parentSessionId}-${h.childId ?? i}`,
+              glyph: '❓',
+              accent: ACCENT_HELP,
+              onClick: h.childId ? () => jump(h.childId, h.parentSessionId) : undefined,
+              title: h.childId ? `${intentLabel(h.intent)}\n${h.childId}` : intentLabel(h.intent),
+            },
+              React.createElement('span', { style: { flexShrink: 0 } }, intentLabel(h.intent)),
+              suffixChip(h.parentSessionId),
+              h.childId ? chip(shortId(h.childId), h.childId) : null,
+            )),
+          )
+        : null,
 
-      React.createElement('div', null,
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, `历史 (${histories.length})`),
-        histories.slice(-8).map((r) => {
-          const rec = r
-          return node(`${typeLabel(rec.agentType)}${tag(rec.parentSessionId)} — ${String(rec.conclusion ?? '').replace(/\s+/g, ' ').slice(0, 60)}`, statusGlyph(rec.status), rec.childId, () => rec.childId && jump(rec.childId, rec.parentSessionId))
-        }),
-      ),
+      // 历史：工种彩色徽章 + [备选 n/m] 紫色徽章 + 结论单行省略 + 相对时间
+      histories.length > 0
+        ? React.createElement('div', null,
+            sectionHeader('历史', Math.min(8, histories.length), '仅显示最近 8 条结论'),
+            histories.slice(-8).map((r, i) => {
+              const { note, text } = extractFallbackNote(r.conclusion)
+              const rel = formatRelativeTime(r.updatedAt)
+              const ts = Number(r.updatedAt)
+              const abs = Number.isFinite(ts) && ts > 0 ? new Date(ts).toLocaleString() : null
+              const title = [typeLabel(r.agentType), abs, oneLine(r.conclusion)].filter(Boolean).join('\n')
+              return row({
+                key: `his-${r.parentSessionId}-${r.childId ?? i}`,
+                glyph: statusGlyph(r.status),
+                onClick: r.childId ? () => jump(r.childId, r.parentSessionId) : undefined,
+                title,
+              },
+                typeChip(r.agentType),
+                suffixChip(r.parentSessionId),
+                note ? chip(note, `${note}（备选链自动重派）`, ACCENT_FALLBACK) : null,
+                tail(text, title),
+                rel ? React.createElement('span', { style: { flexShrink: 0, color: '#777', fontSize: 11 } }, rel) : null,
+              )
+            }),
+          )
+        : null,
     )
   }
 
@@ -264,6 +413,12 @@ export function apply(ctx) {
       })
     }
 
+    // 备选链编辑：整组行替换写入 draft。draft 里始终以数组提交；空链（0 行）
+    // 提交为 []，host 半 saveSettings 会自动转 unset，前端无需特判。
+    const setFallbacks = (type, rows) => {
+      setDraft((prev) => ({ ...prev, [type]: { ...prev?.[type], fallbacks: rows } }))
+    }
+
     // Manual save only — auto-save risks infinite loops with settings/updated events
     const save = async () => {
       if (!draft) { setMsg('配置尚未加载成功，已禁止保存以避免覆盖'); return }
@@ -285,14 +440,20 @@ export function apply(ctx) {
 
     const selectStyle = { background: 'var(--surface, #1e1e1e)', color: 'var(--text, #e0e0e0)', border: '1px solid var(--separator, #333)', borderRadius: 4, padding: '4px 8px', fontSize: 13, width: '100%', boxSizing: 'border-box' }
     const labelStyle = { fontSize: 12, color: 'var(--text-secondary, #888)', marginBottom: 2 }
+    const hintStyle = { fontSize: 11, color: 'var(--text-secondary, #888)', marginTop: 2 }
     const cardStyle = { border: '1px solid var(--separator, #333)', borderRadius: 8, padding: 12, marginBottom: 12 }
     const rowStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }
+    const miniBtnStyle = { padding: '2px 8px', borderRadius: 4, border: '1px solid var(--separator, #333)', background: 'transparent', color: 'var(--text, #e0e0e0)', cursor: 'pointer', fontSize: 12 }
+    const fbRowStyle = { display: 'grid', gridTemplateColumns: '28px 1fr 1fr auto', gap: 6, alignItems: 'center', marginBottom: 6 }
 
     const EFFORTS = ['', 'low', 'high', 'max']
     const providers = available.providers
     const providerLabel = (v) => v === '' ? '跟随 Sisyphus（对话框所选模型）' : v
     const modelLabel = (v) => v === '' ? '跟随 Sisyphus（对话框所选模型）' : v
-    const effortLabel = (v) => v === '' ? '跟随模型默认' : ({ low: '低（low）', high: '高（high）', max: '最高（max）' }[v] ?? v)
+    const effortLabel = (v) => v === '' ? '跟随模型默认（不单独指定）' : ({ low: '低（low）', high: '高（high）', max: '最高（max）' }[v] ?? v)
+    // 备选行专用 label：空值语义与主绑定不同（未选择 vs 跟随 Sisyphus）
+    const fbProviderLabel = (v) => v === '' ? '（选择渠道）' : v
+    const fbModelLabel = (v) => v === '' ? '（选择模型）' : v
 
     const makeSelect = (value, options, labelFn, onChange) =>
       React.createElement('select', { style: selectStyle, value: value ?? '', onChange: (e) => onChange(e.target.value) },
@@ -312,36 +473,72 @@ export function apply(ctx) {
 
     return React.createElement('div', { style: { padding: 16, maxWidth: 600 } },
       React.createElement('h2', { style: { margin: '0 0 4px' } }, 'MyGO 编排配置'),
-      React.createElement('p', { style: { margin: '0 0 6px', fontSize: 13, color: 'var(--text-secondary, #888)' } }, '给每个工种单独指定模型。留空 = 跟随 Sisyphus（即您在对话框里选的模型）；改完点「立即保存」，下次派发生效。'),
-      React.createElement('p', { style: { margin: '0 0 16px', fontSize: 12, color: 'var(--text-secondary, #888)' } }, '字段说明：渠道 = 模型从哪个网关/账号走；思考档位 = 推理强度（越高越贵越聪明）；DSV4P0813 补丁 = 两阶段锚定上下文注入，专门压榨 DeepSeek V4 Pro 0813 的实力，其他模型别开。'),
+      React.createElement('p', { style: { margin: '0 0 6px', fontSize: 13, color: 'var(--text-secondary, #888)' } }, '给每个工种单独指定模型；留空 = 跟随 Sisyphus（即您在对话框里选的模型）。改完点「立即保存」，下次派发生效。'),
       fetchFailed ? React.createElement('div', {
         style: { padding: 12, marginBottom: 16, borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 13 },
-      }, '⚠ 无法从 DSH 获取 Provider/Model 列表。请确认：1) 已重启 dsh web；2) LLM 插件已配置并激活。下拉框仍可手动输入自定义值。') : null,
+      }, '⚠ 暂时读不到 DSH 的 Provider/Model 列表——确认 dsh web 已重启、LLM 插件已配置并激活后，回来刷新即可。不影响手填：下拉框也可以直接输入自定义值。') : null,
       ...AGENT_TYPES.map((type) => {
         const cfg = draft?.[type] || {}
+        // 备选链行（normalize 防御脏数据）：数组顺序即优先级（#1 最先尝试）
+        const fbRows = normalizeFallbackRows(cfg.fallbacks)
         return React.createElement('div', { key: type, style: cardStyle },
-          React.createElement('div', { style: { fontWeight: 600, marginBottom: 8 } }, AGENT_LABELS[type] || type),
+          // 卡片标题行：工种中文名 + 英文名（AGENT_LABELS 已合并）+ 一句话角色说明
+          React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 8 } },
+            React.createElement('span', { style: { fontWeight: 600 } }, AGENT_LABELS[type] || type),
+            React.createElement('span', { style: { fontSize: 12, color: 'var(--text-secondary, #888)' } }, AGENT_BLURBS[type] ?? ''),
+          ),
+          // Sisyphus 卡片语义（broker.mjs:599,1580）：绑定仅当插件配置
+          // bindSisyphus===true 才参与 agent/request 覆盖，默认完全跟随对话框模型
+          type === 'sisyphus'
+            ? React.createElement('div', { style: { ...hintStyle, marginBottom: 8 } }, '总调度只认对话框所选模型，此处配置为兜底/补丁位（仅当插件配置 bindSisyphus 开启时生效）。')
+            : null,
           React.createElement('div', { style: rowStyle },
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, '渠道（Provider）'),
+              React.createElement('div', { style: hintStyle }, '模型从哪个网关/账号走'),
               makeSelect(cfg.provider ?? '', ['', ...providers], providerLabel, (v) => set(type, 'provider', v)),
             ),
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, '模型（Model）'),
+              React.createElement('div', { style: hintStyle }, '该渠道下可选的模型'),
               makeSelect(cfg.model ?? '', ['', ...modelsForProvider(cfg.provider ?? '')], modelLabel, (v) => set(type, 'model', v)),
             ),
           ),
           React.createElement('div', { style: rowStyle },
             React.createElement('div', null,
               React.createElement('div', { style: labelStyle }, '思考档位（Reasoning Effort）'),
+              React.createElement('div', { style: hintStyle }, '推理强度：越高越聪明，也越贵'),
               makeSelect(cfg.reasoningEffort ?? '', EFFORTS, effortLabel, (v) => set(type, 'reasoningEffort', v)),
             ),
-            React.createElement('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
-              React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, paddingTop: 18 } },
+            React.createElement('div', null,
+              React.createElement('div', { style: labelStyle }, 'DSV4P0813 补丁'),
+              React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, paddingTop: 2 } },
                 React.createElement('input', { type: 'checkbox', checked: cfg.dsv4p0813 === true, onChange: (e) => set(type, 'dsv4p0813', e.target.checked) }),
-                'DSV4P0813 补丁',
+                '启用',
               ),
+              React.createElement('div', { style: hintStyle }, '两阶段锚定上下文注入，专为 DeepSeek V4 Pro 0813 调校，其他模型勿开'),
             ),
+          ),
+          React.createElement('div', { style: { marginBottom: 4 } },
+            React.createElement('div', { style: labelStyle }, '备选链（Fallbacks）'),
+            React.createElement('div', { style: { fontSize: 11, color: 'var(--text-secondary, #888)', marginBottom: 6 } },
+              '主模型失败时按顺序自动切换备选（限流重试耗尽后也会切换），留空表示不启用。',
+            ),
+            fbRows.length === 0
+              ? React.createElement('div', { style: { fontSize: 12, color: 'var(--text-secondary, #888)', marginBottom: 6 } }, '未启用')
+              : fbRows.map((row, i) =>
+                  React.createElement('div', { key: `${type}-fb-${i}`, style: fbRowStyle },
+                    React.createElement('span', { style: { fontSize: 11, color: 'var(--text-secondary, #888)' } }, `#${i + 1}`),
+                    makeSelect(row.provider, ['', ...providers], fbProviderLabel, (v) => setFallbacks(type, updateFallbackRow(fbRows, i, 'provider', v))),
+                    makeSelect(row.model, ['', ...modelsForProvider(row.provider)], fbModelLabel, (v) => setFallbacks(type, updateFallbackRow(fbRows, i, 'model', v))),
+                    React.createElement('div', { style: { display: 'flex', gap: 4 } },
+                      React.createElement('button', { style: miniBtnStyle, disabled: i === 0, title: '上移（更先尝试）', onClick: () => setFallbacks(type, moveFallbackRow(fbRows, i, -1)) }, '↑'),
+                      React.createElement('button', { style: miniBtnStyle, disabled: i === fbRows.length - 1, title: '下移（更后尝试）', onClick: () => setFallbacks(type, moveFallbackRow(fbRows, i, 1)) }, '↓'),
+                      React.createElement('button', { style: miniBtnStyle, title: '删除该行', onClick: () => setFallbacks(type, removeFallbackRow(fbRows, i)) }, '×'),
+                    ),
+                  ),
+                ),
+            React.createElement('button', { style: miniBtnStyle, onClick: () => setFallbacks(type, addFallbackRow(fbRows)) }, '+ 添加备选'),
           ),
         )
       }),

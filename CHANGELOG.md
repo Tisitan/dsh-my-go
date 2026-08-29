@@ -3,6 +3,52 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.12] - 2026-08-29
+
+「备选链（fallbacks）+ UI 优化」批：子代理模型终局失败按链序自动重派备选，
+编排面板与设置页配套升级。`preset/tools/broker.mjs` 与 `lib/index.js` 同构实施。
+
+### 新增：备选链（fallbacks）
+
+- **schema**：每工种 settings 可配 `fallbacks: [{provider, model}]` 数组；
+  链首为该工种 `provider`/`model` 主绑定（attempt 0），其后每条备选依次为
+  attempt 1、2、…。
+- **触发**：子代理模型**终局失败**时按链序自动重派——404/模型不存在类立即败，
+  429/5xx/超时类等 DSH 内建重试耗尽后，经错误分类器放行才切。abort/用户中断/
+  dispose 绝不切换；失败附因档案读不到时保守切换（warn 注明「未读到附因，
+  保守切换」）。
+- **重派语义**：同 prompt、同父会话、同工种自动重派，`agentOptions` 覆盖为
+  备选条目；不占新槽位（原槽位语义内换键）、不入队、不与单线阻塞/队列交互；
+  attemptIndex 严格递增、链尽即止（绝无无限循环），全部失败落既有失败历史
+  并保留失败附因。
+- **预检**：无效备选条目（缺 model 等）预检跳过 + `console.warn`，尝试下一条。
+
+### 新增：设置页备选链可视化编辑器
+
+- 每工种卡片内置备选链编辑器：逐行编辑 provider/model、↑↓ 调整链序、
+  模型下拉按所选渠道过滤，与 YAML 手工编辑等价。
+
+### 优化：编排面板 UI
+
+- 标识符截断 + 悬浮显示全量；区块计数徽章；空态折叠；状态色条；工种彩色
+  徽章；相对时间；`[备选 n/m]` 高亮徽章；30s 自刷新。
+
+### 优化：设置页卡片化
+
+- 工种角色说明、字段 inline hint、文案统一「跟随…」句式、Sisyphus 兜底
+  语义说明。
+
+### 已知限制
+
+- 备选重派的历史结论措辞先于 spawn 成功落史：重派 spawn 失败时不改写已落
+  历史，以 `console.error` 留痕并向原父会话 `notifyParent` 推送修正通知。
+
+### 测试
+
+- 新增 `test/fallback-rows.test.mjs`（备选链 schema/分类器/重派核心）与
+  `test/panel-format.test.mjs`（面板格式化）入 `npm test` 套件；
+  73/73 全绿；`npm run build:client` 重跑产物字节稳定。
+
 ## [0.2.3-tisitan.11] - 2026-08-27
 
 代码审查修复批（依据 `docs/code-review-broker-lib-2026-08-27.md` 审查报告，

@@ -166,8 +166,9 @@ function scanZstdFrameRanges(buffer) {
 }
 
 // readArchivedTurnFailure：持久化档案主路径。倒序逐帧解压（最新帧最先），帧内
-// 倒序扫行，取最后一条 turn/end 且 reason.kind==='error' 的 reason.error
-// {message, code}。找不到档案/解压失败/无 error 事件均静默退回 undefined 并
+// 倒序扫行，取最后一条 turn/end 且 reason.kind==='error' 的 reason.error，经
+// normalizeTurnFailure 归一为 {message, code?, status?}（fallback 备选链 step-2
+// 结构化契约）。找不到档案/解压失败/无 error 事件均静默退回 undefined 并
 // console.warn 留痕（可观测性，不静默吞）。options.root / options.cwd 供测试
 // 注入；缺省按 DSH_HOME 惯例与 process.cwd() 解析。
 export function readArchivedTurnFailure(childId, options = {}) {
@@ -203,13 +204,64 @@ export function readArchivedTurnFailure(childId, options = {}) {
       let ev
       try { ev = JSON.parse(line) } catch { continue /* 截断的末行：跳过 */ }
       if (ev?.type === 'turn/end' && ev?.data?.reason?.kind === 'error') {
-        const failure = ev.data.reason.error
-        if (failure && typeof failure.message === 'string') return failure
+        const failure = normalizeTurnFailure(ev.data.reason.error)
+        if (failure) return failure
       }
     }
   }
   console.warn(`[dsh-my-go] readTurnFailure: 档案 ${logFile} 内无 turn/end error 事件，静默退回无附因`)
   return undefined
+}
+
+// ── 失败附因结构化 + fallback 分类（备选链 step-2） ──────────────────────
+// readTurnFailure 返回值契约：{ message, code?, status? }。message 恒为
+// string；code/status 缺失时字段为 undefined。形状依据（npm @deepseek-ai/*
+// 0.1.0-rc.8）：
+//   - LlmError.failure：frozen {message, code, status?, providerRetryAfterMs?,
+//     requestId?}（dsh-llm/lib/index.js:951-957）
+//   - 非 LlmError 裸 Error 兜底：{message: errorChain(error), code:
+//     'UNKNOWN'}（dsh-agent-loop/lib/index.js:584-587）
+export function normalizeTurnFailure(failure) {
+  if (!failure || typeof failure.message !== 'string') return undefined
+  return {
+    message: failure.message,
+    code: typeof failure.code === 'string' ? failure.code : undefined,
+    status: Number.isInteger(failure.status) ? failure.status : undefined,
+  }
+}
+
+// isFallbackable：fallback 备选链错误分类器。输入 readTurnFailure 返回值
+// （undefined = 档案/live 均未读到附因）。判定表（rc.8 查证）：
+//   绝不切 — abort/dispose/用户中断类。DSH 的用户中断走 turn/end
+//     reason.kind==='aborted'（dsh-agent-loop/lib/index.js:575-581），不会以
+//     kind==='error' 进入本分类器；NO_FALLBACK_CODES 纯属防御（防未来演化；
+//     'CANCELLED' 与 SubagentError code 同词汇，dsh-subagent/lib/index.js:1949）。
+//   可切 — 其余一切 error 终局：能以 kind==='error' 结束 turn，说明 DSH 层
+//     可重试集合（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT，
+//     dsh-llm/lib/index.js:360-366，默认 maxRetries 5）已耗尽，或不可重试集合
+//     （HTTP 4xx 如 404/NO_ADAPTER/INVALID_CREDENTIAL/QUOTA/
+//     CONTEXT_WINDOW_EXCEEDED 等，dsh-llm/lib/index.js:255-275,1416）立即终局。
+//     插件层统一在终局切换，不区分「立即切/延后切」。
+//   全缺失 — errorInfo 为 undefined/null 时返回 true（保守：有链则切，已获
+//     主人批准）；调用方以 errorInfo===undefined 区分「确认错误」与「未知」，
+//     日志措辞可据此分流。
+//   内容安全 — rc.8 全量扫描错误码体系（dsh-llm/dsh-agent/dsh-subagent/
+//     dsh-tools 等）无 SAFETY/CONTENT_FILTER/MODERATION 类 code，不设内容
+//     安全不可切分支；未来若出现请补进 NO_FALLBACK_CODES。
+// 未知 code 默认可切：DSH 契约「route on code, never parse message」
+// （dsh-llm/lib/index.js:246），message 探测仅在 code 缺失/==='UNKNOWN'
+// （裸 Error 的唯一出口）时作为 abort 特征防御启用。
+const NO_FALLBACK_CODES = new Set(['ABORTED', 'CANCELLED', 'DISPOSED', 'INTERRUPTED'])
+const ABORT_MESSAGE_RE = /\babort(?:ed|ion)?\b/i
+
+export function isFallbackable(errorInfo) {
+  if (errorInfo === undefined || errorInfo === null) return true
+  const code = typeof errorInfo.code === 'string' ? errorInfo.code.toUpperCase() : undefined
+  if (code !== undefined && NO_FALLBACK_CODES.has(code)) return false
+  if (code === undefined || code === 'UNKNOWN') {
+    if (typeof errorInfo.message === 'string' && ABORT_MESSAGE_RE.test(errorInfo.message)) return false
+  }
+  return true
 }
 
 function agentLabel(type, summary) {
@@ -300,7 +352,9 @@ export class Orchestration {
     return id
   }
 
-  beginSpawning(agentType, prompt) {
+  // extra：重派路径注入的附加字段（如 fallbackAttempt），占位记录即携带，
+  // bindChild 换键时经 {...record} 自然继承（竞态归随路径也不丢）。
+  beginSpawning(agentType, prompt, extra = {}) {
     const record = {
       childId: nextId('child'),
       agentType,
@@ -308,6 +362,7 @@ export class Orchestration {
       status: 'spawning',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      ...extra,
     }
     this.currentMap.set(record.childId, record)
     this.emit()
@@ -569,6 +624,7 @@ export async function apply(ctx, config = {}) {
               model: row.model || merged[key]?.model,
               reasoningEffort: row.reasoningEffort || merged[key]?.reasoningEffort,
               dsv4p0813: row.dsv4p0813 ?? merged[key]?.dsv4p0813 ?? false,
+              fallbacks: row.fallbacks ?? merged[key]?.fallbacks,
             }
           }
         }
@@ -587,6 +643,7 @@ export async function apply(ctx, config = {}) {
                 model: row.model || merged[key]?.model,
                 reasoningEffort: row.reasoningEffort || merged[key]?.reasoningEffort,
                 dsv4p0813: row.dsv4p0813 ?? merged[key]?.dsv4p0813 ?? false,
+                fallbacks: row.fallbacks ?? merged[key]?.fallbacks,
               }
             }
           }
@@ -769,8 +826,8 @@ export async function apply(ctx, config = {}) {
         for (let i = events.length - 1; i >= 0; i--) {
           const ev = events[i]
           if (ev?.type === 'turn/end' && ev?.data?.reason?.kind === 'error') {
-            const failure = ev.data.reason.error
-            if (failure && typeof failure.message === 'string') return failure
+            const failure = normalizeTurnFailure(ev.data.reason.error)
+            if (failure) return failure
           }
         }
       }
@@ -1550,6 +1607,140 @@ export async function apply(ctx, config = {}) {
   })
 
   // ── conclusion injection + queue advancement on subagent/end ────────────
+  // ── fallback 备选链自动重派（step-3）────────────────────────────────────
+  // once-guard：同一 childId 的 error 终局只做一次重派决策（防 end 双触发
+  // 重复派发）。Set 不设上限：条目数为进程生命周期内的子代理总数（百级）。
+  const fallbackDecided = new Set()
+
+  // 从链的 from 索引（含）向后找第一个预检通过的备选条目；缺字段/模型不存在
+  // 的条目 console.warn 跳过并继续尝试下一条。返回 { entry, attempt(1-based),
+  // total } 或 undefined（无链/链尽/预检全败）。
+  async function pickFallbackEntry(type, from) {
+    const raw = bindings[type]?.fallbacks
+    const chain = Array.isArray(raw) ? raw.filter((e) => e && typeof e === 'object') : []
+    for (let i = Math.max(from, 0); i < chain.length; i++) {
+      const entry = chain[i]
+      const provider = typeof entry.provider === 'string' ? entry.provider : ''
+      const model = typeof entry.model === 'string' ? entry.model : ''
+      if (!provider || !model) {
+        console.warn(`[dsh-my-go] fallback: ${type} 备选条目 #${i + 1} 缺 provider/model，跳过`)
+        continue
+      }
+      if (await modelExists(provider, model)) return { entry, attempt: i + 1, total: chain.length }
+      console.warn(`[dsh-my-go] fallback: ${type} 备选条目 #${i + 1} 模型校验失败（${provider}/${model}），跳过`)
+    }
+    return undefined
+  }
+
+  // subagent/end 收尾共用：落史 + 失败附因推送 + 登记清理 + 快照刷新。
+  // 不推进队列——advanceQueue 时机由调用方决定（重派成功路径占槽不推进）。
+  function finalizeEnd(orch, ownerPid, type, childId, conclusion, failed, failure) {
+    const done = orch.finish(childId, conclusion, failed)
+    if (failed && failure) {
+      // 失败附因推送：harness 的 settled 通知只带 stopReason，补一行完整原因
+      notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 子代理失败: ${childId} (${type}): ${failure.message} [${failure.code ?? 'UNKNOWN'}]`)
+    }
+    if (!done) {
+      // 有类型登记但台账无活记录（如已被 disposed 兜底清槽）：结论无处安放，留痕
+      console.warn(`[dsh-my-go] subagent/end for child ${String(childId)} (${type}) has no live record; conclusion dropped`)
+    }
+    sessionTypes.delete(childId)
+    disposedTypes.delete(childId)
+    childOwner.delete(childId)
+    bump()
+    return done
+  }
+
+  // 备选重派主流程（error 终局且 once-guard 首触时由 subagent/end 决策点调用）。
+  // 语义：同 prompt、同 parent（原 Sisyphus 会话）、同 agentType；agentOptions
+  // 覆盖为备选条目 {provider, model}；不入队、不占新槽位——原条目先落史（附因
+  // 保留 + [备选 n/m] 标注），随即在同一流水线内占位换键重派。attempt 严格
+  // 递增（新记录 fallbackAttempt=attempt，下次决策从该索引起找）而链长有限
+  // ⇒ 必然终止，绝无无限循环。
+  async function attemptFallbackRedeploy({ orch, ownerPid, type, childId, failure, baseConclusion, failureLine }) {
+    // 分类器否决（abort/dispose/用户中断特征）绝不重派，走既有失败路径
+    if (!isFallbackable(failure)) {
+      console.warn(`[dsh-my-go] fallback: ${String(childId)} 附因属 abort/dispose 类，分类器否决重派，按失败终局处理 (${type})`)
+      finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      advanceQueue(orch)
+      return
+    }
+    const record = orch.record(childId)
+    const prompt = typeof record?.prompt === 'string' ? record.prompt : ''
+    const parent = resolveParentAgent(ownerPid)
+    if (!prompt || !parent) {
+      console.warn(`[dsh-my-go] fallback: ${String(childId)} 无法重派（${!prompt ? '编排记录缺原始 prompt' : `父会话 ${String(ownerPid)} 已不在注册表`}），按失败终局处理 (${type})`)
+      finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      advanceQueue(orch)
+      return
+    }
+    const from = record?.fallbackAttempt ?? 0
+    const picked = await pickFallbackEntry(type, from)
+    if (!picked) {
+      // 无链/链尽/备选预检全败：既有失败历史路径不变（附因保留）
+      finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      advanceQueue(orch)
+      return
+    }
+    const { entry, attempt, total } = picked
+    if (!failure) {
+      // errorInfo 缺失（档案/live 均未读到附因）+ 有链：保守切换，日志注明措辞
+      console.warn(`[dsh-my-go] fallback: ${String(childId)} 未读到附因，保守切换备选 [${attempt}/${total}] ${entry.provider}/${entry.model} (${type})`)
+    }
+    // 同步段（finish → beginSpawning 之间无 await）：原条目先落史后占位。
+    // 双发 end 的第二发在 finish 之后只能命中「迟到/重复」分支，绝不双落账；
+    // disposed 宽限兜底 timer 已在 end 入口取消，不会误 abort 新占位。
+    const done = orch.finish(childId, `${baseConclusion}${failureLine}\n[备选 ${attempt}/${total}] 失败 → 自动切换备选 ${entry.provider}/${entry.model} 重派`, true)
+    if (!done) {
+      console.warn(`[dsh-my-go] fallback: ${String(childId)} 落史失败（无活记录），放弃重派 (${type})`)
+      bump()
+      advanceQueue(orch)
+      return
+    }
+    sessionTypes.delete(childId)
+    disposedTypes.delete(childId)
+    childOwner.delete(childId)
+    const placeholder = orch.beginSpawning(type, prompt, { fallbackAttempt: attempt })
+    try {
+      // agentOptions 覆盖为备选条目（provider/model 均已过 pickFallbackEntry 预检）
+      const agentOpts = { provider: entry.provider, model: entry.model }
+      const sig = new AbortController().signal
+      // Inject sub-agent persona from prompts/ files via <system-reminder>
+      // （与 dispatchWork 的 go_work 派发形状一致：重派 = 同工种重新上岗）。
+      const loadedPrompt = promptCache.get(type)
+      const roleInfo = loadedPrompt || `You are a ${type} sub-agent in the dsh-my-go orchestration system. Execute one focused task and report results to Sisyphus.`
+      const request = {
+        label: agentLabel(type, prompt.slice(0, SUBAGENT_PROMPT_MAX)),
+        prompt: [
+          { type: 'text', text: `<system-reminder>\n${roleInfo}\n</system-reminder>\n\n${prompt}` },
+        ],
+        parent,
+        agentOptions: agentOpts,
+        signal: sig,
+      }
+      const { childId: newChildId } = await ctx.subagents.startContinuable({
+        provider: 'spawn',
+        label: request.label,
+        request,
+        signal: sig,
+      })
+      sessionTypes.set(newChildId, type)
+      orch.bindChild(placeholder.childId, newChildId)
+      childOwner.set(newChildId, parent.id)
+      bump()
+      // 面板/台账/通知全部指向原父会话（多会话隔离：orch 全程为原实例）
+      notifyParent(parent, `[dsh-my-go] 备选重派: ${String(childId)} → ${newChildId} (${type}) [备选 ${attempt}/${total}] ${entry.provider}/${entry.model}${failure ? `：${failure.message}` : '（未读到附因，保守切换）'}`)
+      // 不 advanceQueue：新 child 已在原槽位语义内运行，队列保持原状
+    } catch (error) {
+      orch.abort(placeholder.childId)
+      bump()
+      console.error(`[dsh-my-go] fallback 重派 spawn 失败（${entry.provider}/${entry.model}），按失败终局回退:`, error)
+      notifyParent(parent, `[dsh-my-go] 备选重派 spawn 失败（${entry.provider}/${entry.model}）：${String(childId)} 已按失败落账，队列已推进`)
+      // 槽位已腾出：立即推进队首（tisitan.6 教训：清槽动作必须推进队列）
+      advanceQueue(orch, parent)
+    }
+  }
+
   ctx.on('subagent/end', (info) => {
     const childId = info?.id
     if (!childId) return
@@ -1618,23 +1809,23 @@ export async function apply(ctx, config = {}) {
     // turn/end 的 reason.error（live 快路径 + 持久化档案主路径，tisitan.9）；
     // 读档失败静默退回无附因（console.warn 留痕，不报错）。
     const failure = failed ? readTurnFailure(childId) : undefined
-    let conclusion = text || `(${String(info?.stopReason)})`
-    if (failure) {
-      conclusion += `\n失败原因: ${failure.message} [${failure.code ?? 'UNKNOWN'}]`
+    const baseConclusion = text || `(${String(info?.stopReason)})`
+    const failureLine = failure ? `\n失败原因: ${failure.message} [${failure.code ?? 'UNKNOWN'}]` : ''
+    // ── fallback 备选链重派决策（step-3，唯一决策点：stopReason==='error'）──
+    // 无链（含未配置 fallbacks）时保持既有同步落账路径，行为零变化；有链且
+    // 活记录未决策过才进入异步重派流程，同步登记 once-guard 防双派。
+    const fallbackChain = Array.isArray(bindings[type]?.fallbacks) ? bindings[type].fallbacks : []
+    if (info?.stopReason === 'error' && fallbackChain.length > 0 && !fallbackDecided.has(childId) && orch.currentMap.has(childId)) {
+      fallbackDecided.add(childId)
+      void attemptFallbackRedeploy({ orch, ownerPid, type, childId, failure, baseConclusion, failureLine }).catch((error) => {
+        console.error('[dsh-my-go] fallback 重派流程异常，回退失败落账:', error)
+        finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+        advanceQueue(orch)
+      })
+      return
     }
-    const done = orch.finish(childId, conclusion, failed)
-    if (failed && failure) {
-      // 失败附因推送：harness 的 settled 通知只带 stopReason，补一行完整原因
-      notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 子代理失败: ${childId} (${type}): ${failure.message} [${failure.code ?? 'UNKNOWN'}]`)
-    }
-    if (!done) {
-      // 有类型登记但台账无活记录（如已被 disposed 兜底清槽）：结论无处安放，留痕
-      console.warn(`[dsh-my-go] subagent/end for child ${String(childId)} (${type}) has no live record; conclusion dropped`)
-    }
-    sessionTypes.delete(childId)
-    disposedTypes.delete(childId)
-    childOwner.delete(childId)
-    bump()
+    // 无活记录时 finalizeEnd 已留痕，队列仍照常推进，绝不静默停摆
+    finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, failed, failure)
     // Advance queue.
     advanceQueue(orch)
   })
