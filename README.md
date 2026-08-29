@@ -103,6 +103,7 @@ host 半（lib）注册 settings 命名空间 `dsh-my-go`，client 半提供设�
 | `<type>.model`                  | 不指定（继承） | 该工种的模型；缺省时继承父会话模型                                      |
 | `<type>.reasoningEffort`        | 不指定         | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
 | `<type>.dsv4p0813`              | false          | 是否对该工种启用 DSV4P0813 两阶段引导补丁                               |
+| `<type>.fallbacks`              | 空（不启用）   | 备选链 [{provider, model}]，主绑定失败时按序重派                        |
 
 `<type>` 取值：sisyphus / hermes / explore / librarian / looker / hephaestus /
 prometheus / oracle。键为扁平结构（如 `hermes.model`，无 `agents.` 前缀），
@@ -229,6 +230,8 @@ dsh-my-go/
 ├── cordis.patch.yml       # bundle patch（dsh plugin add 后自动挂载 host 插件）
 ├── lib/index.js           # npm 包 host 半（编排工具 + 状态机 + 模型绑定）
 ├── src/client.js          # client 半源码（树状图面板 / 设置页 / 自动跳转）
+├── src/fallback-rows.js   # 备选链编辑器纯函数（内联进 client bundle）
+├── src/panel-format.js    # 面板格式化纯函数（内联进 client bundle）
 ├── scripts/build-client.mjs  # esbuild 打包 client → dist/client.js
 ├── dist/                  # 构建产物（发布时生成）
 ├── preset/                # agent preset「MyGO!!!!! 模式」（复制到 ~/.dsh/.agent-presets/）
@@ -248,7 +251,7 @@ cd dsh-my-go
 bun install
 bun run build:client    # 构建 client bundle
 bunx tsc --noEmit       # 类型检查
-bun run test            # 冒烟 + 37 例单测套件
+bun run test            # 冒烟 + 73 例单测套件
 ```
 
 ## 维护状态

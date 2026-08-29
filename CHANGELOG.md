@@ -258,9 +258,9 @@ activation → `observer.settle()` 才 emit `subagent/end`。因此 tisitan.8 �
   子代理完全继承环境默认路由。按工种分流改为纯用户配置，README 新增
   「工种模型绑定」小节（WebUI / `settings.yaml` YAML 示例）。
 - **tool-mask 参数化**：`preset/tool-mask.mjs` 的屏蔽清单支持
-  `agent.cordis.yml` 行 `config.deny` 覆盖；原 7 个 `mcp__vcp__*` 名字
+  `agent.cordis.yml` 行 `config.deny` 覆盖；原 7 个 `mcp__<your-origin>__*` 名字
   保留为默认示例并标注「按你的环境裁剪」；逐名 try/catch 静默跳过语义
-  不变。nova/Rei 等个人环境注释改写为中性描述（含 `agent.cordis.yml`）。
+  不变。个人环境命名注释改写为中性描述（含 `agent.cordis.yml`）。
 - **包身份切换**：`package.json` 的 author/repository/bugs/homepage 指向
   Tisitan/dsh-my-go；`files` 白名单补 `CHANGELOG.md`、`AGENTS.md`；
   publish.yml 的 OIDC 提示改为泛指「你的 fork 仓库」。
@@ -391,9 +391,9 @@ activation → `observer.settle()` 才 emit `subagent/end`。因此 tisitan.8 �
 
 ### 部署适配（Tisitan 环境）
 
-- **tool-mask 同步**：新增 `preset/tool-mask.mjs`（配方取自本机 `nova` preset），
+- **tool-mask 同步**：新增 `preset/tool-mask.mjs`（配方取自一个既有本地 preset），
   在 preset 作用域屏蔽 Rei 角色记忆工具与 OpenCode 桥接共 7 个
-  `mcp__vcp__*` 工具——对 Sisyphus 与全部子代理同时生效（preset scope 覆盖
+  `mcp__<your-origin>__*` 工具——对 Sisyphus 与全部子代理同时生效（preset scope 覆盖
   整个 standing mount）。逐名 try/catch + 失败 `console.warn` 告警，
   工具缺席不炸挂载。`preset/agent.cordis.yml` 末尾新增 tool-mask 行。
 

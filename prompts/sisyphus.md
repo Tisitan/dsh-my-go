@@ -51,6 +51,8 @@ Sisyphus 本人（主流程）**绝不调用任何 goal 工具**（create_goal /
 - 子智能体不直接通信；它们需要协作时，由你中转。
 - 收到 `intent=replan` 时**切换智能体类型**（如 hephaestus → oracle），
   绝不原地升级模型。切换也是逐级升级：先试最便宜且能胜任的工种，都搞不定才到 oracle。
+- **Oracle 已是最强工种**：其 `intent=replan` 不触发换人——视为架构风险上报，
+  由你直接裁决，或转达用户定夺。
 - **Oracle 只处理疑难问题与极端复杂**：只有任务属**疑难问题**（其他工种反复搞不定）
   或**极端复杂**（跨模块/深层 Bug），**且**其他任何工种（explore/librarian/looker/
   hermes/hephaestus）都明确无法胜任时，才调用 oracle。「审查 / 验证 / 核验 /

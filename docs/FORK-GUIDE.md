@@ -10,7 +10,7 @@
                         │                                                                                        │
  用户 ──► DSH WebUI ──► │  【client 半】dist/client.js（React 插件）                                            │
  （浏览器）             │   ├─ 🧭 侧栏按钮 ──► shell.overlay 树状图面板（current/queue/help/history）            │
-                        │   ├─ 设置页「MyGO 编排」（8 工种 × provider/model/effort/dsv4p0813）                   │
+                        │   ├─ 设置页「MyGO 编排」（8 工种 × provider/model/effort/dsv4p0813/fallbacks）         │
                         │   └─ 600ms 轮询 ──┐                                                                   │
                         │                   ▼ RPC call('/dsh-my-go', endpoint)                                  │
                         │  【host 半】lib/index.js（profile bundle，global 层注册）                              │
@@ -45,7 +45,7 @@
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.2.3-tisitan.11；test = 冒烟 + 单测
+├── package.json              # 包声明；版本 0.2.3-tisitan.12；test = 冒烟 + 单测
 ├── cordis.patch.yml          # bundle patch：dsh plugin add 后自动把 lib 挂进 profile（global 层）
 ├── CHANGELOG.md              # fork 修复台账（相对上游的全部差异）
 ├── README.md                 # 项目说明（含 fork 标识段）
@@ -83,13 +83,13 @@ dsh-my-go/
 ├── test/
 │   ├── apply.mjs             # 冒烟：模块可加载 + client 可解析 + dist 存在
 │   ├── orchestration.test.mjs# 状态机 14 单测（占位占锁/revive/requeue/幽灵求助/上限…）
-│   ├── bridge.test.mjs       # apply 级集成 17 例（快照桥/队列回补重试与放弃/
+│   ├── bridge.test.mjs       # apply 级集成 29 例（快照桥/队列回补重试与放弃/
 │   │                         #   disposed 竞态/派发模型绑定/settings 重基线/
 │   │                         #   台账 v2 分桶/多帧 zstd 附因/
 │   │                         #   need_help 上报失败可观测性/forward 信封化转义）
 │   ├── multi-session.test.mjs# 多会话隔离 4 例（A 忙 B 不排队/childOwner 路由/
 │   │                         #   session 销毁隔离/revive 重登记属主）（tisitan.10）
-│   └── host-parity.test.mjs  # lib 半 dispatchWork 模型校验对齐 2 例（tisitan.11）
+│   └── host-parity.test.mjs  # lib/broker 对称断言 10 例（模型校验 2 + fallbacks/重派 8）
 │
 ├── broker/                   # ⚠️ 归档的 TS 参考实现（见 broker/README.md），不参与构建运行
 ├── docs/
@@ -140,7 +140,7 @@ dsh-my-go/
 | 树状图面板 | `src/client.js` `TreePanel` | `shell.overlay` 浮层 + 侧栏 🧭 开关；600ms 轮询 RPC `snapshot` 端点，seq 变化才重渲染（fork 修复：开关脱钩 + force bailout） |
 | 快照桥（fork 新增） | `broker.mjs` 发布 ↔ `lib/index.js` RPC 消费 | broker 把 `() => latestSnapshot` 挂到 `globalThis[Symbol.for('dsh-my-go.snapshot')]`；lib 的 RPC handler 优先实时读取（零副本），桥不在则回落自身状态机。tisitan.10 起形状为 `{ seq, parents: { [会话id]: { current, queue, helpRequests, history } } }`（多会话聚合） |
 | 自动跳转 | `src/client.js` 定时器 | 子代理 running → `sessions.openSubagent()` 跟跳子会话；结束后 `sessions.open(parentSessionId)` 跳回。tisitan.10 起加**会话门禁**：只跟随当前打开的会话（`sessions.list.getSnapshot().current`），多会话并行时绝不把用户拽去别的会话 |
-| 设置页 | `src/client.js` `SettingsPage` ↔ `lib/index.js` RPC | 8 工种 × 4 字段；loadSettings 失败时 `draft=null` 禁止保存（fork 修复：不再一键清空配置）；saveSettings 空值 unset、显式 false 可表达（fork 修复） |
+| 设置页 | `src/client.js` `SettingsPage` ↔ `lib/index.js` RPC | 8 工种 × 5 字段（provider/model/reasoningEffort/dsv4p0813/fallbacks）；loadSettings 失败时 `draft=null` 禁止保存（fork 修复：不再一键清空配置）；saveSettings 空值 unset、显式 false 可表达（fork 修复） |
 | settings 合并 | `broker.mjs` / `lib/index.js` | 永远从 `baseBindings`（默认值+插件 config）起算合并 stored（fork 修复：WebUI 取消配置可回落）；`||` 语义统一（空串=未设置） |
 | preset 同步 | `lib/index.js` `ensurePresetInstalled()` | 版本标记文件 `.dsh-my-go-version`：版本不变则跳过（fork 修复：不再每次强制覆盖用户手改） |
 
@@ -150,8 +150,10 @@ dsh-my-go/
 |---|---|---|
 | 冒烟 | `test/apply.mjs` | 模块加载/导出面/client 语法/dist 存在 |
 | 单测 | `test/orchestration.test.mjs` | 状态机 14 例：占锁原子性、bindChild（含缺位告警）、finish 清求助、suspend/resume、revive、requeueHead、dropQueuedFor、dropQueuedFailed、history 200 上限、record/followupPrompt |
-| 集成 | `test/bridge.test.mjs` + `test/multi-session.test.mjs` | mock cordis ctx 跑 `broker.apply()`：bridge 17 例（Symbol.for 快照桥两例、队列回补重试/超上限放弃、disposed 竞态两例、dispatchWork 模型绑定解析两例、settings 重基线、队列上岗映射通知、失败附因 live 推送、截断 config、台账 v2 分桶 round-trip、tisitan.9 持久化档案附因两例、tisitan.11 need_help 上报失败 warn+通知与 forward 信封化转义）；multi-session 4 例（A 忙 B 不排队、childOwner 路由、session 销毁隔离、revive 重登记属主）（tisitan.10） |
-| 半对齐 | `test/host-parity.test.mjs` | lib 半 dispatchWork 模型校验（modelExists 不过回落/无 provider 时直透）（tisitan.11） |
+| 单测 | `test/fallback-rows.test.mjs` | 备选链编辑器纯函数 7 例：normalize/add/remove/move/update、不突变输入、与主绑定联动形状（tisitan.12） |
+| 单测 | `test/panel-format.test.mjs` | 面板格式化纯函数 9 例：shortId/oneLine、formatRelativeTime 阶梯与边界、extractFallbackNote 标注提取、组合形状（tisitan.12） |
+| 集成 | `test/bridge.test.mjs` + `test/multi-session.test.mjs` | mock cordis ctx 跑 `broker.apply()`：bridge 29 例（Symbol.for 快照桥两例、队列回补重试/超上限放弃、disposed 竞态两例、dispatchWork 模型绑定解析两例、settings 重基线、队列上岗映射通知、失败附因 live 推送、截断 config、台账 v2 分桶 round-trip、tisitan.9 持久化档案附因两例、tisitan.11 need_help 上报失败 warn+通知与 forward 信封化转义、tisitan.12 备选链重派等十二例（含 step-3 a–h））；multi-session 4 例（A 忙 B 不排队、childOwner 路由、session 销毁隔离、revive 重登记属主）（tisitan.10） |
+| 半对齐 | `test/host-parity.test.mjs` | lib 半与 broker 半对称断言 10 例：dispatchWork 模型校验 2（tisitan.11）+ fallbacks/重派通路 8（tisitan.12） |
 
 ## 四、fork 与上游的关系
 
@@ -181,7 +183,7 @@ dsh-my-go/
   必须自行配置（WebUI 设置页「MyGO 编排」或 `~/.dsh/settings.yaml`，
   示例见 README「工种模型绑定」），否则所有子代理与 Sisyphus 同路由。
 - **tool-mask 默认清单只是示例**：`preset/tool-mask.mjs` 的 `DEFAULT_DENY`
-  里的 7 个 `mcp__vcp__*` 工具名来自特定部署；你的环境大概率没有这些
+  里的形如 `mcp__<your-origin>__*` 的环境特定工具名；你的环境大概率没有这些
   工具（按名跳过、仅 warn）。按需在 `agent.cordis.yml` 的 tool-mask 行
   用 `config.deny` 覆盖成你自己的清单。
 - **双通知（reported + settled）是机制性重复，不可抑制**：子代理完工时

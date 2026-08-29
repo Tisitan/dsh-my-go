@@ -243,7 +243,7 @@ export function normalizeTurnFailure(failure) {
 //     CONTEXT_WINDOW_EXCEEDED 等，dsh-llm/lib/index.js:255-275,1416）立即终局。
 //     插件层统一在终局切换，不区分「立即切/延后切」。
 //   全缺失 — errorInfo 为 undefined/null 时返回 true（保守：有链则切，已获
-//     主人批准）；调用方以 errorInfo===undefined 区分「确认错误」与「未知」，
+//     用户批准）；调用方以 errorInfo===undefined 区分「确认错误」与「未知」，
 //     日志措辞可据此分流。
 //   内容安全 — rc.8 全量扫描错误码体系（dsh-llm/dsh-agent/dsh-subagent/
 //     dsh-tools 等）无 SAFETY/CONTENT_FILTER/MODERATION 类 code，不设内容

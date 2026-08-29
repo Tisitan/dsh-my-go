@@ -98,7 +98,8 @@ interface OrchestrationState {
 ### 2.2 模型与 effort 绑定
 
 每个智能体类型（agentType）在 settings 中可配置 `provider` / `model` /
-`reasoningEffort` / `dsv4p0813`（DSV4P0813 补丁开关）。
+`reasoningEffort` / `dsv4p0813`（DSV4P0813 补丁开关）/ `fallbacks`
+（备选链 `[{provider, model}]`，主绑定终局失败时按序自动重派；留空=不启用）。
 
 - **创建时**：`SubagentStartRequest.agentOptions = { provider, model }` 直接
   指定模型（`provider` 缺省时继承父会话渠道；`model` 先经 `modelExists()`
