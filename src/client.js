@@ -5,7 +5,8 @@
  *  - `shell.overlay` "dsh-my-go-panel": tree panel showing sub-agent status
  *    (current / queue / help / history), with click-to-jump via
  *    `sessions.openSubagent`.
- *  - `settings.section` "dsh-my-go": per-agent model/effort/DSV4P0813 config.
+ *  - `settings.section` "dsh-my-go": per-agent model/effort/DSV4P0813 config
+ *    and the tool-mask dual-list editor (tisitan.13).
  *  - Auto-jump: while a sub-agent is running, follow it; on settle, jump back
  *    to the Sisyphus parent session.
  *
@@ -19,6 +20,7 @@
 import * as React from 'react'
 
 import { normalizeFallbackRows, addFallbackRow, removeFallbackRow, moveFallbackRow, updateFallbackRow } from './fallback-rows.js'
+import { normalizeDenyList, blockTool, unblockTool, availableTools, denyEntries } from './tool-mask-rows.js'
 import { shortId, oneLine, formatRelativeTime, extractFallbackNote } from './panel-format.js'
 
 export const name = 'dsh-my-go'
@@ -380,6 +382,12 @@ export function apply(ctx) {
     const [saving, setSaving] = React.useState(false)
     const [msg, setMsg] = React.useState(null)
     const [available, setAvailable] = React.useState({ providers: [], models: {} })
+    // 工具屏蔽（tisitan.13）：花名册快照 + 左列过滤词 + 双列选中项 + 手填工具名
+    const [roster, setRoster] = React.useState([])
+    const [maskFilter, setMaskFilter] = React.useState('')
+    const [maskSelL, setMaskSelL] = React.useState(null)
+    const [maskSelR, setMaskSelR] = React.useState(null)
+    const [maskManual, setMaskManual] = React.useState('')
 
     React.useEffect(() => {
       if (!sp) return
@@ -392,6 +400,10 @@ export function apply(ctx) {
         }).catch(() => setDraft(null))
         connection.rpc.call('/dsh-my-go', 'listModels', {}).then((res) => {
           if (res && res.ok && res.value && Array.isArray(res.value.providers)) setAvailable(res.value)
+        }).catch(() => {})
+        connection.rpc.call('/dsh-my-go', 'listTools', {}).then((res) => {
+          // 花名册拉取失败保持空数组：右列条目全部带「未连接」徽章，不阻塞编辑
+          if (res && res.ok && Array.isArray(res.value)) setRoster(res.value)
         }).catch(() => {})
       }
     }, [sp])
@@ -417,6 +429,24 @@ export function apply(ctx) {
     // 提交为 []，host 半 saveSettings 会自动转 unset，前端无需特判。
     const setFallbacks = (type, rows) => {
       setDraft((prev) => ({ ...prev, [type]: { ...prev?.[type], fallbacks: rows } }))
+    }
+
+    // 工具屏蔽编辑：deny 始终以数组提交；空数组提交 []，host 半转 unset。
+    // draft 为 null（尚未加载/加载失败）时拒绝编辑：避免从 null 造出只有
+    // toolMask 的半截 draft，保存时把其余配置全部 unset 清空。
+    const setDeny = (rows) => {
+      if (!draft) return
+      setDraft((prev) => prev ? { ...prev, toolMask: { deny: rows } } : prev)
+    }
+    const blockSelected = () => {
+      if (!draft || !maskSelL) return
+      setDraft((prev) => prev ? { ...prev, toolMask: { deny: blockTool(prev?.toolMask?.deny, maskSelL) } } : prev)
+      setMaskSelL(null)
+    }
+    const unblockSelected = () => {
+      if (!draft || !maskSelR) return
+      setDraft((prev) => prev ? { ...prev, toolMask: { deny: unblockTool(prev?.toolMask?.deny, maskSelR) } } : prev)
+      setMaskSelR(null)
     }
 
     // Manual save only — auto-save risks infinite loops with settings/updated events
@@ -470,6 +500,20 @@ export function apply(ctx) {
     }
 
     const fetchFailed = available.providers.length === 0
+
+    // ── 工具屏蔽（tisitan.13）派生数据与样式 ─────────────────────────────
+    const denyList = normalizeDenyList(draft?.toolMask?.deny)
+    const availTools = availableTools(roster, denyList, maskFilter)
+    const maskedEntries = denyEntries(denyList, roster)
+    const maskListBoxStyle = { border: '1px solid var(--separator, #333)', borderRadius: 4, height: 150, overflowY: 'auto', background: 'var(--surface, #1e1e1e)', marginBottom: 4 }
+    const maskItemStyle = (selected) => ({
+      padding: '3px 8px', fontSize: 12, fontFamily: MONO_FONT, cursor: 'pointer', wordBreak: 'break-all',
+      background: selected ? 'rgba(100,181,246,0.18)' : 'transparent',
+    })
+    const maskBadge = (title) => React.createElement('span', {
+      title,
+      style: { flexShrink: 0, fontSize: 10, lineHeight: '15px', padding: '0 5px', borderRadius: 4, color: '#9e9e9e', background: 'rgba(255,255,255,0.07)' },
+    }, '未连接')
 
     return React.createElement('div', { style: { padding: 16, maxWidth: 600 } },
       React.createElement('h2', { style: { margin: '0 0 4px' } }, 'MyGO 编排配置'),
@@ -542,6 +586,72 @@ export function apply(ctx) {
           ),
         )
       }),
+      // ── 工具屏蔽（tisitan.13）：置于 8 工种卡片之后 ─────────────────────
+      React.createElement('div', { style: cardStyle },
+        React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 8 } },
+          React.createElement('span', { style: { fontWeight: 600 } }, '工具屏蔽（Tool Mask）'),
+          React.createElement('span', { style: { fontSize: 12, color: 'var(--text-secondary, #888)' } }, '从 MyGO 会话目录藏起指定工具（Sisyphus 与全部子代理）'),
+        ),
+        React.createElement('div', { style: { ...hintStyle, marginBottom: 8 } },
+          '屏蔽仅对新会话生效，当前会话不受影响；保留工具（run_code 等）不可屏蔽，不在左列出现。花名册是快照：MCP 重连后重开设置页即可刷新。',
+        ),
+        React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 8, alignItems: 'start' } },
+          React.createElement('div', null,
+            React.createElement('div', { style: labelStyle }, `当前可用工具（${availTools.length}）`),
+            React.createElement('input', {
+              value: maskFilter,
+              placeholder: '按名称过滤…',
+              onChange: (e) => { setMaskFilter(e.target.value); setMaskSelL(null) },
+              style: { ...selectStyle, marginBottom: 4 },
+            }),
+            React.createElement('div', { style: maskListBoxStyle },
+              availTools.length === 0
+                ? React.createElement('div', { style: { padding: '6px 8px', fontSize: 12, color: 'var(--text-secondary, #888)' } }, roster.length === 0 ? '花名册不可用（host 未就绪）；可用下方手填添加' : '（无匹配项）')
+                : availTools.map((name) => React.createElement('div', {
+                    key: name,
+                    title: name,
+                    style: maskItemStyle(maskSelL === name),
+                    onClick: () => setMaskSelL(maskSelL === name ? null : name),
+                  }, name)),
+            ),
+          ),
+          React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 20 } },
+            React.createElement('button', { style: miniBtnStyle, disabled: !maskSelL, title: '屏蔽选中的工具', onClick: blockSelected }, '屏蔽 →'),
+            React.createElement('button', { style: miniBtnStyle, disabled: !maskSelR, title: '取消屏蔽选中的条目', onClick: unblockSelected }, '← 解除'),
+          ),
+          React.createElement('div', null,
+            React.createElement('div', { style: labelStyle }, `已屏蔽（${maskedEntries.length}）`),
+            React.createElement('div', { style: maskListBoxStyle },
+              maskedEntries.length === 0
+                ? React.createElement('div', { style: { padding: '6px 8px', fontSize: 12, color: 'var(--text-secondary, #888)' } }, '未屏蔽任何工具')
+                : maskedEntries.map((entry) => React.createElement('div', {
+                    key: entry.name,
+                    title: entry.name,
+                    style: { ...maskItemStyle(maskSelR === entry.name), display: 'flex', alignItems: 'center', gap: 6 },
+                    onClick: () => setMaskSelR(maskSelR === entry.name ? null : entry.name),
+                  },
+                    React.createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflowWrap: 'anywhere' } }, entry.name),
+                    entry.connected ? null : maskBadge('不在当前花名册（未连接或已下线）；条目保留，重连后即被屏蔽'),
+                  )),
+            ),
+          ),
+        ),
+        React.createElement('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+          React.createElement('input', {
+            value: maskManual,
+            placeholder: '手填工具名（花名册外的未连接工具）…',
+            onChange: (e) => setMaskManual(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') { setDeny(blockTool(denyList, maskManual.trim())); setMaskManual('') } },
+            style: selectStyle,
+          }),
+          React.createElement('button', {
+            style: miniBtnStyle,
+            disabled: !draft || maskManual.trim() === '',
+            title: '加入已屏蔽清单',
+            onClick: () => { setDeny(blockTool(denyList, maskManual.trim())); setMaskManual('') },
+          }, '+ 添加'),
+        ),
+      ),
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 } },
         React.createElement('button', {
           onClick: save,

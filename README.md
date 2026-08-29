@@ -29,7 +29,7 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
 - **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——**按任务难度分配（不按需求难度）**：指令明确、步骤具体的执行活优先派 Hermes，需要设计/推理的才升级 Hephaestus，仅疑难/极端复杂才到 Oracle；同工种上下文连续则 `continue` 复用。
 - **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
-- **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关，均可在 DSH 设置页配置。
+- **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关 / 备选链，均可在 DSH 设置页配置；tisitan.13 起含工具屏蔽（Tool Mask）双列表编辑器。
 - **DSH 适配**：权限请求、问题询问由主智能体执行。
 - **节省主会话上下文**：Sisyphus 主会话不加载 Skill 工具（子智能体仍保留），跳过 Skill catalog 注入以压缩主会话上下文。
 - **DSV4P0813 补丁开关**：内置过拟合补丁，让 DeepSeek V4 Pro 0813 发挥最大的实力。
@@ -104,6 +104,7 @@ host 半（lib）注册 settings 命名空间 `dsh-my-go`，client 半提供设�
 | `<type>.reasoningEffort`        | 不指定         | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
 | `<type>.dsv4p0813`              | false          | 是否对该工种启用 DSV4P0813 两阶段引导补丁                               |
 | `<type>.fallbacks`              | 空（不启用）   | 备选链 [{provider, model}]，主绑定失败时按序重派                        |
+| `toolMask.deny`                 | 空（不屏蔽）   | 工具名数组：从 MyGO 会话目录屏蔽指定工具（见下方「工具屏蔽」）           |
 
 `<type>` 取值：sisyphus / hermes / explore / librarian / looker / hephaestus /
 prometheus / oracle。键为扁平结构（如 `hermes.model`，无 `agents.` 前缀），
@@ -182,6 +183,37 @@ dsh-my-go:
 设置页「MyGO 编排」每工种卡片内置备选链可视化编辑器：逐行编辑备选
 provider/model、↑↓ 调整链序、模型下拉按所选渠道过滤，与 YAML 手工编辑等价。
 
+### 工具屏蔽（tool-mask）
+
+把指定工具从 MyGO 会话目录里藏起（对 Sisyphus 与全部子代理同时生效），
+例如屏蔽环境特定、不想让编排体系碰到的 MCP 工具。settings 键为
+`toolMask.deny`（工具名数组），YAML 写法：
+
+```yaml
+dsh-my-go:
+  toolMask:
+    deny:
+      - mcp__your-origin__tool_a    # 按注册名屏蔽，缺席工具自动跳过（warn）
+      - mcp__your-origin__tool_b
+```
+
+设置页「MyGO 编排 → 工具屏蔽（Tool Mask）」提供双列表编辑器（tisitan.13
+起）：左列「当前可用工具」经 `listTools` RPC 实时枚举注册表（保留名
+`run_code` 服务端过滤、不可屏蔽），支持名称过滤；右列「已屏蔽」中不在当前
+花名册的条目带「未连接」灰徽章——保留不删，MCP 重连后即被屏蔽；花名册外
+工具可手填添加。与 YAML 手工编辑等价，空清单提交即视为不屏蔽。
+
+优先级与生效时机：
+
+- **优先级**：agent.cordis.yml tool-mask 行的 `config.deny`（显式覆盖，最高，
+  空数组=显式屏蔽空）＞ settings `toolMask.deny`（设置页写入）＞ 空默认。
+- **生效时机 = 新会话**：屏蔽清单在 preset 挂载（会话组装）时解析一次，
+  变更只对之后新建的会话生效，当前会话不受影响。
+- **容错**：缺席工具按名跳过（warn 留痕），绝不炸 preset 挂载；每次挂载
+  输出一行汇总日志（屏蔽数量 + 来源）。
+- **迁移**：tisitan.12 及之前版本内置的 `DEFAULT_DENY` 私有示例清单已在
+  tisitan.13 清空——升级后默认不屏蔽任何工具，原用户请在设置页重新配置。
+
 ### 插件 config 键（broker 行为调参）
 
 以下为插件级 config（`dsh plugin add` 的 config / bundle 层），与上面的
@@ -231,6 +263,7 @@ dsh-my-go/
 ├── lib/index.js           # npm 包 host 半（编排工具 + 状态机 + 模型绑定）
 ├── src/client.js          # client 半源码（树状图面板 / 设置页 / 自动跳转）
 ├── src/fallback-rows.js   # 备选链编辑器纯函数（内联进 client bundle）
+├── src/tool-mask-rows.js  # 工具屏蔽双列表编辑器纯函数（内联进 client bundle）
 ├── src/panel-format.js    # 面板格式化纯函数（内联进 client bundle）
 ├── scripts/build-client.mjs  # esbuild 打包 client → dist/client.js
 ├── dist/                  # 构建产物（发布时生成）
@@ -251,7 +284,7 @@ cd dsh-my-go
 bun install
 bun run build:client    # 构建 client bundle
 bunx tsc --noEmit       # 类型检查
-bun run test            # 冒烟 + 73 例单测套件
+bun run test            # 冒烟 + 89 例单测套件
 ```
 
 ## 维护状态

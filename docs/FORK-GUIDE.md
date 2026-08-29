@@ -10,7 +10,8 @@
                         │                                                                                        │
  用户 ──► DSH WebUI ──► │  【client 半】dist/client.js（React 插件）                                            │
  （浏览器）             │   ├─ 🧭 侧栏按钮 ──► shell.overlay 树状图面板（current/queue/help/history）            │
-                        │   ├─ 设置页「MyGO 编排」（8 工种 × provider/model/effort/dsv4p0813/fallbacks）         │
+                        │   ├─ 设置页「MyGO 编排」（8 工种 × provider/model/effort/dsv4p0813/fallbacks │
+│   │                          + 工具屏蔽双列表编辑器）                        │
                         │   └─ 600ms 轮询 ──┐                                                                   │
                         │                   ▼ RPC call('/dsh-my-go', endpoint)                                  │
                         │  【host 半】lib/index.js（profile bundle，global 层注册）                              │
@@ -18,7 +19,8 @@
                         │   │    ├─ snapshot ──► 优先读 Symbol.for('dsh-my-go.snapshot') 全局桥 ──────┐         │
                         │   │    │                  （桥不在 → 回落自身状态机，非 MyGO 会话用）        │         │
                         │   │    ├─ loadSettings / saveSettings ──► settings 命名空间 'dsh-my-go'    │         │
-                        │   │    └─ listModels ──► llm.listProviders/listModels                      │         │
+                        │   │    ├─ listModels ──► llm.listProviders/listModels                      │         │
+                         │   │    └─ listTools ──► tools.schemas() 全局花名册，服务端滤保留名 │         │
                         │   ├─ ensurePresetInstalled：按版本标记同步 preset/ 到 ~/.dsh/.agent-presets/│         │
                         │   └─ fallback 编排全家桶（工具+状态机，非 MyGO 会话生效）                    │         │
                         │                                                                          │ 实时读    │
@@ -45,7 +47,7 @@
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.2.3-tisitan.12；test = 冒烟 + 单测
+├── package.json              # 包声明；版本 0.2.3-tisitan.13；test = 冒烟 + 单测
 ├── cordis.patch.yml          # bundle patch：dsh plugin add 后自动把 lib 挂进 profile（global 层）
 ├── CHANGELOG.md              # fork 修复台账（相对上游的全部差异）
 ├── README.md                 # 项目说明（含 fork 标识段）
@@ -57,8 +59,9 @@ dsh-my-go/
 ├── preset/                   # agent preset「MyGO!!!!! 模式」（被同步到 ~/.dsh/.agent-presets/）
 │   ├── preset.yml            #   preset 元信息（名称/排序）
 │   ├── agent.cordis.yml      #   agent 平面组合：DSH 官方工具行 + 本地 broker 行 + tool-mask 行
-│   ├── tool-mask.mjs         #   工具屏蔽：按清单藏环境特定工具（默认 7 个示例，
-│   │                         #     可用 agent.cordis.yml 行的 config.deny 覆盖）
+│   ├── tool-mask.mjs         #   工具屏蔽：三级优先级解析（config.deny >
+│   │                         #     settings toolMask.deny > 空 DEFAULT_DENY），
+│   │                         #     挂载时读一次、只对新会话生效
 │   └── tools/
 │       └── broker.mjs        #   【agent 半 · 编排真源】状态机 + 6 工具 + prompt 注入
 │                             #     + 模型绑定 + 拓扑闸 + 快照桥发布（★ 大部分修复在这里）
@@ -75,7 +78,10 @@ dsh-my-go/
 │   └── oracle.md             #   疑难/极端复杂兜底
 │
 ├── src/
-│   └── client.js             # 【client 半源码】面板/设置页/自动跳转（React.createElement 手写）
+│   ├── client.js             # 【client 半源码】面板/设置页/自动跳转（React.createElement 手写）
+│   ├── fallback-rows.js      # 备选链编辑器纯函数（node --test 与 bundle 内联同源）
+│   ├── tool-mask-rows.js     # 工具屏蔽双列表编辑器纯函数（同上，tisitan.13）
+│   └── panel-format.js       # 面板格式化纯函数（同上）
 ├── scripts/
 │   └── build-client.mjs      # esbuild 打包：src/client.js → dist/client.js（CJS + ModuleLoader 包装）
 ├── dist/                     # 构建产物（gitignore，发布/构建时生成）
@@ -89,7 +95,13 @@ dsh-my-go/
 │   │                         #   need_help 上报失败可观测性/forward 信封化转义）
 │   ├── multi-session.test.mjs# 多会话隔离 4 例（A 忙 B 不排队/childOwner 路由/
 │   │                         #   session 销毁隔离/revive 重登记属主）（tisitan.10）
-│   └── host-parity.test.mjs  # lib/broker 对称断言 10 例（模型校验 2 + fallbacks/重派 8）
+│   ├── host-parity.test.mjs  # lib/broker 对称断言 14 例（模型校验 2 + fallbacks/
+│   │                         #   重派 8 + toolMask schema/unset/listTools 4，
+│   │                         #   tisitan.13）
+│   ├── fallback-rows.test.mjs# 备选链编辑器纯函数 7 例（tisitan.12）
+│   ├── panel-format.test.mjs # 面板格式化纯函数 9 例（tisitan.12）
+│   ├── tool-mask.test.mjs    # 工具屏蔽解析优先级 5 例（tisitan.13）
+│   └── tool-mask-rows.test.mjs# 屏蔽双列表编辑器纯函数 7 例（tisitan.13）
 │
 ├── broker/                   # ⚠️ 归档的 TS 参考实现（见 broker/README.md），不参与构建运行
 ├── docs/
@@ -140,7 +152,7 @@ dsh-my-go/
 | 树状图面板 | `src/client.js` `TreePanel` | `shell.overlay` 浮层 + 侧栏 🧭 开关；600ms 轮询 RPC `snapshot` 端点，seq 变化才重渲染（fork 修复：开关脱钩 + force bailout） |
 | 快照桥（fork 新增） | `broker.mjs` 发布 ↔ `lib/index.js` RPC 消费 | broker 把 `() => latestSnapshot` 挂到 `globalThis[Symbol.for('dsh-my-go.snapshot')]`；lib 的 RPC handler 优先实时读取（零副本），桥不在则回落自身状态机。tisitan.10 起形状为 `{ seq, parents: { [会话id]: { current, queue, helpRequests, history } } }`（多会话聚合） |
 | 自动跳转 | `src/client.js` 定时器 | 子代理 running → `sessions.openSubagent()` 跟跳子会话；结束后 `sessions.open(parentSessionId)` 跳回。tisitan.10 起加**会话门禁**：只跟随当前打开的会话（`sessions.list.getSnapshot().current`），多会话并行时绝不把用户拽去别的会话 |
-| 设置页 | `src/client.js` `SettingsPage` ↔ `lib/index.js` RPC | 8 工种 × 5 字段（provider/model/reasoningEffort/dsv4p0813/fallbacks）；loadSettings 失败时 `draft=null` 禁止保存（fork 修复：不再一键清空配置）；saveSettings 空值 unset、显式 false 可表达（fork 修复） |
+| 设置页 | `src/client.js` `SettingsPage` ↔ `lib/index.js` RPC | 8 工种 × 5 字段（provider/model/reasoningEffort/dsv4p0813/fallbacks）+ 工具屏蔽双列表编辑器（tisitan.13，`listTools` RPC 拉花名册、`toolMask.deny` 读写）；loadSettings 失败时 `draft=null` 禁止保存（fork 修复：不再一键清空配置）；saveSettings 空值 unset、显式 false 可表达（fork 修复） |
 | settings 合并 | `broker.mjs` / `lib/index.js` | 永远从 `baseBindings`（默认值+插件 config）起算合并 stored（fork 修复：WebUI 取消配置可回落）；`||` 语义统一（空串=未设置） |
 | preset 同步 | `lib/index.js` `ensurePresetInstalled()` | 版本标记文件 `.dsh-my-go-version`：版本不变则跳过（fork 修复：不再每次强制覆盖用户手改） |
 
@@ -152,8 +164,10 @@ dsh-my-go/
 | 单测 | `test/orchestration.test.mjs` | 状态机 14 例：占锁原子性、bindChild（含缺位告警）、finish 清求助、suspend/resume、revive、requeueHead、dropQueuedFor、dropQueuedFailed、history 200 上限、record/followupPrompt |
 | 单测 | `test/fallback-rows.test.mjs` | 备选链编辑器纯函数 7 例：normalize/add/remove/move/update、不突变输入、与主绑定联动形状（tisitan.12） |
 | 单测 | `test/panel-format.test.mjs` | 面板格式化纯函数 9 例：shortId/oneLine、formatRelativeTime 阶梯与边界、extractFallbackNote 标注提取、组合形状（tisitan.12） |
+| 单测 | `test/tool-mask.test.mjs` | 工具屏蔽解析 5 例：resolveDeny 三级优先级三态、DEFAULT_DENY 泛化清空源码断言、apply 容错（缺席跳过/服务缺席回落）与汇总日志（tisitan.13） |
+| 单测 | `test/tool-mask-rows.test.mjs` | 屏蔽双列表编辑器纯函数 7 例：normalize 去重保序、block/unblock、availableTools 过滤、denyEntries 未连接徽章、不突变输入（tisitan.13） |
 | 集成 | `test/bridge.test.mjs` + `test/multi-session.test.mjs` | mock cordis ctx 跑 `broker.apply()`：bridge 29 例（Symbol.for 快照桥两例、队列回补重试/超上限放弃、disposed 竞态两例、dispatchWork 模型绑定解析两例、settings 重基线、队列上岗映射通知、失败附因 live 推送、截断 config、台账 v2 分桶 round-trip、tisitan.9 持久化档案附因两例、tisitan.11 need_help 上报失败 warn+通知与 forward 信封化转义、tisitan.12 备选链重派等十二例（含 step-3 a–h））；multi-session 4 例（A 忙 B 不排队、childOwner 路由、session 销毁隔离、revive 重登记属主）（tisitan.10） |
-| 半对齐 | `test/host-parity.test.mjs` | lib 半与 broker 半对称断言 10 例：dispatchWork 模型校验 2（tisitan.11）+ fallbacks/重派通路 8（tisitan.12） |
+| 半对齐 | `test/host-parity.test.mjs` | lib 半与 broker 半对称断言 14 例：dispatchWork 模型校验 2（tisitan.11）+ fallbacks/重派通路 8（tisitan.12）+ toolMask schema/空数组 unset/listTools mock 注册表 4（tisitan.13） |
 
 ## 四、fork 与上游的关系
 
@@ -182,10 +196,12 @@ dsh-my-go/
   均为 `{}`，不内置任何模型/渠道名，子代理完全继承环境默认路由。需要按工种分流
   必须自行配置（WebUI 设置页「MyGO 编排」或 `~/.dsh/settings.yaml`，
   示例见 README「工种模型绑定」），否则所有子代理与 Sisyphus 同路由。
-- **tool-mask 默认清单只是示例**：`preset/tool-mask.mjs` 的 `DEFAULT_DENY`
-  里的形如 `mcp__<your-origin>__*` 的环境特定工具名；你的环境大概率没有这些
-  工具（按名跳过、仅 warn）。按需在 `agent.cordis.yml` 的 tool-mask 行
-  用 `config.deny` 覆盖成你自己的清单。
+- **tool-mask 全默认不屏蔽（tisitan.13 起）**：`preset/tool-mask.mjs` 的
+  `DEFAULT_DENY` 已清空（原 7 个私有示例名移除），屏蔽清单三级优先级：
+  `config.deny`（行级显式覆盖）＞ settings `toolMask.deny`（设置页「工具
+  屏蔽」双列表）＞ 空默认。清单在 preset 挂载时解析一次，**只对新会话
+  生效**；缺席工具按名跳过（warn），不炸挂载。tisitan.12 及之前依赖内置
+  清单的部署升级后需在设置页重配。
 - **双通知（reported + settled）是机制性重复，不可抑制**：子代理完工时
   父会话会收到两条通知——子代理自己的 `reportFrom`（reported）与
   dsh-subagent 的 `notifySettlement`（settled）。两者都是 harness 硬编码

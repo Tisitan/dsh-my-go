@@ -164,10 +164,13 @@
     searchTimeoutMs: 60000
 
 # ── tool mask ────────────────────────────────────────────────────────────────
-# Hides environment-specific tools from this preset's catalog — applies to
-# Sisyphus and every sub-agent on the preset. The mask list lives in
-# ./tool-mask.mjs (DEFAULT_DENY, per-name try/catch so an absent tool cannot
-# fail the mount); override it wholesale with a `config.deny` array on this
-# row to match your own deployment.
+# Hides tools from this preset's catalog — applies to Sisyphus and every
+# sub-agent on the preset. The deny list resolves in this order (tisitan.13):
+#   1. `config.deny` on this row (explicit override, highest);
+#   2. settings namespace 'dsh-my-go' key `toolMask.deny` (WebUI 设置页
+#      「工具屏蔽」双列表编辑器);
+#   3. DEFAULT_DENY in ./tool-mask.mjs — empty by default; an absent tool is
+#      skipped per-name (warn) so the mount never fails because of the mask.
+# Mask changes take effect on NEW sessions only.
 - id: tool-mask
   name: ./tool-mask.mjs

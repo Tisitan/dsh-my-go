@@ -20,7 +20,7 @@ const withRealSignalContract = (fn) => async (spec) => {
   return fn(spec)
 }
 
-function mockHostCtx({ startContinuable, agents, llm, settings, sessions } = {}) {
+function mockHostCtx({ startContinuable, agents, llm, settings, sessions, toolsRegistry } = {}) {
   const listeners = new Map()
   const tools = new Map()
   const rpcHandlers = new Map()
@@ -34,6 +34,7 @@ function mockHostCtx({ startContinuable, agents, llm, settings, sessions } = {})
       if (name === 'llm') return llm
       if (name === 'settings') return settings
       if (name === 'sessions') return sessions
+      if (name === 'tools') return toolsRegistry
       return undefined
     },
     on: (event, fn) => { listeners.set(event, fn) },
@@ -141,6 +142,75 @@ test('host/broker 四处 settings 合并块对称携带 fallbacks（?? 链）', 
   const count = (src) => src.split(line).length - 1
   assert.equal(count(hostSrc), 2, 'lib 半初始合并 + updated 监听各 1 处')
   assert.equal(count(brokerSrc), 2, 'broker 半初始合并 + updated 监听各 1 处')
+})
+
+// ── tool-mask 配置化（tisitan.13）：schema + saveSettings + listTools ────
+
+test('lib 半 settings schema：toolMask.deny 数组被接受，缺省键不受影响', async () => {
+  let registered
+  const settings = {
+    register: (ns, schema) => { registered = schema; return {} },
+    get: () => undefined,
+  }
+  const { ctx } = mockHostCtx({ settings })
+  await host.apply(ctx, {})
+  const parsed = registered({ toolMask: { deny: ['mcp__a__x', 'tool_y'] } })
+  assert.deepEqual(parsed.toolMask.deny, ['mcp__a__x', 'tool_y'], 'schema 接受 toolMask 且保持形状')
+  const parsedMinimal = registered({})
+  assert.ok(parsedMinimal && typeof parsedMinimal === 'object', '不含 toolMask 的存量配置仍可解析（向后兼容）')
+})
+
+test('lib 半 saveSettings：toolMask.deny 空数组转 unset，非空原样 set', async () => {
+  const mutates = []
+  const settings = {
+    register: () => ({}),
+    get: () => undefined,
+    mutate: async (ns, ops) => { mutates.push({ ns, ops }) },
+  }
+  const { ctx, rpc } = mockHostCtx({ settings })
+  await host.apply(ctx, {})
+  const res = await rpc('/dsh-my-go', 'saveSettings', {
+    toolMask: { deny: ['mcp__a__x'] },
+    hermes: { fallbacks: [] },
+  })
+  assert.equal(res.ok, true)
+  assert.deepEqual(
+    mutates[0].ops.filter((o) => o.path[0] === 'toolMask'),
+    [{ op: 'set', path: ['toolMask', 'deny'], value: ['mcp__a__x'] }],
+    '非空 deny 原样 set',
+  )
+  const res2 = await rpc('/dsh-my-go', 'saveSettings', { toolMask: { deny: [] } })
+  assert.equal(res2.ok, true)
+  assert.deepEqual(
+    mutates[1].ops.filter((o) => o.path[0] === 'toolMask'),
+    [{ op: 'unset', path: ['toolMask', 'deny'] }],
+    '空数组与不屏蔽同语义：unset',
+  )
+})
+
+test('lib 半 listTools：花名册返回全局工具名且滤保留名（mock 注册表）', async () => {
+  const { ctx, rpc } = mockHostCtx({
+    toolsRegistry: {
+      schemas: () => [
+        { name: 'read', description: '', parameters: {} },
+        { name: 'run_code', description: '', parameters: {} },
+        { name: 'mcp__vcp__alpha', description: '', parameters: {} },
+        { name: 'mcp__vcp__beta', description: '', parameters: {} },
+      ],
+    },
+  })
+  await host.apply(ctx, {})
+  const res = await rpc('/dsh-my-go', 'listTools', {})
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.value, ['mcp__vcp__alpha', 'mcp__vcp__beta', 'read'], '保留名 run_code 不返回，名单排序去重')
+})
+
+test('lib 半 listTools：tools 服务缺席回落空名单（ok:true）', async () => {
+  const { ctx, rpc } = mockHostCtx({})
+  await host.apply(ctx, {})
+  const res = await rpc('/dsh-my-go', 'listTools', {})
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.value, [], '设置页降级为纯编辑器而非报错')
 })
 
 // ── fallback 备选链 step-2：readTurnFailure 结构化 + isFallbackable 分类器 ──

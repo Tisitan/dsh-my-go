@@ -3,6 +3,67 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.13] - 2026-08-29
+
+「tool-mask 配置化 + 可视化配置 UI」批：工具屏蔽清单从硬编码走向 settings，
+设置页新增双列表编辑器；preset 端硬编码的私有工具名清单连锅端清空。
+当独立公开项目对待——源码零私有部署痕迹。
+
+### 新增：工具屏蔽（Tool Mask）配置化
+
+- **schema**：settings 命名空间 `dsh-my-go` 新增第 9 个顶级键
+  `toolMask: { deny: string[] }`（`lib/index.js`，与 8 工种键平级）；
+  saveSettings 对 `deny` 空数组/缺失转 unset（=不屏蔽），非空原样 set。
+- **preset 半**：`preset/tool-mask.mjs` 的 `DEFAULT_DENY` 清空为 `[]`
+  （原 7 个 `mcp__vcp__*_for_rei` 等私有示例名全部移除，注释仅保留格式示例）。
+  屏蔽清单按三级优先级解析（`resolveDeny()` 纯函数，可测）：
+  1. `config.deny`（agent.cordis.yml tool-mask 行显式覆盖，最高；空数组=
+     显式屏蔽空，不回落）；
+  2. settings `toolMask.deny`（设置页写入；apply 时经 `ctx.get('settings')`
+     读一次即可）;
+  3. `[]` 空默认。
+- **生效时机 = 新会话**：preset 挂载即会话组装时解析一次，不监听
+  settings/updated；屏蔽变更只对之后新建的会话生效，当前会话不受影响。
+- **保留逐名 try/catch**：缺席/保留名 restrict 抛错按名跳过（warn），
+  不炸 preset 挂载；新增一行汇总日志（屏蔽数量 + 来源）。
+
+### 新增：设置页「工具屏蔽」双列表编辑器
+
+- **listTools RPC 走通**（无降级）：`ctx.get('tools')` 拿到 ToolRuntime 服务
+  （cordis 服务名 `tools`），`schemas()` 无参即全局层视图——恰是 tool-mask
+  restrict 能 deny 的面（MCP 已连工具、DSH 内建工具、lib 半编排工具）。
+  保留名 `run_code`（唯一保留传输，不在过滤层注册）服务端过滤不返回；
+  服务缺席/异常回落空名单（`ok:true`），前端降级为纯编辑器不阻塞保存。
+  注意花名册是**快照**：MCP 动态连接后需重开设置页刷新。
+- **UI**（`src/client.js`，置于 8 工种卡片之后）：左「当前可用工具」（RPC
+  拉取，减去已屏蔽，附名称过滤框）/ 右「已屏蔽」，屏蔽→/解除←移动按钮；
+  右列不在当前花名册的条目带「未连接」灰徽章（保留不删，MCP 重连后即被
+  屏蔽）；花名册外工具可手填添加；提示文案「屏蔽仅对新会话生效，当前会话
+  不受影响」「保留工具不可屏蔽」。
+- **数据流**：纳入既有 draft + saveSettings 通路，空列表提交 `[]`
+  （host 半转 unset）；操作纯函数抽 `src/tool-mask-rows.js`
+  （normalizeDenyList/blockTool/unblockTool/availableTools/denyEntries，
+  零依赖，与 client bundle 内联同源）。
+
+### 迁移指引
+
+- **原依赖 `DEFAULT_DENY` 私有清单的部署**（tisitan.12 及之前）：升级后
+  默认不再屏蔽任何工具——请在设置页「MyGO 编排 → 工具屏蔽」重新配置屏蔽
+  清单（或 agent.cordis.yml 的 `config.deny`）。
+
+### 附记
+
+- 泛化清洗批 b5ba753（敏感措辞/文档对账）已先行单独 commit，本批为其
+  代码侧收尾：最后一处硬编码私有工具名清单清零。
+
+### 测试
+
+- 新增 `test/tool-mask.test.mjs`（解析优先级三态/DEFAULT_DENY 泛化断言/
+  apply 容错与日志 5 例）、`test/tool-mask-rows.test.mjs`（编辑器纯函数
+  7 例）；`test/host-parity.test.mjs` 增 toolMask schema/空数组 unset/
+  listTools mock 注册表 4 例；全量 89/89 绿；`npm run build:client`
+  重跑产物字节稳定；tsc 干净。
+
 ## [0.2.3-tisitan.12] - 2026-08-29
 
 「备选链（fallbacks）+ UI 优化」批：子代理模型终局失败按链序自动重派备选，
