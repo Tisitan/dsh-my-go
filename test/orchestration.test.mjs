@@ -115,6 +115,27 @@ test('followupPrompt updates last prompt for running and history records', () =>
   assert.equal(o.history[0].prompt, 'followup after done')
 })
 
+test('followupPrompt urgency tag: 入账/扩散/清除三态（tisitan.2）', () => {
+  const o = new Orchestration()
+  const rec = o.beginSpawning('hermes', 'original')
+  o.bindChild(rec.childId, 'sess-1')
+  // 非空字符串入账
+  o.followupPrompt('sess-1', 'mid-run correction', 'steer')
+  assert.equal(o.currentMap.get('sess-1').urgency, 'steer')
+  // 随 finish 扩散进 history（台账落盘全链路的前置）
+  o.finish('sess-1', 'done')
+  assert.equal(o.history[0].urgency, 'steer')
+  // 缺省清除残留：字段语义恒为「最新一条 prompt 的投递档」
+  o.followupPrompt('sess-1', 'plain queued followup')
+  assert.equal(o.history[0].urgency, undefined)
+  assert.ok(!('urgency' in o.history[0]), '清除是删字段而非置 undefined——旧记录形状零变化')
+  // 空串同缺省
+  o.followupPrompt('sess-1', 'abort-tagged', 'abort')
+  assert.equal(o.history[0].urgency, 'abort')
+  o.followupPrompt('sess-1', 'empty string clears', '')
+  assert.ok(!('urgency' in o.history[0]))
+})
+
 test('bindChild on a missing placeholder warns and returns undefined', () => {
   const o = new Orchestration()
   const warnings = []

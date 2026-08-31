@@ -99,6 +99,13 @@ export async function apply(ctx, config = {}) {
   // cold-resume 后的台账 revive）在重建 sessionTypes 的同点按记录回填本表，
   // 复活后 waterfall 保持备选不回跳主模型。
   const activeFallback = new Map()
+  // abort 掐断护航表（tisitan.2）：continue urgency=abort 的 interrupt 会让被
+  // 掐轮以 stopReason='aborted' 上报 subagent/end——该 end 是编排方自造的
+  // 预期事件，绝不能走 finalizeEnd（落史会让 interrupt 前排队的 followup
+  // 续轮游离于单线阻塞之外，「失败已知悉」通知还会误导主流程进入失败处置）。
+  // continue 成功 interrupt 后登记，end handler 见 guard 一次性消费跳过收尾；
+  // 消费点：subagent/end handler（正常路径）+ dispose 宽限兜底（end 缺席清漏）。
+  const abortExpected = new Set()
   // spawn 解析前备选登记表（棒2-Z2）：重派 startContinuable resolve 之前，
   // sessionTypes/activeFallback 均未登记，窗口内重派儿童的请求经 typeOfAgent
   // label 兜底识别工种后只能取 bindings[type] 主模型——tisitan.16 同款回跳
@@ -150,6 +157,8 @@ export async function apply(ctx, config = {}) {
       disposeFallbackTimers.delete(id)
       if (!orch.currentMap.has(id)) return
       console.warn(`[dsh-my-go] subagent/end never arrived for disposed child ${String(id)} within ${DISPOSE_END_GRACE_MS}ms; aborting record to unblock the queue`)
+      // end 真缺席时同步清 abort 护航，防 guard 泄漏后误吞同 childId 复活轮的正常 end
+      abortExpected.delete(id)
       orch.clearHelpFor(id)
       orch.abort(id)
       childOwner.delete(id)
@@ -762,12 +771,20 @@ export async function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'continue',
-    description: 'Resume a sub-agent by its childId with a new prompt. Use to reject its conclusion (state reason + correction) or relay a follow-up. The sub-agent keeps its current turn context.',
+    description: [
+      'Resume a sub-agent by its childId with a new prompt. Use to reject its conclusion (state reason + correction) or relay a follow-up. The sub-agent keeps its current turn context.',
+      'urgency tiers: queued (default) parks behind the current turn and is consumed when it ends; steer surfaces at the running sub-agent\'s next step boundary without interrupting in-flight tool calls (running state only — any other state is delivered as queued); abort immediately cancels the current turn (started tool calls drain but their side effects are NOT rolled back), then delivers the prompt.',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'The childId of the sub-agent to resume.' },
         prompt: { type: 'string', description: 'The new prompt: rejection reason + correction, or a follow-up task.' },
+        urgency: {
+          type: 'string',
+          enum: ['queued', 'steer', 'abort'],
+          description: 'queued (default): waits for the current turn to finish. steer: visible at the next step boundary of a running sub-agent, tool calls uninterrupted; falls back to queued when the child is not running or the live agent is unreachable. abort: interrupts the current turn immediately (tools drain, side effects stay), then queues the prompt.',
+        },
       },
       required: ['id', 'prompt'],
       additionalProperties: false,
@@ -776,10 +793,14 @@ export async function apply(ctx, config = {}) {
       schema: {
         type: 'object',
         additionalProperties: false,
-        properties: { accepted: { type: 'boolean' }, messageId: { type: 'string' } },
+        properties: {
+          accepted: { type: 'boolean' },
+          messageId: { type: 'string' },
+          mode: { type: 'string', enum: ['queued', 'steer', 'abort'] },
+        },
         required: ['accepted'],
       },
-      render: (_args, value) => [{ type: 'text', text: `continue → ${value.accepted ? `delivered ${value.messageId}` : 'rejected'}` }],
+      render: (_args, value) => [{ type: 'text', text: `continue → ${value.accepted ? `delivered ${value.messageId} (${value.mode ?? 'queued'})` : 'rejected'}` }],
     },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
@@ -811,11 +832,70 @@ export async function apply(ctx, config = {}) {
       if (isFinished && orch.isBusy()) {
         throw new Error('another sub-agent is currently running; wait for it to finish before reviving a completed sub-agent (single-line blocking)')
       }
+      // urgency 三档（tisitan.2）：queued=现状零变化；steer=仅 running 时直取
+      // agents 注册表 .steer()（harness 公开 API，类型契约见 dsh-agent
+      // runtime-types.d.ts），进 next-step 队列，下一 step 边界即见、不打断
+      // 工具调用；abort=先 interrupt 掐断当前 turn 再原 followup（顺序铁律：
+      // 先掐后投，命中 wakeRequested 闩锁，drain 收敛后续轮自动开跑）。
+      const urgency = typeof args.urgency === 'string' ? args.urgency : 'queued'
+      const isRunning = !isFinished && record.status === 'running'
+      let mode = 'queued'
+      if (urgency === 'steer') {
+        // 非 running（waiting/finished/spawning）给 steer 一律按 queued 投递：
+        // steer 语义要求活 turn 的 step 边界，而 followup 路径自带 resume/revive
+        // 等正确状态迁移——语义防呆优先于结构化报错（报错只会让主流程多花
+        // 一轮重试 queued，投递语义本身不变）。
+        const childAgent = isRunning ? ctx.get('agents')?.get?.(record.childId) : undefined
+        if (childAgent && typeof childAgent.steer === 'function') {
+          // 消息形状照抄 notifyParent 段（harness UserMessage 契约）
+          const steerId = `mygo-steer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+          childAgent.steer({
+            id: steerId,
+            role: 'user',
+            content: [{ type: 'text', text: args.prompt }],
+            source: { kind: 'coordinator', form: 'relay', senderSessionId: parent.id },
+          })
+          orch.followupPrompt(record.childId, args.prompt, 'steer')
+          bump()
+          return { accepted: true, messageId: steerId, mode: 'steer' }
+        }
+        // 注册表取不到活 agent（非驻留/冷态）或非 running：回落 followup + warn，绝不静默失败
+        console.warn(isRunning
+          ? `[dsh-my-go] continue urgency=steer: live agent ${String(record.childId)} not in registry (non-resident/cold); falling back to queued followup`
+          : `[dsh-my-go] continue urgency=steer: ${String(record.childId)} is ${isFinished ? 'finished' : String(record.status)} (not running); delivering as queued followup`)
+      }
+      if (urgency === 'abort' && isRunning) {
+        // waiting/finished 无 turn 可掐：跳过 interrupt 直接走 followup
+        try {
+          ctx.subagents.interrupt(record.childId, { kind: 'ancestor', agent: parent })
+          mode = 'abort'
+          // 被掐轮的 end（stopReason='aborted'）是编排方自造的预期事件：登记
+          // 护航，end handler 见 guard 跳过落史/失败通知/队列推进（续轮仍占槽）
+          abortExpected.add(record.childId)
+          // harness 原生中断通知随后必到（硬编码模板插件无法抑制）：同步 inject
+          // 一句预告，防主流程把预期掐断误当失败处置（tisitan.18 预告同款动机）
+          notifyParent(parent, `[dsh-my-go] 已按 urgency=abort 掐断 ${String(record.childId)} 当前轮，新指令已排队（当前轮 drain 后自动开跑）；随后的中断通知属预期噪音，无需失败处置`)
+        } catch (error) {
+          // interrupt 唯一抛错面是 UNAUTHORIZED（如收养的跨会话记录不在
+          // ancestry）：掐不动就降级 queued，投递语义不丢
+          console.warn(`[dsh-my-go] continue urgency=abort: interrupt ${String(record.childId)} rejected (${String(error)}); degrading to queued followup`)
+        }
+      }
       // 先投递，成功后再落账：投递失败不会留下假 running、也不会弄丢求助单
-      const messageId = await ctx.subagents.followup(parent, record.childId, [{ type: 'text', text: args.prompt }], {
-        source: { kind: 'coordinator', form: 'relay', senderSessionId: parent.id },
-        signal: exec?.signal,
-      })
+      let messageId
+      try {
+        messageId = await ctx.subagents.followup(parent, record.childId, [{ type: 'text', text: args.prompt }], {
+          source: { kind: 'coordinator', form: 'relay', senderSessionId: parent.id },
+          signal: exec?.signal,
+        })
+      } catch (error) {
+        // abort 已掐断但投递失败的补偿：撤销护航，让被掐轮的 aborted end 走
+        // 正常 finalizeEnd 落史并推进队列——绝不留下「记录 running 但子代理
+        // idle、再无 end 到达」的死槽（end 先于本 catch 到达的极小窗口内
+        // guard 已被消费，主流程重试 continue 即可自然恢复，窗口见 CHANGELOG）
+        abortExpected.delete(record.childId)
+        throw error
+      }
       if (record.status === 'waiting') {
         for (const help of orch.snapshot().helpRequests) {
           if (help.childId === record.childId) orch.resolveHelp(help.id)
@@ -834,9 +914,10 @@ export async function apply(ctx, config = {}) {
         // 复活后重新登记属主，保证再次 subagent/end 时路由回本实例
         if (ownerPid !== undefined) childOwner.set(record.childId, ownerPid)
       }
-      orch.followupPrompt(record.childId, args.prompt)
+      // 台账照记 urgency 声明档（queued 为默认不落字段，保持旧记录零变化）
+      orch.followupPrompt(record.childId, args.prompt, urgency === 'queued' ? undefined : urgency)
       bump()
-      return { accepted: true, messageId }
+      return { accepted: true, messageId, mode }
     },
   })
 
@@ -1485,6 +1566,15 @@ export async function apply(ctx, config = {}) {
       sessionTypes.delete(childId)
       disposedTypes.delete(childId)
       activeFallback.delete(childId)
+      return
+    }
+    // urgency=abort 护航（tisitan.2）：interrupt 掐断的那一轮必以非 completed
+    // 终局上报 end——它是编排方自造的预期事件，落史会让 interrupt 前排队的
+    // followup 续轮游离于单线阻塞之外，「失败已知悉」预告/附因推送还会误导
+    // 主流程进入失败处置。guard 一次性消费：不落史、不通知、不推进队列
+    // （槽位仍被续轮占用），续轮自己的 end 到达时走正常收尾。
+    if (abortExpected.delete(childId)) {
+      console.warn(`[dsh-my-go] subagent/end for ${String(childId)} (${type}) is the expected abort-interrupted turn; record stays running for the queued followup`)
       return
     }
     // 双发 end 的第二发落在备选评估的 await 窗口内（pickFallbackEntry 含真实

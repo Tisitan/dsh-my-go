@@ -216,17 +216,25 @@ export class Orchestration {
     return this.currentMap.get(childId) ?? this.history.find((r) => r.childId === childId)
   }
 
-  /** Record the latest prompt Sisyphus sent to one child (go_work or continue). */
-  followupPrompt(childId, prompt) {
+  /** Record the latest prompt Sisyphus sent to one child (go_work or continue).
+   * urgency（tisitan.2，continue 三档声明）为可选第三参：非空字符串入账、否则
+   * 清字段——字段语义恒为「最新一条 prompt 的投递档」，不留上一条的残留值；
+   * 旧记录（从未传过 urgency）天然无此字段，零变化。 */
+  followupPrompt(childId, prompt, urgency) {
+    const tag = (next) => {
+      if (typeof urgency === 'string' && urgency !== '') next.urgency = urgency
+      else delete next.urgency
+      return next
+    }
     const rec = this.currentMap.get(childId)
     if (rec) {
-      this.currentMap.set(childId, { ...rec, prompt, updatedAt: Date.now() })
+      this.currentMap.set(childId, tag({ ...rec, prompt, updatedAt: Date.now() }))
       this.emit()
       return this.currentMap.get(childId)
     }
     const idx = this.history.findIndex((r) => r.childId === childId)
     if (idx >= 0) {
-      const next = { ...this.history[idx], prompt, updatedAt: Date.now() }
+      const next = tag({ ...this.history[idx], prompt, updatedAt: Date.now() })
       this.history = [...this.history.slice(0, idx), next, ...this.history.slice(idx + 1)]
       this.emit()
       return next

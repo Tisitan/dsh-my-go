@@ -3,6 +3,101 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.3.0-tisitan.2] - 2026-08-31
+
+「continue 三档 urgency」批：continue 工具新增 `urgency` 参数
+（queued / steer / abort），跑中纠偏从此不必等当前轮自然结束。
+方案 0（interrupt_agent + continue 手动连招）自此退役。测试 181 → 190。
+
+### Added
+
+- **continue 三档 urgency**（broker 半，唯一编排宿主）：
+  - `queued`（默认）：现状零变化，prompt 经 followup 排队等当前轮
+    结束后消费。
+  - `steer`：子代理 running 时经 agents 注册表直取 `Agent.steer()`
+    （harness 公开 API，消息形状照抄 notifyParent 注入段），指令进
+    next-step 队列、**下一 step 边界即见**，不打断进行中的工具调用、
+    不丢消息。注册表取不到活 agent（非驻留/冷态）兜底回落 followup +
+    console.warn，**绝不静默失败**；非 running（waiting/finished）给
+    steer 按 queued 投递 + warn——followup 路径自带 resume/revive 正确
+    状态迁移，语义防呆优先于结构化报错（报错只会让主流程多花一轮重试
+    queued，投递语义不变）。
+  - `abort`：先 `ctx.subagents.interrupt()` 掐断当前 turn 再原
+    followup（**顺序铁律：先掐后投**，命中 wakeRequested 闩锁，当前轮
+    drain 收敛后续轮自动开跑；已启动工具调用 drain 但副作用不可回滚）。
+    waiting/finished 无 turn 可掐：跳过 interrupt 直接投递。interrupt
+    抛 UNAUTHORIZED（如收养的跨会话记录不在 ancestry）时降级 queued +
+    warn，投递语义不丢。掐断成功同步 inject 一行预告，声明随后的
+    harness 原生中断通知属预期噪音，防主流程误入失败处置（tisitan.18
+    预告协议同款动机）。
+- **abort 掐断护航（abortExpected）**：interrupt 掐断的那一轮必以
+  `stopReason='aborted'` 上报 subagent/end——该 end 是编排方自造的
+  预期事件，guard 一次性消费：不落史、不发「失败已知悉」系列通知、
+  不推进队列（续轮仍占槽），续轮自己的 end 到达时走正常收尾。dispose
+  宽限兜底（end 真缺席）同步清 guard，防泄漏后误吞同 childId 复活轮
+  的正常 end。
+- **abort 投递失败补偿**：interrupt 成功但随后的 followup 投递抛错时，
+  catch 内撤销护航再抛出——被掐轮的 aborted end 走正常 finalizeEnd
+  落史并释放槽位，绝不留下「记录 running 但子代理 idle、再无 end
+  到达」的死槽（end 先于 catch 到达的极小窗口内 guard 已被消费，
+  主流程重试 continue 即可自然恢复）。
+- **continue 输出新增 `mode` 字段**（queued/steer/abort）：如实报告
+  实际投递方式——降级场景（steer 回落、abort 降级、非 running）主流程
+  可感知，render 文案同步展示。
+- **编排记录 urgency 字段**：`followupPrompt(childId, prompt, urgency)`
+  可选第三参，非空字符串入账、否则删字段（字段语义恒为「最新一条
+  prompt 的投递档」，不留上一条残留）；随 `{...record}` 扩散走
+  finish→history→台账落盘全链路，旧记录天然无此字段零变化。
+
+### Changed
+
+- **prompts/sisyphus.md 新增「continue 三档 urgency」小节**：跑中纠偏
+  默认 steer、不紧急补充说明用 queued、只有「方向错了必须立刻停」才
+  abort；明示 steer 可见时机=下一 step 边界（子代理卡在超长工具调用时
+  仍有延迟）、abort 副作用不可回滚、非 running 自动按 queued 投递且
+  `mode` 字段标明实际方式；方案 0 手动连招退役统一走 urgency。职责条
+  与通信工具速查表同步指引。
+
+### 测试
+
+单测 181 → 190（+9）：bridge +8（steer 直取且 followup 零调用、steer
+注册表缺位兜底回落 + warn、abort 的 interrupt 先于 followup + ancestor
+authority + 预告通知、abort 护航的 aborted end 不落史不推进且续轮 end
+正常收尾、abort 投递失败补偿撤销护航正常落史、queued 缺省零变化回归含
+台账无 urgency 字段、非 running 给 steer 按 queued 投递并 resume、非
+running 给 abort 跳过 interrupt 直接复活）；orchestration +1（urgency
+入账/扩散/清除三态）。interrupt mock 复刻 dsh-subagent 真实契约
+（ancestor authority 的活注册表校验抛错面，tisitan.6 教训）。逐文件
+实测（`node --test` 逐文件跑数）：
+
+| 文件 | 计数 |
+| --- | --- |
+| orchestration | 17 |
+| bridge | 39 |
+| multi-session | 5 |
+| host-parity | 25 |
+| roster-roles | 17 |
+| roster-route | 19 |
+| roster-rows | 16 |
+| chain-rows | 11 |
+| panel-format | 9 |
+| tool-mask | 5 |
+| tool-mask-rows | 7 |
+| dump-session | 9 |
+| failure-notice | 11 |
+| **合计** | **190** |
+
+## [0.3.0-tisitan.1] - 2026-08-31
+
+「上游兼容修复」批：适配 harness 上游 0.1.2-alpha.2。（本批发布时漏登
+CHANGELOG，tisitan.2 追记。）
+
+### Fixed
+
+- **peer/dev 依赖范围放宽** 至 `>=0.1.2-alpha.2 <0.2.0`；移除上游已
+  删除的 `dsh-client-runtime` / `dsh-client-ui-slots` 依赖；`rpc.handle`
+  调用移除已失效的 authority 实参。测试 181 不变。
+
 ## [0.3.0-tisitan.0] - 2026-08-31
 
 「单宿主编排」批：lib 半（npm 主库）编排面整体切除，编排实现唯一归属

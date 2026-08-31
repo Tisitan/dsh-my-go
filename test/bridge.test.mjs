@@ -1141,3 +1141,237 @@ test('tisitan.17 a: 重派记录携带 fallbackEntry，台账 v2 round-trip 后�
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// ── tisitan.2：continue 三档 urgency（queued / steer / abort）──────────────
+// mock 契约说明（tisitan.6 教训，mock 必须忠实真实契约）：
+// - ctx.subagents.interrupt(target, authority) 为同步受理：authority.kind===
+//   'ancestor' 时若 ctx.agents.get(caller.id) !== caller 抛 UNAUTHORIZED；
+//   目标缺席是 accepted no-op（此处复刻注册表校验这一唯一与 broker 相关的抛错面）。
+// - Agent.steer(message) 返回 void，消息形状 = harness UserMessage
+//   （id/role:'user'/content/source），与 notifyParent 注入同款。
+
+test('urgency=steer：running 子代理走 agents 注册表直取 steer，followup 零调用', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const steers = []
+  const followups = []
+  const childAgent = { id: 'sess-1', steer: (msg) => { steers.push(msg) } }
+  const { ctx, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? childAgent : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: { followup: async (_p, childId) => { followups.push(childId); return 'msg-never' } },
+  })
+  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
+  const res = await tools.get('continue').execute({ id: 'sess-1', prompt: '中途纠偏：换方向', urgency: 'steer' }, execOf(parent))
+  assert.equal(res.accepted, true)
+  assert.equal(res.mode, 'steer')
+  assert.ok(String(res.messageId).startsWith('mygo-steer-'), 'steer 消息 id 由 broker 生成')
+  assert.equal(steers.length, 1, 'steer 恰好调用一次')
+  assert.equal(followups.length, 0, 'steer 路径绝不走 followup')
+  const msg = steers[0]
+  assert.equal(msg.role, 'user')
+  assert.deepEqual(msg.content, [{ type: 'text', text: '中途纠偏：换方向' }])
+  assert.deepEqual(msg.source, { kind: 'coordinator', form: 'relay', senderSessionId: 'parent-1' })
+  // 台账：prompt 更新 + urgency 字段入账
+  const cur = snapOf('parent-1')?.current
+  assert.equal(cur?.prompt, '中途纠偏：换方向')
+  assert.equal(cur?.urgency, 'steer')
+  assert.equal(cur?.status, 'running', 'steer 不改变 running 状态')
+})
+
+test('urgency=steer 兜底：注册表取不到活 agent → 回落 followup + warn，绝不静默失败', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const followups = []
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const { ctx, tools } = mockCtxFull({
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) }, // 子代理不在注册表（非驻留/冷态）
+      startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+      subagentsExtra: { followup: async (_p, childId) => { followups.push(childId); return 'msg-fb' } },
+    })
+    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
+    const res = await tools.get('continue').execute({ id: 'sess-1', prompt: '纠偏', urgency: 'steer' }, execOf(parent))
+    assert.equal(res.accepted, true)
+    assert.equal(res.mode, 'queued', '回落后 mode 如实报告 queued')
+    assert.equal(res.messageId, 'msg-fb')
+    assert.deepEqual(followups, ['sess-1'], '回落走原 followup 投递')
+    assert.ok(warnings.some((l) => l.includes('urgency=steer') && l.includes('falling back to queued')), 'warn 留痕')
+  } finally {
+    console.warn = origWarn
+  }
+})
+
+test('urgency=abort：interrupt 先于 followup，authority 为 ancestor，预告通知到位', async () => {
+  const injected = []
+  const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => { injected.push(msg) } }
+  const calls = []
+  const agentsReg = new Map([['parent-1', parent]])
+  const { ctx, tools } = mockCtxFull({
+    agents: { get: (id) => agentsReg.get(id) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: {
+      // 忠实契约：ancestor authority 的活注册表校验（dsh-subagent interrupt 唯一抛错面）
+      interrupt: (target, authority) => {
+        if (authority?.kind === 'ancestor' && agentsReg.get(authority.agent?.id) !== authority.agent) {
+          throw new Error(`interrupting "${target}" requires the exact live ancestor agent`)
+        }
+        calls.push('interrupt')
+      },
+      followup: async () => { calls.push('followup'); return 'msg-abort' },
+    },
+  })
+  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
+  const res = await tools.get('continue').execute({ id: 'sess-1', prompt: '停！换新指令', urgency: 'abort' }, execOf(parent))
+  assert.equal(res.mode, 'abort')
+  assert.equal(res.messageId, 'msg-abort')
+  assert.deepEqual(calls, ['interrupt', 'followup'], '顺序铁律：先掐后投')
+  const notice = injected.find((m) => m.content?.[0]?.text?.includes('urgency=abort'))
+  assert.ok(notice, '掐断预告同步注入父会话')
+  assert.ok(notice.content[0].text.includes('预期噪音'), '预告声明后续中断通知免失败处置')
+})
+
+test('urgency=abort 护航：被掐轮的 aborted end 不落史不推进队列，续轮 end 正常收尾', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  let spawnCalls = 0
+  const { ctx, listeners, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
+    subagentsExtra: {
+      interrupt: () => {},
+      followup: async () => 'msg-abort',
+    },
+  })
+  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 't1' }, execOf(parent))
+  await tools.get('go_work').execute({ agent: 'hermes', prompt: 't2' }, execOf(parent)) // 排队占第二位
+  await tools.get('continue').execute({ id: 'sess-1', prompt: '掐断换指令', urgency: 'abort' }, execOf(parent))
+  // 被掐轮以 aborted 终局上报 end——这是编排方自造的预期事件
+  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] })
+  const snap = snapOf('parent-1')
+  assert.equal(snap?.current?.childId, 'sess-1', '记录不落史，续轮仍占槽')
+  assert.equal(snap?.current?.status, 'running')
+  assert.equal(snap?.history.length, 0, 'aborted end 不产生历史记录')
+  assert.equal(snap?.queue.length, 1, '队列不推进（槽位仍被续轮占用）')
+  assert.equal(spawnCalls, 1, '排队的 t2 未被提前派发')
+  // 续轮（interrupt 前排队的 followup）跑完正常上报 end：guard 已消费，走正常收尾
+  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '续轮结论' }] })
+  await drain()
+  const after = snapOf('parent-1')
+  assert.equal(after?.history.length, 1)
+  assert.equal(after?.history[0]?.conclusion, '续轮结论')
+  assert.equal(after?.history[0]?.status, 'done')
+  assert.equal(spawnCalls, 2, '续轮收尾后队列正常推进，t2 派发')
+})
+
+test('urgency=abort 投递失败补偿：followup 抛错撤销护航，aborted end 正常落史释放槽位', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const { ctx, listeners, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: {
+      interrupt: () => {},
+      followup: async () => { throw new Error('delivery boom') },
+    },
+  })
+  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 't1' }, execOf(parent))
+  await assert.rejects(
+    () => tools.get('continue').execute({ id: 'sess-1', prompt: '掐断换指令', urgency: 'abort' }, execOf(parent)),
+    /delivery boom/,
+  )
+  // 护航已随投递失败撤销：被掐轮的 aborted end 走正常 finalizeEnd——
+  // 落史 failed、释放槽位，绝不留下「记录 running 但子代理 idle」的死槽
+  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] })
+  const snap = snapOf('parent-1')
+  assert.equal(snap?.current, null, '记录正常落史，槽位释放')
+  assert.equal(snap?.history.length, 1)
+  assert.equal(snap?.history[0]?.status, 'failed')
+})
+
+test('urgency 缺省（queued）：行为零变化回归——waiting 恢复 + 台账无 urgency 字段', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const followups = []
+  const { ctx, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: {
+      reportFrom: async () => 'delivered',
+      followup: async (_p, childId) => { followups.push(childId); return 'msg-q' },
+    },
+  })
+  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
+  const childExec = { agent: { id: 'sess-1', session: { header: { parentSession: 'parent-1' } } }, signal: new AbortController().signal }
+  await tools.get('need_help').execute({ intent: 'explore', content: '需要查个文件' }, childExec)
+  assert.equal(snapOf('parent-1')?.current?.status, 'waiting')
+  const res = await tools.get('continue').execute({ id: 'sess-1', prompt: '查这个：foo.mjs' }, execOf(parent))
+  assert.equal(res.accepted, true)
+  assert.equal(res.mode, 'queued')
+  assert.deepEqual(followups, ['sess-1'])
+  const cur = snapOf('parent-1')?.current
+  assert.equal(cur?.status, 'running', 'waiting 恢复语义不变')
+  assert.equal(cur?.prompt, '查这个：foo.mjs')
+  assert.equal(cur?.urgency, undefined, 'queued 默认不落 urgency 字段')
+  assert.equal(snapOf('parent-1')?.helpRequests.length, 0, '求助单照常核销')
+})
+
+test('非 running 给 steer：waiting 子代理按 queued 投递并 resume，steer 零调用', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const steers = []
+  const followups = []
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const childAgent = { id: 'sess-1', steer: (msg) => { steers.push(msg) } }
+    const { ctx, tools } = mockCtxFull({
+      agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? childAgent : undefined) },
+      startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+      subagentsExtra: {
+        reportFrom: async () => 'delivered',
+        followup: async (_p, childId) => { followups.push(childId); return 'msg-w' },
+      },
+    })
+    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
+    const childExec = { agent: { id: 'sess-1', session: { header: { parentSession: 'parent-1' } } }, signal: new AbortController().signal }
+    await tools.get('need_help').execute({ intent: 'read_doc', content: '查文档' }, childExec)
+    const res = await tools.get('continue').execute({ id: 'sess-1', prompt: '答案在这', urgency: 'steer' }, execOf(parent))
+    assert.equal(res.mode, 'queued', 'waiting 状态给 steer 按 queued 投递')
+    assert.equal(steers.length, 0, 'waiting 无活 turn 的 step 边界，steer 绝不调用')
+    assert.deepEqual(followups, ['sess-1'])
+    assert.equal(snapOf('parent-1')?.current?.status, 'running', 'followup 路径自带 resume 状态迁移')
+    assert.ok(warnings.some((l) => l.includes('urgency=steer') && l.includes('not running')), '降级留痕')
+  } finally {
+    console.warn = origWarn
+  }
+})
+
+test('非 running 给 abort：finished 子代理跳过 interrupt 直接 followup 复活', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const interrupts = []
+  const followups = []
+  const { ctx, listeners, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: {
+      interrupt: (target) => { interrupts.push(target) },
+      followup: async (_p, childId) => { followups.push(childId); return 'msg-f' },
+    },
+  })
+  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
+  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done' }] })
+  assert.equal(snapOf('parent-1')?.history.length, 1)
+  const res = await tools.get('continue').execute({ id: 'sess-1', prompt: '驳回重做', urgency: 'abort' }, execOf(parent))
+  assert.equal(res.mode, 'queued', 'finished 无 turn 可掐，按 queued 投递')
+  assert.equal(interrupts.length, 0, '无 turn 可掐：interrupt 绝不调用')
+  assert.deepEqual(followups, ['sess-1'])
+  const cur = snapOf('parent-1')?.current
+  assert.equal(cur?.childId, 'sess-1', '复活语义不变')
+  assert.equal(cur?.status, 'running')
+})
