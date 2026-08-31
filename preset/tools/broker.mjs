@@ -23,15 +23,27 @@ export const name = 'dsh-my-go-broker'
 export const inject = ['tools', 'subagents', 'systemPrompt', 'llm', 'settings', 'agents', 'sessions']
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { zstdDecompressSync } from 'node:zlib'
 
-const AGENT_TYPES = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
+// ── shared 源（tisitan.15）：与 lib 半共用的纯函数单一源 ──────────────────
+// broker 以 preset 内相对路径 import（../shared/），lib 以包内路径 import
+// （../preset/shared/）——两种部署形态下路径均成立（preset/ 由
+// ensurePresetInstalled 整拷，shared/ 随拷且安装后有存在性校验）。
+import { AGENT_TYPES, SELF_REGISTERED_TOOLS } from '../shared/constants.mjs'
+import { normalizeTurnFailure, isFallbackable } from '../shared/failure.mjs'
+import { readArchivedTurnFailure } from '../shared/archive.mjs'
+import { mergeRoleBindings, rosterKeys as sharedRosterKeys, rolePersona as sharedRolePersona, resolveRoleToolFilter as sharedResolveRoleToolFilter, renderRosterBriefing as sharedRenderRosterBriefing } from '../shared/roles.mjs'
+import { Orchestration } from '../shared/orchestration.mjs'
+import { agentLabel, defaultBindings, describeAgent, escapeXml, typeOfAgent, resolveEffectiveBinding, pruneLedgerParents, loadAllPrompts as sharedLoadAllPrompts } from '../shared/misc.mjs'
 
-const AGENT_TYPE_PREFIX = 'dsh-my-go:'
+// 保持两半既有导出面（测试与外部消费者经由两半入口引用共享实现）。
+export { Orchestration } from '../shared/orchestration.mjs'
+export { pruneLedgerParents, describeAgent, resolveEffectiveBinding } from '../shared/misc.mjs'
+export { projectKey, encodeSegment, readArchivedTurnFailure } from '../shared/archive.mjs'
+export { normalizeTurnFailure, isFallbackable } from '../shared/failure.mjs'
+
 
 // ── prompt file loading ───────────────────────────────────────────────────
 // Prompt files live in the prompts/ directory alongside the preset.
@@ -52,476 +64,8 @@ async function loadPrompt(agentType) {
     return null
   }
 }
-// Pre-load all prompts at startup (non-blocking, errors swallowed)
-async function loadAllPrompts() {
-  for (const type of [...AGENT_TYPES, 'sisyphus']) {
-    await loadPrompt(type)
-  }
-}
+const loadAllPrompts = () => sharedLoadAllPrompts(promptCache, loadPrompt)
 
-// ── 失败附因：持久化档案读取（tisitan.9）────────────────────────────────
-// 根因：continuable Activation 的销毁顺序（dsh-subagent/lib/types/continuation.js
-// ~L1016-1050）是先 dispose 子 session（连带从 sessions live store 摘除）、删
-// activation，最后 observer.settle() 才发射 subagent/end——end 处理器读 live
-// store 必然落空，附因永远丢失（tisitan.8 实锤：failed 记录只有 '(error)'）。
-// 主路径改读持久化档案，live 读法保留为快路径。
-// 档案目录规则与 dsh-session-persistence-jsonl 完全一致（行号以 npm 检出
-// @deepseek-ai/dsh 为准）：
-//   root     = <DSH_HOME>/sessions（home 解析：dsh-home-paths/lib/index.js:73，
-//              DSH_HOME 缺省 join(homedir(), '.dsh')）
-//   项目目录 = root/<projectKey(cwd)>           （lib/index.js:106-124, 133-136）
-//   会话目录 = 项目目录/<encodeSegment(childId)>（lib/index.js:84-96, 145-147）
-//   日志文件 = 会话目录/session.jsonl.zstd      （lib/index.js:156-158）
-const ZSTD_FRAME_MAGIC = 0xfd2fb528
-
-// projectKey：与 dsh-session-persistence-jsonl/lib/index.js:106-124 同算法。
-// 分隔符与盘符冒号折叠成单个 '-'，不安全码位转义 ~XXXX，'--...--' 包裹并截断
-// 251 码元（故意有损，人类可导航优先）。
-export function projectKey(cwd) {
-  if (cwd.length === 0) throw new Error('cannot encode an empty project path')
-  let readable = ''
-  let separatorRun = false
-  for (let i = 0; i < cwd.length; i++) {
-    const code = cwd.charCodeAt(i)
-    const ch = String.fromCharCode(code)
-    if (ch === '/' || ch === '\\' || ch === ':') {
-      if (!separatorRun) readable += '-'
-      separatorRun = true
-    } else if (ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch)) {
-      readable += ch
-      separatorRun = false
-    } else {
-      readable += '~' + code.toString(16).toUpperCase().padStart(4, '0')
-      separatorRun = false
-    }
-  }
-  return `--${(readable.replace(/^-+/, '') || 'root').slice(0, 251)}--`
-}
-
-// encodeSegment：与同文件 :84-96 同算法，把 session id 编码成单安全路径段
-// （UUID 恒为恒等映射；'.'/'..' 与不安全码位转义防目录穿越）。
-export function encodeSegment(raw) {
-  if (raw.length === 0) throw new Error('cannot encode an empty path segment')
-  if (raw === '.') return '~002E'
-  if (raw === '..') return '~002E~002E'
-  let out = ''
-  for (let i = 0; i < raw.length; i++) {
-    const code = raw.charCodeAt(i)
-    const ch = String.fromCharCode(code)
-    if (ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch)) out += ch
-    else out += '~' + code.toString(16).toUpperCase().padStart(4, '0')
-  }
-  return out
-}
-
-// scanZstdFrameRanges：与同文件 scanZstdFrames(:503-566) 同算法（裁掉 torn
-// 修复分支）。session.jsonl.zstd 是多 zstd 帧追加容器，Node 的 zlib 单帧接口
-// 只吃首帧，必须先扫描出完整帧界再逐帧解压；末帧不完整（追加写到一半）时截断，
-// 只读已完整的帧。
-function scanZstdFrameRanges(buffer) {
-  const ranges = []
-  let offset = 0
-  while (offset < buffer.length) {
-    const start = offset
-    if (buffer.length - offset < 4) break // 截断的末帧头
-    if (buffer.readUInt32LE(offset) !== ZSTD_FRAME_MAGIC) {
-      throw new Error(`invalid frame magic at byte ${offset}`)
-    }
-    offset += 4
-    if (offset === buffer.length) break
-    const descriptor = buffer.readUInt8(offset)
-    offset += 1
-    if ((descriptor & 24) !== 0) throw new Error(`reserved frame-header bit at byte ${offset - 1}`)
-    const contentSizeFlag = descriptor >>> 6
-    const singleSegment = (descriptor & 32) !== 0
-    const checksum = (descriptor & 4) !== 0
-    const dictionaryFlag = descriptor & 3
-    const dictionaryBytes = dictionaryFlag === 3 ? 4 : dictionaryFlag
-    const contentSizeBytes = contentSizeFlag === 0 ? (singleSegment ? 1 : 0) : 1 << contentSizeFlag
-    const headerBytes = (singleSegment ? 0 : 1) + dictionaryBytes + contentSizeBytes
-    if (buffer.length - offset < headerBytes) break
-    offset += headerBytes
-    let complete = true
-    for (;;) {
-      if (buffer.length - offset < 3) { complete = false; break }
-      const blockHeader = buffer.readUIntLE(offset, 3)
-      offset += 3
-      const lastBlock = (blockHeader & 1) !== 0
-      const blockType = (blockHeader >>> 1) & 3
-      const blockSize = blockHeader >>> 3
-      if (blockType === 3) throw new Error(`reserved block type at byte ${offset - 3}`)
-      const payloadBytes = blockType === 1 ? 1 : blockSize
-      if (buffer.length - offset < payloadBytes) { complete = false; break }
-      offset += payloadBytes
-      if (lastBlock) break
-    }
-    if (!complete) break
-    if (checksum) {
-      if (buffer.length - offset < 4) break
-      offset += 4
-    }
-    ranges.push({ start, end: offset })
-  }
-  return ranges
-}
-
-// readArchivedTurnFailure：持久化档案主路径。倒序逐帧解压（最新帧最先），帧内
-// 倒序扫行，取最后一条 turn/end 且 reason.kind==='error' 的 reason.error，经
-// normalizeTurnFailure 归一为 {message, code?, status?}（fallback 备选链 step-2
-// 结构化契约）。找不到档案/解压失败/无 error 事件均静默退回 undefined 并
-// console.warn 留痕（可观测性，不静默吞）。options.root / options.cwd 供测试
-// 注入；缺省按 DSH_HOME 惯例与 process.cwd() 解析。
-export function readArchivedTurnFailure(childId, options = {}) {
-  const root = options.root ?? join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions')
-  const cwd = options.cwd ?? process.cwd()
-  const logFile = join(root, projectKey(cwd), encodeSegment(childId), 'session.jsonl.zstd')
-  let buffer
-  try {
-    buffer = readFileSync(logFile)
-  } catch (error) {
-    console.warn(`[dsh-my-go] readTurnFailure: 持久化档案不可读 ${logFile}（${String(error?.code ?? error)}），静默退回无附因`)
-    return undefined
-  }
-  let ranges
-  try {
-    ranges = scanZstdFrameRanges(buffer)
-  } catch (error) {
-    console.warn(`[dsh-my-go] readTurnFailure: 档案帧扫描失败 ${logFile}（${String(error)}），静默退回无附因`)
-    return undefined
-  }
-  for (let i = ranges.length - 1; i >= 0; i--) {
-    let text
-    try {
-      text = zstdDecompressSync(buffer.subarray(ranges[i].start, ranges[i].end)).toString('utf-8')
-    } catch (error) {
-      console.warn(`[dsh-my-go] readTurnFailure: 档案第 ${i} 帧解压失败 ${logFile}（${String(error)}），静默退回无附因`)
-      return undefined
-    }
-    const lines = text.split('\n')
-    for (let j = lines.length - 1; j >= 0; j--) {
-      const line = lines[j]
-      if (!line || !line.includes('"turn/end"')) continue
-      let ev
-      try { ev = JSON.parse(line) } catch { continue /* 截断的末行：跳过 */ }
-      if (ev?.type === 'turn/end' && ev?.data?.reason?.kind === 'error') {
-        const failure = normalizeTurnFailure(ev.data.reason.error)
-        if (failure) return failure
-      }
-    }
-  }
-  console.warn(`[dsh-my-go] readTurnFailure: 档案 ${logFile} 内无 turn/end error 事件，静默退回无附因`)
-  return undefined
-}
-
-// ── 失败附因结构化 + fallback 分类（备选链 step-2） ──────────────────────
-// readTurnFailure 返回值契约：{ message, code?, status? }。message 恒为
-// string；code/status 缺失时字段为 undefined。形状依据（npm @deepseek-ai/*
-// 0.1.0-rc.8）：
-//   - LlmError.failure：frozen {message, code, status?, providerRetryAfterMs?,
-//     requestId?}（dsh-llm/lib/index.js:951-957）
-//   - 非 LlmError 裸 Error 兜底：{message: errorChain(error), code:
-//     'UNKNOWN'}（dsh-agent-loop/lib/index.js:584-587）
-export function normalizeTurnFailure(failure) {
-  if (!failure || typeof failure.message !== 'string') return undefined
-  return {
-    message: failure.message,
-    code: typeof failure.code === 'string' ? failure.code : undefined,
-    status: Number.isInteger(failure.status) ? failure.status : undefined,
-  }
-}
-
-// isFallbackable：fallback 备选链错误分类器。输入 readTurnFailure 返回值
-// （undefined = 档案/live 均未读到附因）。判定表（rc.8 查证）：
-//   绝不切 — abort/dispose/用户中断类。DSH 的用户中断走 turn/end
-//     reason.kind==='aborted'（dsh-agent-loop/lib/index.js:575-581），不会以
-//     kind==='error' 进入本分类器；NO_FALLBACK_CODES 纯属防御（防未来演化；
-//     'CANCELLED' 与 SubagentError code 同词汇，dsh-subagent/lib/index.js:1949）。
-//   可切 — 其余一切 error 终局：能以 kind==='error' 结束 turn，说明 DSH 层
-//     可重试集合（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT，
-//     dsh-llm/lib/index.js:360-366，默认 maxRetries 5）已耗尽，或不可重试集合
-//     （HTTP 4xx 如 404/NO_ADAPTER/INVALID_CREDENTIAL/QUOTA/
-//     CONTEXT_WINDOW_EXCEEDED 等，dsh-llm/lib/index.js:255-275,1416）立即终局。
-//     插件层统一在终局切换，不区分「立即切/延后切」。
-//   全缺失 — errorInfo 为 undefined/null 时返回 true（保守：有链则切，已获
-//     用户批准）；调用方以 errorInfo===undefined 区分「确认错误」与「未知」，
-//     日志措辞可据此分流。
-//   内容安全 — rc.8 全量扫描错误码体系（dsh-llm/dsh-agent/dsh-subagent/
-//     dsh-tools 等）无 SAFETY/CONTENT_FILTER/MODERATION 类 code，不设内容
-//     安全不可切分支；未来若出现请补进 NO_FALLBACK_CODES。
-// 未知 code 默认可切：DSH 契约「route on code, never parse message」
-// （dsh-llm/lib/index.js:246），message 探测仅在 code 缺失/==='UNKNOWN'
-// （裸 Error 的唯一出口）时作为 abort 特征防御启用。
-const NO_FALLBACK_CODES = new Set(['ABORTED', 'CANCELLED', 'DISPOSED', 'INTERRUPTED'])
-const ABORT_MESSAGE_RE = /\babort(?:ed|ion)?\b/i
-
-export function isFallbackable(errorInfo) {
-  if (errorInfo === undefined || errorInfo === null) return true
-  const code = typeof errorInfo.code === 'string' ? errorInfo.code.toUpperCase() : undefined
-  if (code !== undefined && NO_FALLBACK_CODES.has(code)) return false
-  if (code === undefined || code === 'UNKNOWN') {
-    if (typeof errorInfo.message === 'string' && ABORT_MESSAGE_RE.test(errorInfo.message)) return false
-  }
-  return true
-}
-
-function agentLabel(type, summary) {
-  return `${AGENT_TYPE_PREFIX}${type}${summary ? `: ${summary}` : ''}`
-}
-
-/** Default bindings: intentionally EMPTY for every agent type — the fork
- * ships no hardcoded provider/model, so sub-agents fully inherit the
- * environment's default route (Sisyphus's provider/model). Per-type
- * bindings are user configuration: set them in the WebUI settings page or
- * via plugin config `bindings` (see README「工种模型绑定」).
- * reasoningEffort is only ever applied when the exact model supports that
- * level (checked against the DSH model catalog at request time). */
-function defaultBindings() {
-  return {
-    sisyphus: {},
-    hermes: {},
-    explore: {},
-    librarian: {},
-    looker: {},
-    hephaestus: {},
-    prometheus: {},
-    oracle: {},
-  }
-}
-
-function describeAgent(type) {
-  switch (type) {
-    case 'hermes': return 'fast execution: batch replace, formatting, imports, copy-paste'
-    case 'explore': return 'fast search: grep, read files, locate symbols, scan structure'
-    case 'librarian': return 'document lookup: README, API reference, comments'
-    case 'looker': return 'multimodal recognition: UI screenshots, designs, PDF charts'
-    case 'hephaestus': return 'code writing: single-file refactor, module implementation, unit tests'
-    case 'prometheus': return 'requirement planning: break vague requirements into executable steps (call once at flow start)'
-    case 'oracle': return 'architecture debugging (last resort): cross-module analysis, deep bugs, complex review'
-  }
-}
-
-// XML 实体转义：need_help 上报体与 forward 转发信封共用同一套，防止
-// 求助单 content 内的伪闭合标签逃逸出包裹结构（tisitan.11）。
-function escapeXml(text) {
-  return String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
-}
-
-let seq = 0
-function nextId(prefix) {
-  seq += 1
-  return `${prefix}-${Date.now().toString(36)}-${seq.toString(36)}`
-}
-
-/** Minimal single-line-blocking orchestration state. Exported for unit tests. */
-export class Orchestration {
-  constructor() {
-    this.currentMap = new Map()
-    this.queue = []
-    this.helpRequests = new Map()
-    this.history = []
-    this.listeners = new Set()
-  }
-
-  onChange(listener) {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
-
-  snapshot() {
-    return {
-      current: this.currentMap.size > 0 ? [...this.currentMap.values()][0] ?? null : null,
-      queue: [...this.queue],
-      helpRequests: [...this.helpRequests.values()],
-      history: [...this.history],
-    }
-  }
-
-  emit() {
-    const snapshot = this.snapshot()
-    for (const listener of [...this.listeners]) {
-      try { listener(snapshot) } catch { /* noop */ }
-    }
-  }
-
-  isBusy() { return this.currentMap.size > 0 }
-
-  enqueue(agentType, prompt, parentId) {
-    const id = nextId('work')
-    this.queue.push({ id, agentType, prompt, parentId, createdAt: Date.now() })
-    this.emit()
-    return id
-  }
-
-  // extra：重派路径注入的附加字段（如 fallbackAttempt），占位记录即携带，
-  // bindChild 换键时经 {...record} 自然继承（竞态归随路径也不丢）。
-  beginSpawning(agentType, prompt, extra = {}) {
-    const record = {
-      childId: nextId('child'),
-      agentType,
-      prompt,
-      status: 'spawning',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      ...extra,
-    }
-    this.currentMap.set(record.childId, record)
-    this.emit()
-    return record
-  }
-
-  bindChild(placeholderId, childId) {
-    const record = this.currentMap.get(placeholderId)
-    if (!record) {
-      // 占位记录被误删/误改键时真实 childId 会游离于编排状态外——必须留痕，
-      // 否则该子代理的结束事件将走归随兜底，引发历史工种串号
-      console.warn(`[dsh-my-go] bindChild failed: placeholder ${String(placeholderId)} not found, child ${String(childId)} is now untracked`)
-      return undefined
-    }
-    this.currentMap.delete(placeholderId)
-    const next = { ...record, childId, status: 'running', updatedAt: Date.now() }
-    this.currentMap.set(childId, next)
-    this.emit()
-    return next
-  }
-
-  dequeue() {
-    const work = this.queue.shift()
-    if (work) this.emit()
-    return work
-  }
-
-  suspend(childId, help) {
-    const record = this.currentMap.get(childId)
-    if (!record) return undefined
-    this.helpRequests.set(help.id, help)
-    const next = { ...record, status: 'waiting', updatedAt: Date.now() }
-    this.currentMap.set(childId, next)
-    this.emit()
-    return next
-  }
-
-  resolveHelp(id) {
-    const help = this.helpRequests.get(id)
-    if (help) { this.helpRequests.delete(id); this.emit() }
-    return help
-  }
-
-  resume(childId) {
-    const record = this.currentMap.get(childId)
-    if (!record || record.status !== 'waiting') return record
-    const next = { ...record, status: 'running', updatedAt: Date.now() }
-    this.currentMap.set(childId, next)
-    this.emit()
-    return next
-  }
-
-  finish(childId, conclusion, failed = false) {
-    const record = this.currentMap.get(childId)
-    if (!record) return undefined
-    const conclusionId = nextId('conclusion')
-    const done = {
-      ...record,
-      status: failed ? 'failed' : 'done',
-      conclusion,
-      conclusionId,
-      updatedAt: Date.now(),
-    }
-    this.currentMap.delete(childId)
-    this.clearHelpFor(childId)
-    this.history = [...this.history, done]
-    if (this.history.length > 200) this.history = this.history.slice(-200)
-    this.emit()
-    return done
-  }
-
-  clearHelpFor(childId) {
-    let removed = false
-    for (const [id, help] of this.helpRequests) {
-      if (help.childId === childId) {
-        this.helpRequests.delete(id)
-        removed = true
-      }
-    }
-    if (removed) this.emit()
-    return removed
-  }
-
-  requeueHead(work) {
-    if (!work) return
-    this.queue.unshift(work)
-    this.emit()
-  }
-
-  dropQueuedFor(parentId) {
-    const before = this.queue.length
-    this.queue = this.queue.filter((w) => w.parentId !== parentId)
-    if (this.queue.length !== before) this.emit()
-    return before - this.queue.length
-  }
-
-  /** Give up on a queued work item after retry exhaustion: remove it from the
-   * queue and record a failed history entry — never strand it silently. */
-  dropQueuedFailed(work, error) {
-    const before = this.queue.length
-    this.queue = this.queue.filter((w) => w.id !== work.id)
-    const done = {
-      childId: work.id,
-      agentType: work.agentType,
-      prompt: work.prompt,
-      status: 'failed',
-      conclusion: `queued dispatch abandoned after ${work.retries ?? 0} attempts: ${String(error)}`,
-      conclusionId: nextId('conclusion'),
-      createdAt: work.createdAt ?? Date.now(),
-      updatedAt: Date.now(),
-    }
-    this.history = [...this.history, done]
-    if (this.history.length > 200) this.history = this.history.slice(-200)
-    this.emit()
-    return done
-  }
-
-  /** Move a done/failed history record back into currentMap as running (revive via continue/forward). */
-  revive(childId) {
-    if (this.currentMap.has(childId)) return this.currentMap.get(childId)
-    const idx = this.history.findIndex((r) => r.childId === childId)
-    if (idx < 0) return undefined
-    const rec = this.history[idx]
-    const next = { ...rec, status: 'running', updatedAt: Date.now() }
-    this.history = [...this.history.slice(0, idx), ...this.history.slice(idx + 1)]
-    this.currentMap.set(childId, next)
-    this.emit()
-    return next
-  }
-
-  abort(childId) {
-    this.currentMap.delete(childId)
-    this.emit()
-  }
-
-  record(childId) {
-    return this.currentMap.get(childId) ?? this.history.find((r) => r.childId === childId)
-  }
-
-  /** Record the latest prompt Sisyphus sent to one child (go_work or continue). */
-  followupPrompt(childId, prompt) {
-    const rec = this.currentMap.get(childId)
-    if (rec) {
-      this.currentMap.set(childId, { ...rec, prompt, updatedAt: Date.now() })
-      this.emit()
-      return this.currentMap.get(childId)
-    }
-    const idx = this.history.findIndex((r) => r.childId === childId)
-    if (idx >= 0) {
-      const next = { ...this.history[idx], prompt, updatedAt: Date.now() }
-      this.history = [...this.history.slice(0, idx), next, ...this.history.slice(idx + 1)]
-      this.emit()
-      return next
-    }
-    return undefined
-  }
-
-  help(id) { return this.helpRequests.get(id) }
-}
 
 export async function apply(ctx, config = {}) {
   // NOTE: ensurePresetInstalled runs from lib/index.js (npm package host
@@ -544,14 +88,37 @@ export async function apply(ctx, config = {}) {
   // 类型登记，而是移入墓碑（有界 FIFO），保证迟到的 end 事件仍能拿到正确
   // 工种，不会误入「归随到唯一 spawning 记录」的兜底而串号；end 消费后清除。
   const disposedTypes = new Map()
+  // 活跃备选覆盖表（tisitan.16）：childId → 备选 {provider, model}。
+  // attemptFallbackRedeploy 重派成功登记，agent/request waterfall 据此把
+  // 重派儿童的运行期绑定保持在备选上（否则 waterfall 每请求按 bindings[type]
+  // 重绑，会把 spawn 注入的备选模型回跳成主模型——tisitan.16 生产事故根因）。
+  // 生命周期与 sessionTypes 镜像：tombstone/finalizeEnd/重派换键/end 无属主
+  // 四处清理点同步 delete。
+  // 持久化锚点（tisitan.17）：重派成功时把备选条目本体写进编排记录
+  // （record.fallbackEntry），随台账落盘；continue/forward 复活（含
+  // cold-resume 后的台账 revive）在重建 sessionTypes 的同点按记录回填本表，
+  // 复活后 waterfall 保持备选不回跳主模型。
+  const activeFallback = new Map()
+  // spawn 解析前备选登记表（棒2-Z2）：重派 startContinuable resolve 之前，
+  // sessionTypes/activeFallback 均未登记，窗口内重派儿童的请求经 typeOfAgent
+  // label 兜底识别工种后只能取 bindings[type] 主模型——tisitan.16 同款回跳
+  // 的最后存活窗口。以 request.label 为键在 spawn 前登记备选条目，waterfall
+  // 在 activeFallback 未命中时按 label 匹配；resolve 后转正 activeFallback
+  // 并清 pending，spawn 失败同步清理。label 含工种 + prompt 前 200 字，跨会
+  // 话同 label 并发重派理论上可互覆，但互覆条目同为本工种链上有效备选，
+  // 语义有界；单线阻塞下同会话不并发。
+  const pendingFallbackByLabel = new Map()
   const DISPOSED_TYPES_CAP = 50
   function tombstoneType(id) {
     const type = sessionTypes.get(id)
     if (type === undefined) return false
     sessionTypes.delete(id)
+    activeFallback.delete(id)
     disposedTypes.set(id, type)
     if (disposedTypes.size > DISPOSED_TYPES_CAP) {
-      disposedTypes.delete(disposedTypes.keys().next().value)
+      const evicted = disposedTypes.keys().next().value
+      disposedTypes.delete(evicted)
+      activeFallback.delete(evicted)
     }
     return true
   }
@@ -615,39 +182,13 @@ export async function apply(ctx, config = {}) {
     try {
       const stored = settings.get('dsh-my-go')
       if (stored && typeof stored === 'object') {
-        const merged = { ...baseBindings }
-        for (const key of ['sisyphus', ...AGENT_TYPES]) {
-          const row = stored[key]
-          if (row && typeof row === 'object') {
-            merged[key] = {
-              provider: row.provider || merged[key]?.provider,
-              model: row.model || merged[key]?.model,
-              reasoningEffort: row.reasoningEffort || merged[key]?.reasoningEffort,
-              dsv4p0813: row.dsv4p0813 ?? merged[key]?.dsv4p0813 ?? false,
-              fallbacks: row.fallbacks ?? merged[key]?.fallbacks,
-            }
-          }
-        }
-        bindings = merged
+        bindings = mergeRoleBindings(baseBindings, stored)
       }
       ctx.on('settings/updated', (ns) => {
         if (ns !== 'dsh-my-go') return
         const next = settings.get('dsh-my-go')
         if (next && typeof next === 'object') {
-          const merged = { ...baseBindings }
-          for (const key of ['sisyphus', ...AGENT_TYPES]) {
-            const row = next[key]
-            if (row && typeof row === 'object') {
-              merged[key] = {
-                provider: row.provider || merged[key]?.provider,
-                model: row.model || merged[key]?.model,
-                reasoningEffort: row.reasoningEffort || merged[key]?.reasoningEffort,
-                dsv4p0813: row.dsv4p0813 ?? merged[key]?.dsv4p0813 ?? false,
-                fallbacks: row.fallbacks ?? merged[key]?.fallbacks,
-              }
-            }
-          }
-          bindings = merged
+          bindings = mergeRoleBindings(baseBindings, next)
         }
       })
     } catch (e) {
@@ -742,7 +283,7 @@ export async function apply(ctx, config = {}) {
       const raw = JSON.parse(await readFile(ledgerPath, 'utf-8'))
       if (raw && raw.version === 2 && raw.parents && typeof raw.parents === 'object') {
         // v2：按编排会话分桶的台账，逐 parentId 恢复到各流水线实例
-        for (const [pid, list] of Object.entries(raw.parents)) {
+        for (const [pid, list] of Object.entries(pruneLedgerParents(raw.parents))) {
           if (!Array.isArray(list)) continue
           orchFor(pid).history = list.filter(isLedgerRow).slice(-200)
         }
@@ -768,7 +309,7 @@ export async function apply(ctx, config = {}) {
       for (const [pid, orch] of orchestrations) {
         if (orch.history.length > 0) parents[pid] = orch.history.slice(-200)
       }
-      const payload = JSON.stringify({ version: 2, parents })
+      const payload = JSON.stringify({ version: 2, parents: pruneLedgerParents(parents) })
       ledgerSaveChain = ledgerSaveChain.then(async () => {
         try {
           await mkdir(dirname(ledgerPath), { recursive: true })
@@ -786,6 +327,36 @@ export async function apply(ctx, config = {}) {
   ctx.effect(() => () => {
     if (ledgerSaveTimer) clearTimeout(ledgerSaveTimer)
   }, 'dsh-my-go-broker.ledger()')
+
+  // 台账文件兜底查找（现场-Z3）：continue/forward 内存全实例未命中时，回读
+  // 台账文件再找一次。双半并行记账 + 各自的启动代际差（重启时点、防抖窗口）
+  // 会让某一半的内存缺一条台账已有的记录（真机实锤：文件与面板均有该记录，
+  // continue 却报 unknown-id，同桶邻记录命中）。文件是两半落盘的并集，命中即
+  // 按 loadLedger 同款规则（isLedgerRow + 200 条上限）并入内存实例后再走一次
+  // 常规查找；同 id 已在册则不重复追加。仅在未命中的冷路径多一次文件读，
+  // 热路径零开销。
+  async function findRecordWithLedgerFallback(childId, preferred, preferredPid) {
+    const inMemory = findRecordEverywhere(childId, preferred, preferredPid)
+    if (inMemory) return inMemory
+    try {
+      const raw = JSON.parse(await readFile(ledgerPath, 'utf-8'))
+      const parents = raw && raw.version === 2 && raw.parents && typeof raw.parents === 'object'
+        ? raw.parents
+        : { legacy: Array.isArray(raw) ? raw : raw?.history }
+      for (const [pid, list] of Object.entries(parents)) {
+        if (!Array.isArray(list)) continue
+        const row = list.find((r) => isLedgerRow(r) && r.childId === childId)
+        if (!row) continue
+        const orch = orchFor(pid)
+        if (!orch.record(childId)) {
+          orch.history = [...orch.history.filter((r) => r.childId !== childId), row].slice(-200)
+          bump()
+        }
+        break
+      }
+    } catch { /* 无档/坏档：维持内存未命中的结论 */ }
+    return findRecordEverywhere(childId, preferred, preferredPid)
+  }
 
   // ── 父会话补充通知（tisitan.8） ────────────────────────────────────────
   // harness 的双通知（reported/settled）是 dsh-subagent 硬编码模板，插件无法
@@ -891,6 +462,22 @@ export async function apply(ctx, config = {}) {
     },
   }), 'dsh-my-go-broker.orchestration()')
 
+  // 名册简报段（tisitan.18）：向根编排会话现渲活名册 + 失败通知协议指路
+  // （harness 原生 failed 通知先于 broker 异步处置到达，真空期内主流程需
+  // 知道备选链存在才不会自行报死）。函数态 text 每次 assemble 现调——
+  // bindings 由 settings/updated 整表重建，闭包直读最新值，天然免刷新管道。
+  // 儿童门控：子代理（parentSession 直达 + typeOfAgent 冷恢复 label 兜底）
+  // 返回空串，不消费子代理上下文预算。字节稳定：渲染器（shared 单一源）
+  // 键排序、无时间戳/无随机。
+  ctx.effect(() => ctx.systemPrompt.section({
+    name: 'dsh-my-go:roster',
+    order: 10,
+    text: (context) => {
+      if (isSubAgentContext(context) || typeOfAgent(sessionTypes, context?.agent) !== undefined) return ''
+      return sharedRenderRosterBriefing(bindings)
+    },
+  }), 'dsh-my-go-broker.roster()')
+
   // ── DSV4P0813 bootstrap (liangshen pattern) ──────────────────────────────
   // When dsv4p0813 is enabled for an agent type, the first request uses
   // minimal prompt + minimal tools. After the model responds (anchor
@@ -908,7 +495,7 @@ export async function apply(ctx, config = {}) {
   function promotionStateFor(session) {
     let state = PROMOTED_BY_SESSION.get(session)
     if (state === undefined) {
-      state = { promoted: false, toolCalled: false, responded: false, steps: 0 }
+      state = { promoted: false, toolCalled: false, responded: false }
       PROMOTED_BY_SESSION.set(session, state)
     }
     return state
@@ -920,7 +507,6 @@ export async function apply(ctx, config = {}) {
     const state = promotionStateFor(_session)
     if (state.promoted) return
     if (event.type === 'step/end') {
-      state.steps++
       // Check if any tool was called in this step
       const events = _session.events ?? []
       for (let i = events.length - 1; i >= 0; i--) {
@@ -943,10 +529,8 @@ export async function apply(ctx, config = {}) {
       const agent = _context?.agent
       if (agent === undefined) return assembled
       // Check if dsv4p0813 is enabled for this agent type
-      // We detect the agent type from the session label
-      const label = agent?.session?.header?.label ?? ''
-      const match = /^dsh-my-go:([a-z-]+)/.exec(label)
-      const agentType = match?.[1]
+      // (tisitan.15: sessionTypes-first lookup, persisted label as fallback)
+      const agentType = typeOfAgent(sessionTypes, agent)
       if (!agentType) return assembled
       const binding = bindings[agentType]
       if (!binding?.dsv4p0813) return assembled
@@ -1026,8 +610,32 @@ export async function apply(ctx, config = {}) {
     })
   }
 
+  // ── 名册路由辅助（tisitan.14 数据层 roles dict 的消费面） ────────────────
+  // 核心逻辑在 shared/roles.mjs，这里是注入每半可变状态的薄壳。
+  const rosterKeys = () => sharedRosterKeys(bindings)
+
+  const rolePersona = (type) => sharedRolePersona(bindings, promptCache, loadPrompt, type)
+
+  // 本插件注册的编排工具名：schemas() 无参只返回全局层视图（内建 + MCP），
+  // preset 层的自产工具不在其中——toolFilter 合法引用它们时不能误杀。
+  function liveToolNames() {
+    try {
+      const tools = ctx.get('tools')
+      const schemas = typeof tools?.schemas === 'function' ? tools.schemas() : []
+      const names = schemas.map((s) => s?.name).filter((n) => typeof n === 'string' && n !== 'run_code')
+      return new Set([...names, ...SELF_REGISTERED_TOOLS])
+    } catch {
+      return undefined
+    }
+  }
+
+  const resolveRoleToolFilter = (type, filter) => sharedResolveRoleToolFilter(type, filter, liveToolNames())
+
   async function dispatchWork(agentType, prompt, parent, signal, queuedWork, orchHint) {
-    if (!AGENT_TYPES.includes(agentType)) throw new Error(`unknown agent type: ${String(agentType)}`)
+    if (!rosterKeys().includes(agentType)) {
+      const roster = rosterKeys().map((t) => `- ${t}: ${describeAgent(t, bindings[t]?.persona)}`).join('\n')
+      throw new Error(`unknown agent role: ${String(agentType)} — not in the live roster. Available roles:\n${roster}\n(see the roles section of orchestration_status for model bindings and tool filters)`)
+    }
     const binding = bindings[agentType] ?? {}
     // 队列路径的父会话兜底已上移到 advanceQueue（按 work.parentId 从
     // agents 注册表重解析）；此处 parent 缺失即抛错，由调用方回补重试。
@@ -1060,17 +668,20 @@ export async function apply(ctx, config = {}) {
         // No provider available — set model anyway, agent/request handler will validate
         agentOpts.model = binding.model
       }
-      // Inject sub-agent persona from prompts/ files via <system-reminder>.
-      // The loaded prompt contains full role description, responsibilities,
-      // work style, output format, and constraints — much richer than a
-      // one-line hardcoded string.
-      const loadedPrompt = promptCache.get(agentType)
-      const roleInfo = loadedPrompt || `You are a ${agentType} sub-agent in the dsh-my-go orchestration system. Execute one focused task and report results to Sisyphus.`
+      // persona/toolFilter 走 DSH spawn 正统通道（SubagentStartRequest），
+      // 首条 prompt 保持纯任务文本；内置工种人设经 rolePersona 复用
+      // prompts/ 加载链，自定义角色读 settings roles 行。
+      const [persona, roleFilter] = await Promise.all([
+        rolePersona(agentType),
+        Promise.resolve(resolveRoleToolFilter(agentType, binding.toolFilter)),
+      ])
       const request = {
         label: agentLabel(agentType, prompt.slice(0, SUBAGENT_PROMPT_MAX)),
         prompt: [
-          { type: 'text', text: `<system-reminder>\n${roleInfo}\n</system-reminder>\n\n${prompt}` },
+          { type: 'text', text: prompt },
         ],
+        ...(persona !== undefined ? { persona } : {}),
+        ...(roleFilter !== undefined ? { toolFilter: roleFilter } : {}),
         parent,
         ...(Object.keys(agentOpts).length > 0 ? { agentOptions: agentOpts } : {}),
         signal: sig,
@@ -1104,9 +715,8 @@ export async function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'go_work',
     description: [
-      'Dispatch a new sub-agent to work on a task. The sub-agent starts with an empty context and only the tools of its type.',
-      'Available agent types:',
-      ...AGENT_TYPES.map((t) => `- ${t}: ${describeAgent(t)}`),
+      'Dispatch a sub-agent (role) from the live roster to work on a task. The sub-agent starts with an empty context and runs with its role\'s persona and tool set.',
+      'The roster = built-in specialists + custom roles. Before dispatching an unfamiliar name, check the roles section of orchestration_status for the current roster, per-role model bindings and tool filters.',
       'Single-line blocking: if a sub-agent is already running, this task is queued and starts when the current one finishes.',
       'Blocking is scoped to YOUR orchestration session: other sessions run their own independent pipelines and never queue behind yours (and vice versa).',
       'The result contains a childId you keep for later continue/forward operations.',
@@ -1115,7 +725,7 @@ export async function apply(ctx, config = {}) {
     parameters: {
       type: 'object',
       properties: {
-        agent: { type: 'string', enum: AGENT_TYPES, description: 'Which sub-agent type to dispatch.' },
+        agent: { type: 'string', description: 'Role name from the live roster (built-in specialist or custom role); unknown names are rejected with the current roster listed.' },
         prompt: { type: 'string', description: 'The complete, self-contained task prompt for the sub-agent.' },
       },
       required: ['agent', 'prompt'],
@@ -1177,9 +787,9 @@ export async function apply(ctx, config = {}) {
       if (!parent) throw new Error('continue requires a calling agent (exec.agent was undefined)')
       if (!canOrchestrate(parent)) throw new Error('continue is reserved for orchestrator sessions (agents without parentSession)')
       const callerOrch = orchFor(parent.id)
-      // record 查找：先查调用方流水线，找不到再全局扫描所有实例（兼容
-      // v1 台账复活的 'legacy' 实例与跨会话边缘情况）
-      const found = findRecordEverywhere(args.id, callerOrch, parent.id)
+      // record 查找：先查调用方流水线，找不到再全局扫描所有实例，最后回读
+      // 台账文件兜底（兼容 v1 'legacy' 实例与跨会话/跨代际边缘情况）
+      const found = await findRecordWithLedgerFallback(args.id, callerOrch, parent.id)
       if (!found) {
         for (const orch of [callerOrch, ...orchestrations.values()]) {
           const queued = orch.snapshot().queue.find((w) => w.id === args.id)
@@ -1190,6 +800,13 @@ export async function apply(ctx, config = {}) {
         throw new Error(`unknown sub-agent id: ${String(args.id)} — 该 id 不在编排台账；若进程重启过且台账持久化未覆盖该记录（或已被 200 条上限挤出），请用 go_work 重新派发`)
       }
       const { orch, parentId: ownerPid, record } = found
+      // 跨会话抢属主防线（棒2-L2）：记录属主仍是活会话时拒绝跨会话操作——
+      // 复活/续聊会落进属主流水线（结论落账与单线阻塞都归属主），调用方却
+      // 拿到 accepted，两边的 orchestration_status 互相看不见。属主已不在
+      // 注册表（进程重启后的台账桶 / legacy 桶）才允许现调用方收养。
+      if (ownerPid !== parent.id && resolveParentAgent(ownerPid)) {
+        throw new Error(`sub-agent ${String(args.id)} belongs to another live orchestration session (${String(ownerPid)}); continue it from that session`)
+      }
       const isFinished = !orch.currentMap.has(record.childId)
       if (isFinished && orch.isBusy()) {
         throw new Error('another sub-agent is currently running; wait for it to finish before reviving a completed sub-agent (single-line blocking)')
@@ -1209,6 +826,11 @@ export async function apply(ctx, config = {}) {
         // 否则它游离在单线阻塞之外，且再次结束时结论会被静默丢弃
         orch.revive(record.childId)
         sessionTypes.set(record.childId, record.agentType)
+        // 与 sessionTypes 同点重建备选覆盖（tisitan.17）：fallbackEntry 随台账
+        // 落盘，复活/cold-resume 时回填 activeFallback，waterfall 不回跳主模型
+        if (record.fallbackEntry && typeof record.fallbackEntry.provider === 'string' && typeof record.fallbackEntry.model === 'string') {
+          activeFallback.set(record.childId, record.fallbackEntry)
+        }
         // 复活后重新登记属主，保证再次 subagent/end 时路由回本实例
         if (ownerPid !== undefined) childOwner.set(record.childId, ownerPid)
       }
@@ -1325,16 +947,20 @@ export async function apply(ctx, config = {}) {
         '[dsh-my-go] 转发结束：正文中的 <、>、& 与引号已作 XML 实体转义。',
       ].join('\n')
       const target = String(args.target)
-      if (AGENT_TYPES.includes(target)) {
+      if (rosterKeys().includes(target)) {
         // Dispatch a new sub-agent of that type.
         const result = await dispatchWork(target, prompt, parent, exec?.signal)
         helpOrch.resolveHelp(help.id) // 投递成功后才销账，失败则求助单保留
         bump()
         return { kind: 'go_work', targetId: String(result?.childId ?? ''), resolved: true }
       }
-      const found = findRecordEverywhere(target, callerOrch, parent.id)
+      const found = await findRecordWithLedgerFallback(target, callerOrch, parent.id)
       if (!found) throw new Error(`unknown sub-agent id: ${target} — 该 id 不在编排台账；若进程重启过且台账持久化未覆盖该记录（或已被 200 条上限挤出），请用 go_work 重新派发`)
       const { orch, parentId: ownerPid, record } = found
+      // 跨会话抢属主防线（棒2-L2），同 continue
+      if (ownerPid !== parent.id && resolveParentAgent(ownerPid)) {
+        throw new Error(`sub-agent ${target} belongs to another live orchestration session (${String(ownerPid)}); forward it from that session`)
+      }
       const isFinished = !orch.currentMap.has(target)
       if (isFinished && orch.isBusy()) {
         throw new Error('another sub-agent is currently running; wait for it to finish before forwarding to a completed sub-agent (single-line blocking)')
@@ -1349,6 +975,10 @@ export async function apply(ctx, config = {}) {
       } else if (isFinished) {
         orch.revive(target)
         sessionTypes.set(target, record.agentType)
+        // 与 sessionTypes 同点重建备选覆盖（tisitan.17），同 continue 复活路径
+        if (record.fallbackEntry && typeof record.fallbackEntry.provider === 'string' && typeof record.fallbackEntry.model === 'string') {
+          activeFallback.set(target, record.fallbackEntry)
+        }
         // 复活后重新登记属主，保证再次 subagent/end 时路由回本实例
         if (ownerPid !== undefined) childOwner.set(target, ownerPid)
       }
@@ -1406,9 +1036,31 @@ export async function apply(ctx, config = {}) {
         const summary = r.status === 'failed' ? flat : flat.slice(0, STATUS_CONCLUSION_MAX)
         lines.push(`✓ ${r.agentType} (${r.childId}) ${r.status}: ${summary}`)
       }
+      lines.push(...renderRosterLines())
       return { text: lines.join('\n') }
     },
   })
+
+  // 活花名册区（tisitan.14）：名字 / 模型绑定 / 备选链 / toolFilter 摘要 /
+  // 人设来源。go_work 的 agent 参数以此为权威指引（description 不再内嵌清单）。
+  function renderRosterLines() {
+    const lines = ['── 角色名册（roster） ──']
+    for (const type of rosterKeys()) {
+      const b = bindings[type] ?? {}
+      const model = b.provider && b.model ? `${b.provider}·${b.model}` : b.model ? `?·${b.model}` : b.provider ? `${b.provider}·跟随环境` : '跟随环境'
+      const chain = Array.isArray(b.fallbacks) ? b.fallbacks.length : 0
+      let tf = '全量（除全局掩码）'
+      if (b.toolFilter && typeof b.toolFilter === 'object') {
+        const parts = []
+        if (Array.isArray(b.toolFilter.allow) && b.toolFilter.allow.length > 0) parts.push(`仅 ${b.toolFilter.allow.join(', ')}`)
+        if (Array.isArray(b.toolFilter.deny) && b.toolFilter.deny.length > 0) parts.push(`除 ${b.toolFilter.deny.join(', ')}`)
+        if (parts.length > 0) tf = parts.join('；')
+      }
+      const persona = typeof b.persona === 'string' && b.persona.length > 0 ? '自定义人设' : AGENT_TYPES.includes(type) ? '内置文件' : '无（跟随环境）'
+      lines.push(`- ${type} | ${model} | 备选${chain} | ${tf} | ${persona}`)
+    }
+    return lines
+  }
 
   ctx.tools.register({
     name: 'list_subagents',
@@ -1576,9 +1228,13 @@ export async function apply(ctx, config = {}) {
     const seed = await next()
     const agent = payload?.agent
     if (!agent) return seed
-    const type = sessionTypes.get(agent.id)
+    const type = typeOfAgent(sessionTypes, agent)
     if (type === undefined && !bindSisyphus) return seed
-    const binding = bindings[type ?? 'sisyphus'] ?? {}
+    // 备选重派儿童以 activeFallback 覆盖表为准（只换 provider/model，保留工种
+    // reasoningEffort/fallbacks 等其余字段）；spawn 解析前窗口按 label 匹配
+    // pending 登记（棒2-Z2）；常规派发无登记 → 原样 bindings[type]
+    const override = activeFallback.get(agent.id) ?? pendingFallbackByLabel.get(agent?.session?.header?.label)
+    const binding = resolveEffectiveBinding(bindings[type ?? 'sisyphus'] ?? {}, override)
     const nextConfig = { ...seed }
     if (binding.provider !== undefined) nextConfig.provider = binding.provider
     if (binding.model !== undefined) {
@@ -1646,6 +1302,7 @@ export async function apply(ctx, config = {}) {
     }
     sessionTypes.delete(childId)
     disposedTypes.delete(childId)
+    activeFallback.delete(childId)
     childOwner.delete(childId)
     bump()
     return done
@@ -1662,6 +1319,9 @@ export async function apply(ctx, config = {}) {
     if (!isFallbackable(failure)) {
       console.warn(`[dsh-my-go] fallback: ${String(childId)} 附因属 abort/dispose 类，分类器否决重派，按失败终局处理 (${type})`)
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      // 终局显式通知（tisitan.18）：评估中预告之后必有终局口径到达，
+      // 主流程据此解除静默等待、进入自己的失败处置
+      notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 失败终局: ${childId} (${type}) 附因属中断类，不重派，按失败终局落账`)
       advanceQueue(orch)
       return
     }
@@ -1671,6 +1331,8 @@ export async function apply(ctx, config = {}) {
     if (!prompt || !parent) {
       console.warn(`[dsh-my-go] fallback: ${String(childId)} 无法重派（${!prompt ? '编排记录缺原始 prompt' : `父会话 ${String(ownerPid)} 已不在注册表`}），按失败终局处理 (${type})`)
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      // 终局显式通知（tisitan.18）：同终局口径
+      notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 失败终局: ${childId} (${type}) 无法重派（${!prompt ? '编排记录缺原始 prompt' : '父会话已不在注册表'}），按失败终局落账`)
       advanceQueue(orch)
       return
     }
@@ -1679,6 +1341,8 @@ export async function apply(ctx, config = {}) {
     if (!picked) {
       // 无链/链尽/备选预检全败：既有失败历史路径不变（附因保留）
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      // 终局显式通知（tisitan.18）
+      notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 失败终局: ${childId} (${type}) 备选链尽，按失败终局落账`)
       advanceQueue(orch)
       return
     }
@@ -1699,32 +1363,53 @@ export async function apply(ctx, config = {}) {
     }
     sessionTypes.delete(childId)
     disposedTypes.delete(childId)
+    activeFallback.delete(childId)
     childOwner.delete(childId)
-    const placeholder = orch.beginSpawning(type, prompt, { fallbackAttempt: attempt })
+    // fallbackEntry 与 fallbackAttempt 同点入账（tisitan.17）：备选条目本体随
+    // 编排记录走 finish→history→台账落盘全链路，供复活时重建 activeFallback；
+    // 链上下一跳重派时新占位记录携带新条目，天然覆盖上一跳。
+    // fallbackLabel 提到 try 外声明（与 request.label 同源同值）：spawn 失败
+    // 的 catch 块看不到 try 内的 request，清理必须依赖外层作用域的 label。
+    const fallbackLabel = agentLabel(type, prompt.slice(0, SUBAGENT_PROMPT_MAX))
+    const placeholder = orch.beginSpawning(type, prompt, {
+      fallbackAttempt: attempt,
+      fallbackEntry: { provider: entry.provider, model: entry.model },
+    })
     try {
-      // agentOptions 覆盖为备选条目（provider/model 均已过 pickFallbackEntry 预检）
+      // agentOptions 覆盖为备选条目（provider/model 均已过 pickFallbackEntry 预检）；
+      // persona/toolFilter 与 dispatchWork 同源（bindings[type] + prompts 链），
+      // 重派 = 同角色换脑重新上岗。
       const agentOpts = { provider: entry.provider, model: entry.model }
       const sig = new AbortController().signal
-      // Inject sub-agent persona from prompts/ files via <system-reminder>
-      // （与 dispatchWork 的 go_work 派发形状一致：重派 = 同工种重新上岗）。
-      const loadedPrompt = promptCache.get(type)
-      const roleInfo = loadedPrompt || `You are a ${type} sub-agent in the dsh-my-go orchestration system. Execute one focused task and report results to Sisyphus.`
+      const [persona, roleFilter] = await Promise.all([
+        rolePersona(type),
+        Promise.resolve(resolveRoleToolFilter(type, bindings[type]?.toolFilter)),
+      ])
       const request = {
-        label: agentLabel(type, prompt.slice(0, SUBAGENT_PROMPT_MAX)),
+        label: fallbackLabel,
         prompt: [
-          { type: 'text', text: `<system-reminder>\n${roleInfo}\n</system-reminder>\n\n${prompt}` },
+          { type: 'text', text: prompt },
         ],
+        ...(persona !== undefined ? { persona } : {}),
+        ...(roleFilter !== undefined ? { toolFilter: roleFilter } : {}),
         parent,
         agentOptions: agentOpts,
         signal: sig,
       }
+      // spawn 前登记 pending 备选（棒2-Z2）：覆盖 startContinuable resolve
+      // 之前 waterfall 只能靠 label 识别工种的窗口
+      pendingFallbackByLabel.set(fallbackLabel, { provider: entry.provider, model: entry.model })
       const { childId: newChildId } = await ctx.subagents.startContinuable({
         provider: 'spawn',
-        label: request.label,
+        label: fallbackLabel,
         request,
         signal: sig,
       })
+      pendingFallbackByLabel.delete(fallbackLabel)
       sessionTypes.set(newChildId, type)
+      // 与 sessionTypes 同点登记备选覆盖：waterfall 运行期重绑据此保持备选
+      // provider/model 不回跳主模型（spawn 的 agentOptions 只管首帧配置）
+      activeFallback.set(newChildId, { provider: entry.provider, model: entry.model })
       orch.bindChild(placeholder.childId, newChildId)
       childOwner.set(newChildId, parent.id)
       bump()
@@ -1732,6 +1417,8 @@ export async function apply(ctx, config = {}) {
       notifyParent(parent, `[dsh-my-go] 备选重派: ${String(childId)} → ${newChildId} (${type}) [备选 ${attempt}/${total}] ${entry.provider}/${entry.model}${failure ? `：${failure.message}` : '（未读到附因，保守切换）'}`)
       // 不 advanceQueue：新 child 已在原槽位语义内运行，队列保持原状
     } catch (error) {
+      // spawn 失败：pending 登记同步清理（棒2-Z2 清理路径），不留悬空覆盖
+      pendingFallbackByLabel.delete(fallbackLabel)
       orch.abort(placeholder.childId)
       bump()
       console.error(`[dsh-my-go] fallback 重派 spawn 失败（${entry.provider}/${entry.model}），按失败终局回退:`, error)
@@ -1797,6 +1484,17 @@ export async function apply(ctx, config = {}) {
       console.warn(`[dsh-my-go] subagent/end for child ${String(childId)} (${type}) has no owning orchestration; conclusion dropped`)
       sessionTypes.delete(childId)
       disposedTypes.delete(childId)
+      activeFallback.delete(childId)
+      return
+    }
+    // 双发 end 的第二发落在备选评估的 await 窗口内（pickFallbackEntry 含真实
+    // 网络 I/O）：once-guard 已登记、评估中预告已发、活记录仍在原槽位。此处若
+    // 照常 finalizeEnd，会把活记录提前落史——评估流程返回后 finish 落空，
+    // 重派被静默放弃，主流程收过「评估中」预告却永等不到终局口径（棒2-Z1）。
+    // 按迟到/重复忽略：不落史、不发矛盾口径、不推进队列（槽位仍被评估占用，
+    // 推进时机归 attemptFallbackRedeploy 的各终局分支）。
+    if (fallbackDecided.has(childId) && orch.currentMap.has(childId)) {
+      console.warn(`[dsh-my-go] duplicate subagent/end while fallback evaluation in flight for ${String(childId)} (${type}); ignored`)
       return
     }
     const blocks = info?.lastAssistantMessage ?? []
@@ -1817,12 +1515,30 @@ export async function apply(ctx, config = {}) {
     const fallbackChain = Array.isArray(bindings[type]?.fallbacks) ? bindings[type].fallbacks : []
     if (info?.stopReason === 'error' && fallbackChain.length > 0 && !fallbackDecided.has(childId) && orch.currentMap.has(childId)) {
       fallbackDecided.add(childId)
+      // 同步预告（tisitan.18，同步段零 await）：harness 原生 failed 通知在
+      // settle 瞬间同步唤醒主流程，而备选处置是异步的——真空期内主流程不知道
+      // 备选存在，可能自行报死/手动重派撞车。进入异步评估前同步 inject 一行
+      // 预告，告知主流程暂缓失败处置、静默等待 broker 的备选处置通知。
+      notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 失败已知悉: ${childId} (${type}) 备选评估中（${fallbackChain.length} 条），暂缓失败处置`)
       void attemptFallbackRedeploy({ orch, ownerPid, type, childId, failure, baseConclusion, failureLine }).catch((error) => {
         console.error('[dsh-my-go] fallback 重派流程异常，回退失败落账:', error)
         finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
         advanceQueue(orch)
       })
       return
+    }
+    // 同步预告（tisitan.18）：不进备选评估的失败终局（无链 / 非 error 终局），
+    // 同步告知取证中，消灭失败通知真空期；成功 end 不发任何预告。
+    // once-guard 已登记的双发防御路径跳过（评估中预告已发，不得再发矛盾口径）。
+    if (failed && !fallbackDecided.has(childId)) {
+      notifyParent(resolveParentAgent(ownerPid), fallbackChain.length > 0
+        ? `[dsh-my-go] 失败已知悉: ${childId} (${type}) 不进入备选评估，取证中`
+        : `[dsh-my-go] 失败已知悉: ${childId} (${type}) 无备选链，取证中`)
+      // 附因全灭的终局口径（棒2-L4）：live 与档案都没读到失败原因且不进重派
+      // 评估时，「取证中」预告之后也必须有终局一行，协议不留真空期
+      if (!failure) {
+        notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 失败终局: ${childId} (${type}) 未读到附因（live 与档案均无失败原因），已按失败落账`)
+      }
     }
     // 无活记录时 finalizeEnd 已留痕，队列仍照常推进，绝不静默停摆
     finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, failed, failure)

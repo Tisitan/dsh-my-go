@@ -199,3 +199,45 @@ test('continue 先查调用方实例再全局扫描：复活已完工子代理�
   assert.equal(snapA.history[0].conclusion, 'A redone')
   assert.equal(snapA.current, null)
 })
+
+test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作，属主消亡才允许收养（棒2-L2）', async () => {
+  // 可变注册表：模拟 A 会话中途消亡（冷恢复/legacy 收养路径的前提）
+  let parentALive = true
+  const registry = { get: (id) => (id === 'parent-A' ? (parentALive ? parentA : undefined) : parentB) }
+  const followups = []
+  const { ctx, listeners, tools } = mockCtxFull({
+    agents: registry,
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: {
+      followup: async (parent, childId) => { followups.push({ parentId: parent.id, childId }); return 'msg-o' },
+    },
+  })
+  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 'A 的任务' }, execOf(parentA)) // sess-1
+  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
+  assert.equal(snapOf('parent-A').history.length, 1)
+
+  // B 续聊 A 的记录：属主（A）仍是活会话 → 拒绝。复活/续聊会落进属主流水线
+  // （结论落账与单线阻塞都归属主），调用方却拿到 accepted，两边状态互不可见。
+  const cont = tools.get('continue')
+  await assert.rejects(
+    () => cont.execute({ id: 'sess-1', prompt: 'B 想代操作' }, execOf(parentB)),
+    (error) => {
+      const msg = String(error.message)
+      assert.ok(msg.includes('belongs to another live orchestration session'), '报错点明属主会话')
+      assert.ok(msg.includes('parent-A'), '报错携带属主 id')
+      return true
+    },
+  )
+  assert.equal(followups.length, 0, '拒绝路径零投递')
+  assert.equal(snapOf('parent-A').current, null, 'A 的记录未被 B 的调用复活')
+
+  // A 会话消亡（从注册表摘除）：记录桶仍在内存台账里 → B 是唯一在场的编排
+  // 会话，允许收养（进程重启后 continue 历史记录的正当路径，同 legacy 桶）
+  parentALive = false
+  const res = await cont.execute({ id: 'sess-1', prompt: 'B 收养续聊' }, execOf(parentB))
+  assert.equal(res.accepted, true, '属主消亡后允许现调用方收养')
+  assert.deepEqual(followups, [{ parentId: 'parent-B', childId: 'sess-1' }])
+  assert.equal(snapOf('parent-A').current?.childId, 'sess-1', '收养后记录在属主桶内复活占槽')
+  assert.equal(snapOf('parent-A').current?.status, 'running')
+})

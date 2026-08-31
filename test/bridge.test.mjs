@@ -2,10 +2,10 @@
 // Symbol.for global registry, and the lib RPC snapshot endpoint prefers it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
 import * as broker from '../preset/tools/broker.mjs'
 
@@ -198,6 +198,9 @@ test('agent/disposed before subagent/end (production order) still lands the conc
     assert.equal(snap.current?.agentType, 'hermes')
     assert.equal(snap.current?.status, 'spawning')
     assert.ok(!warnings.some((line) => line.includes('no live record')))
+    // tisitan.14 起 dispatchWork 含 persona/toolFilter 异步解析：等派发推进到
+    // startContinuable 后再放行 pending 的第二次 spawn
+    await new Promise((r) => setTimeout(r, 10))
     heldResolve({ childId: 'sess-hermes' })
     await new Promise((r) => setTimeout(r, 50))
     assert.equal(snapOf('parent-1').current?.status, 'running')
@@ -289,7 +292,7 @@ test('settings/updated rebases from baseBindings: unset field falls back to defa
   // 插件 config）起算。WebUI 取消某字段后（stored 变空对象 + settings/updated），
   // 后续派发不得残留旧的已合并值。
   const parent = { id: 'parent-1', session: { header: {} } }
-  let stored = { hermes: { model: 'm1' } }
+  let stored = { roles: { hermes: { model: 'm1' } } }
   const specs = []
   const { ctx, listeners, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
@@ -314,7 +317,7 @@ test('settings rows with fallbacks merge and rebase without disturbing existing 
   // fallbacks 值本身尚无派发出口（step-2 接入），其带出语义由 host-parity 的
   // schema/saveSettings 断言与四处对称锁覆盖。
   const parent = { id: 'parent-1', session: { header: {} } }
-  let stored = { hermes: { model: 'm1', fallbacks: [{ provider: 'fb', model: 'fm1' }] } }
+  let stored = { roles: { hermes: { model: 'm1', fallbacks: [{ provider: 'fb', model: 'fm1' }] } } }
   const specs = []
   const { ctx, listeners, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
@@ -327,7 +330,7 @@ test('settings rows with fallbacks merge and rebase without disturbing existing 
   assert.equal(specs[0].request.agentOptions?.model, 'm1')
   listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
   // WebUI 清空 fallbacks（空数组按 unset 落库 → row 无该键）→ rebase 回落 base
-  stored = { hermes: { model: 'm1' } }
+  stored = { roles: { hermes: { model: 'm1' } } }
   listeners.get('settings/updated')('dsh-my-go')
   await goWork.execute({ agent: 'hermes', prompt: 'second' }, execOf(parent))
   assert.equal(specs[1].request.agentOptions?.model, 'm1', 'rebase 后既有字段语义不变')
@@ -450,6 +453,51 @@ test('orchestration ledger persists history to disk and reloads it on the next a
   }
 })
 
+test('台账文件兜底查找：内存全实例未命中时 continue 回读台账文件命中（现场-Z3）', async () => {
+  // 真机事故面复现：记录在台账文件里（另一半/上一代际落盘），本半内存无此桶，
+  // continue 曾报 unknown-id 而文件与面板均有该记录。修复后内存未命中 → 回读
+  // 文件 → 按 loadLedger 同款规则并入内存 → 走常规 revive。
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-my-go-z3-'))
+  const prevHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  try {
+    const parent = { id: 'parent-live', session: { header: {} } }
+    const followups = []
+    const { ctx, tools } = mockCtxFull({
+      keepHome: true,
+      agents: { get: (id) => (id === 'parent-live' ? parent : undefined) },
+      startContinuable: withRealSignalContract(async () => ({ childId: 'sess-new' })),
+      subagentsExtra: { followup: async (p, childId) => { followups.push({ parentId: p.id, childId }); return 'msg-z3' } },
+    })
+    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    // 「另一半」落盘：文件出现本半内存没有的记录（属主会话已消亡的桶）
+    const ledgerFile = join(dir, 'dsh-my-go', 'orchestration-ledger.json')
+    await mkdir(dirname(ledgerFile), { recursive: true })
+    await writeFile(ledgerFile, JSON.stringify({
+      version: 2,
+      parents: {
+        'session-dead': [{ childId: 'sess-z3', agentType: 'explore', prompt: 'old task', status: 'done', conclusion: 'old conclusion', createdAt: 1, updatedAt: 1 }],
+      },
+    }), 'utf-8')
+    const cont = tools.get('continue')
+    const res = await cont.execute({ id: 'sess-z3', prompt: '驳回重做' }, execOf(parent))
+    assert.equal(res.accepted, true, '文件兜底命中：不再报 unknown-id')
+    assert.deepEqual(followups, [{ parentId: 'parent-live', childId: 'sess-z3' }])
+    // 记录并入内存：dead 桶实例 revive 占槽（属主会话不在注册表 → 收养合法，棒2-L2 不拦）
+    const snap = snapshotNow()?.parents?.['session-dead']
+    assert.equal(snap?.current?.childId, 'sess-z3')
+    assert.equal(snap?.current?.status, 'running')
+    // 文件里也没有的 id 仍报 unknown-id（兜底不虚构记录）
+    await assert.rejects(
+      () => cont.execute({ id: 'sess-ghost', prompt: 'x' }, execOf(parent)),
+      /unknown sub-agent id/,
+    )
+  } finally {
+    process.env.DSH_HOME = prevHome ?? TEST_DSH_HOME
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 // ── tisitan.9 回归批：失败附因改读持久化档案 ─────────────────────────────
 // 根因：continuable 销毁顺序使 subagent/end 发射晚于 live store 摘除
 // （dsh-subagent/lib/types/continuation.js ~L1016-1050），tisitan.8 的 live
@@ -547,6 +595,9 @@ test('无持久化档案时静默退回无附因（console.warn 留痕，不抛�
     assert.equal(snap.history[0].conclusion, '(error)', 'no附因时结论退回 stopReason 占位')
     assert.ok(warnings.some((line) => line.includes('readTurnFailure') && line.includes('持久化档案不可读')), 'warn 留痕，不静默吞')
     assert.ok(!injected.some((m) => m.content?.[0]?.text?.includes('子代理失败')), '无附因时不发附因通知')
+    // 棒2-L4：附因全灭（live 与档案均无失败原因）的无链路径，「取证中」之后
+    // 必须补一行终局口径，协议不留真空期
+    assert.ok(injected.some((m) => m.content?.[0]?.text?.includes('失败终局: sess-missing (explore) 未读到附因')), '附因全灭补「未读到附因」终局口径')
   } finally {
     console.warn = origWarn
     process.env.DSH_HOME = prevHome ?? TEST_DSH_HOME
@@ -833,32 +884,64 @@ test('step-3 e: 备选条目 modelExists 不过 → warn 跳过该条，尝试�
   }
 })
 
-test('step-3 f: once-guard——同一 childId 的 error end 双触发不双派', async () => {
-  const injected = []
-  const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const specs = []
-  const { ctx, listeners, tools } = mockCtxFull({
-    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
-    llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
-    sessions: {
-      get: (id) => (id === 'sess-1'
-        ? { events: [{ type: 'turn/end', seq: 1, time: 0, data: { turn: 1, reason: { kind: 'error', error: { message: 'boom', code: 'SERVER' } } } }] }
-        : undefined),
-    },
-    startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
-  })
-  await broker.apply(ctx, {
-    queueRetryBaseMs: 5,
-    bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
-  })
-  await tools.get('go_work').execute({ agent: 'hermes', prompt: 'x' }, execOf(parent))
-  // 同一 tick 内双发 end（DSH 正常不双发；纯防御场景）
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  await drain(40)
-  assert.equal(specs.length, 1, '双触发绝不双派（至多一次重派流程）')
-  assert.equal(snapOf('parent-1').history.filter((r) => r.childId === 'sess-1').length, 1, '原条目只落史一次')
-  assert.ok(injected.filter((m) => m.content?.[0]?.text?.includes('备选重派')).length <= 1, '重派通知至多一条')
+test('step-3 f: once-guard——评估窗口内双发 end 不提前落史、不弃重派（棒2-Z1）', async () => {
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const injected = []
+    const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
+    const specs = []
+    // p1 的 listModels 挂起不释放：把 pickFallbackEntry 钉在 await 窗口内
+    //（真实环境此处是 listModels 网络往返，双发 end 正是落在这类窗口）
+    let releaseModels
+    const { ctx, listeners, tools } = mockCtxFull({
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      llm: {
+        listModels: async (pid) => {
+          if (pid === 'p0') return [{ id: 'm0' }]
+          return new Promise((resolve) => { releaseModels = resolve })
+        },
+      },
+      sessions: {
+        get: (id) => (id === 'sess-1'
+          ? { events: [{ type: 'turn/end', seq: 1, time: 0, data: { turn: 1, reason: { kind: 'error', error: { message: 'boom', code: 'SERVER' } } } }] }
+          : undefined),
+      },
+      startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
+    })
+    await broker.apply(ctx, {
+      queueRetryBaseMs: 5,
+      bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
+    })
+    await tools.get('go_work').execute({ agent: 'hermes', prompt: 'x' }, execOf(parent))
+    // 第一发 end：进入评估，挂起在 listModels('p1')
+    listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
+    // 第二发 end（双发防御场景）：once-guard 已登记且活记录仍在——必须整体
+    // 忽略。修复前此处无条件 finalizeEnd 把活记录提前落史，评估返回后 finish
+    // 落空 → 重派被静默放弃，主流程收过「评估中」预告却永等不到终局口径。
+    listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
+    await drain()
+    assert.ok(warnings.some((l) => l.includes('while fallback evaluation in flight') && l.includes('sess-1')), '第二发按迟到/重复忽略并留痕')
+    assert.equal(specs.length, 1, '忽略窗口内不抢跑')
+    // 评估恢复：重派必须完成，而不是弃派
+    releaseModels([{ id: 'm1' }])
+    await drain(40)
+    assert.equal(specs.length, 2, '重派完成（修复前 specs 钉死在 1 = 静默弃派）')
+    const snap = snapOf('parent-1')
+    assert.equal(snap.history.filter((r) => r.childId === 'sess-1').length, 1, '原条目只落史一次（不带第二发的无标注版本）')
+    assert.ok(snap.history[0].conclusion.includes('[备选 1/1] 失败 → 自动切换备选 p1/m1 重派'), '落史条目是评估流程的重派标注版')
+    assert.equal(snap.current?.childId, 'sess-2', '新 child 占槽运行')
+    assert.equal(injected.filter((m) => m.content?.[0]?.text?.includes('备选评估中')).length, 1, '评估中预告只发一次')
+    assert.equal(injected.filter((m) => m.content?.[0]?.text?.includes('备选重派')).length, 1, '重派通知恰一条（终局口径送达）')
+    assert.ok(!injected.some((m) => m.content?.[0]?.text?.includes('不进入备选评估')), '第二发不发矛盾口径')
+    // 新 child 完工收尾，不悬挂
+    listeners.get('subagent/end')({ id: 'sess-2', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done' }] })
+    await drain()
+    assert.equal(snapOf('parent-1').current, null)
+  } finally {
+    console.warn = origWarn
+  }
 })
 
 test('step-3 g: 墓碑共存——重派后旧 child 迟到的 agent/disposed 不误伤新 child 记录', async () => {
@@ -1000,4 +1083,61 @@ test('forward 信封化：help.content 包进 forwarded-help 并转义，</need_
   assert.ok(env.includes('&lt;system-reminder&gt;') && !env.includes('<system-reminder>'), '伪 system-reminder 同样被转义')
   assert.ok(env.includes('A &amp; B &quot;quoted&quot;'), '& 与引号按 XML 实体转义')
   assert.ok(env.startsWith('[dsh-my-go]') && env.includes('转发结束'), '包装前后各有系统语气说明')
+})
+
+// ── tisitan.17：fallbackEntry 随编排记录持久化（复活/重启重建的落盘锚点）──
+
+test('tisitan.17 a: 重派记录携带 fallbackEntry，台账 v2 round-trip 后仍在', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-my-go-fbentry-'))
+  const prevHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  try {
+    const parent = { id: 'parent-1', session: { header: {} } }
+    const specs = []
+    const first = mockCtxFull({
+      keepHome: true,
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
+      sessions: {
+        get: (id) => (id === 'sess-1'
+          ? { events: [{ type: 'turn/end', seq: 1, time: 0, data: { turn: 1, reason: { kind: 'error', error: { message: 'rate limited', code: 'RATE_LIMIT', status: 429 } } } }] }
+          : undefined),
+      },
+      startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
+    })
+    await broker.apply(first.ctx, {
+      queueRetryBaseMs: 5,
+      bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
+    })
+    await first.tools.get('go_work').execute({ agent: 'hermes', prompt: 'build it' }, execOf(parent))
+    // 链首 429 → 自动切 fallbacks[0] 重派
+    first.listeners.get('agent/disposed')({ agent: { id: 'sess-1' } })
+    first.listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
+    await drain()
+    const cur = snapOf('parent-1')?.current
+    assert.equal(cur?.childId, 'sess-2')
+    assert.deepEqual(cur?.fallbackEntry, { provider: 'p1', model: 'm1' }, '重派成功处备选条目本体随 beginSpawning 入账')
+    assert.equal(cur?.fallbackAttempt, 1, 'fallbackAttempt 索引照旧')
+    // 备选儿童完工落史：fallbackEntry 经 finish 扩散进 history
+    first.listeners.get('subagent/end')({ id: 'sess-2', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done via p1' }] })
+    await new Promise((r) => setTimeout(r, 400)) // 台账防抖落盘窗口
+    const onDisk = JSON.parse(await readFile(join(dir, 'dsh-my-go', 'orchestration-ledger.json'), 'utf-8'))
+    assert.equal(onDisk.version, 2)
+    const rows = onDisk.parents?.['parent-1'] ?? []
+    assert.deepEqual(rows.find((r) => r.childId === 'sess-2')?.fallbackEntry, { provider: 'p1', model: 'm1' }, '台账 parents 分桶的记录字段层携带 fallbackEntry')
+    assert.equal(rows.find((r) => r.childId === 'sess-1')?.fallbackEntry, undefined, '链首原始记录不带 fallbackEntry（字段只长在重派产物上）')
+    // 进程重启等价：全新 apply 读回台账，fallbackEntry 仍在（cold-resume 重建的前置）
+    const second = mockCtxFull({
+      keepHome: true,
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      startContinuable: withRealSignalContract(async () => ({ childId: 'sess-p2' })),
+    })
+    await broker.apply(second.ctx, { queueRetryBaseMs: 5 })
+    const revived = snapOf('parent-1')?.history.find((r) => r.childId === 'sess-2')
+    assert.deepEqual(revived?.fallbackEntry, { provider: 'p1', model: 'm1' }, '台账 round-trip 后 fallbackEntry 仍在')
+    assert.equal(revived?.fallbackAttempt, 1)
+  } finally {
+    process.env.DSH_HOME = prevHome ?? TEST_DSH_HOME
+    await rm(dir, { recursive: true, force: true })
+  }
 })

@@ -62,12 +62,15 @@ test('extractFallbackNote：无标注原样单行化', () => {
   assert.deepEqual(extractFallbackNote(undefined), { note: null, text: '' })
 })
 
-test('extractFallbackNote：标注容错（空格/首尾文本保留/只取首个）', () => {
-  assert.equal(extractFallbackNote('前 [备选 2/4] 后').note, '备选 2/4')
-  assert.equal(extractFallbackNote('前 [备选 12/34] 后').text, '前 后')
+test('extractFallbackNote：匹配收窄为行首/前缀位置（tisitan.20 D6 假徽章治理）', () => {
+  // 行文中间的括注是叙述，不是 broker 标记——不得伪造徽章
+  assert.deepEqual(extractFallbackNote('前 [备选 2/4] 后'), { note: null, text: '前 [备选 2/4] 后' })
+  // 行首允许空格/制表符前缀（broker 缩进写出时仍识别并剥离）
+  assert.equal(extractFallbackNote('  [备选 2/4] 重派成功').note, '备选 2/4')
+  assert.equal(extractFallbackNote('结论 A\n\t[备选 12/34] 自动切换').text, '结论 A 自动切换')
   const two = extractFallbackNote('[备选 1/2] x [备选 2/2] y')
   assert.equal(two.note, '备选 1/2', '只识别首个标注（broker 每条落史至多写一个）')
-  assert.equal(two.text, 'x [备选 2/2] y')
+  assert.equal(two.text, 'x [备选 2/2] y', '第二个括注落在行文中间，原样保留')
 })
 
 test('formatRelativeTime 与 extractFallbackNote 组合：真实落史条目形状', () => {

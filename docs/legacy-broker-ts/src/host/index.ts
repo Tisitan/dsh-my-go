@@ -83,6 +83,10 @@ export function apply(ctx: Context, config: BrokerHostConfig = {}): (() => void)
       const request: Record<string, unknown> = {
         label,
         prompt: [{ type: 'text', text: prompt }],
+        ...(typeof binding.persona === 'string' && binding.persona.length > 0 ? { persona: binding.persona } : {}),
+        ...(binding.toolFilter && typeof binding.toolFilter === 'object'
+          ? { toolFilter: binding.toolFilter }
+          : {}),
         parent,
         ...(binding.provider !== undefined || binding.model !== undefined
           ? {

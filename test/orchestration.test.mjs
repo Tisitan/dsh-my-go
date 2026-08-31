@@ -1,7 +1,7 @@
 // Unit tests for the Orchestration state machine (single-line-blocking core).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Orchestration } from '../preset/tools/broker.mjs'
+import { Orchestration, pruneLedgerParents } from '../preset/tools/broker.mjs'
 
 test('beginSpawning occupies the single slot (isBusy)', () => {
   const o = new Orchestration()
@@ -82,17 +82,6 @@ test('requeueHead puts work back at the front of the queue', () => {
   assert.equal(o.dequeue().id, 'work-2')
 })
 
-test('dropQueuedFor removes only the given parent session tasks', () => {
-  const o = new Orchestration()
-  o.enqueue('hermes', 'a', 'parent-1')
-  o.enqueue('explore', 'b', 'parent-2')
-  o.enqueue('librarian', 'c', 'parent-1')
-  const dropped = o.dropQueuedFor('parent-1')
-  assert.equal(dropped, 2)
-  assert.equal(o.queue.length, 1)
-  assert.equal(o.queue[0].agentType, 'explore')
-})
-
 test('history is capped at 200 entries', () => {
   const o = new Orchestration()
   for (let i = 0; i < 210; i++) {
@@ -157,4 +146,49 @@ test('dropQueuedFailed removes the work item and records a failed history entry'
   assert.ok(done.conclusion.includes('spawn boom'))
   assert.equal(o.history.length, 1)
   assert.equal(o.history[0].childId, work.id)
+})
+
+// ── 兜底闸与台账养护（tisitan.15） ──────────────────────────────────────
+
+test('enforceCurrentCap：超限淘汰 updatedAt 最旧的滞留记录，未超限原样', () => {
+  const o = new Orchestration()
+  for (let i = 0; i < 500; i++) o.currentMap.set(`c${i}`, { childId: `c${i}`, updatedAt: 1000 + i })
+  o.enforceCurrentCap()
+  assert.equal(o.currentMap.size, 500)
+  assert.ok(o.currentMap.has('c0'), '未超限不淘汰')
+  o.currentMap.set('c500', { childId: 'c500', updatedAt: 1500 })
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    o.enforceCurrentCap()
+  } finally {
+    console.warn = origWarn
+  }
+  assert.equal(o.currentMap.size, 500, '超限后回落到上限')
+  assert.equal(o.currentMap.has('c0'), false, 'updatedAt 最旧者被淘汰')
+  assert.ok(o.currentMap.has('c500'))
+  assert.equal(warnings.length, 1, '淘汰留痕 console.warn')
+  assert.ok(warnings[0].includes('currentMap cap'))
+})
+
+test('beginSpawning 路径闸生效：连发超限后 currentMap 稳定在上限', () => {
+  const o = new Orchestration()
+  for (let i = 0; i < 501; i++) o.beginSpawning('hermes', 't')
+  assert.equal(o.currentMap.size, 500)
+})
+
+test('pruneLedgerParents：超量按桶内最新 updatedAt 保留最近桶', () => {
+  assert.deepEqual(pruneLedgerParents(undefined), {})
+  assert.deepEqual(pruneLedgerParents('nope'), {})
+  const mk = (id, latest) => ({ [id]: [{ childId: id, agentType: 'hermes', updatedAt: latest }] })
+  const parents = { ...mk('a', 100), ...mk('b', 300), ...mk('c', 200) }
+  const kept = pruneLedgerParents(parents, 2)
+  assert.deepEqual(Object.keys(kept).sort(), ['b', 'c'], '按桶内最新 updatedAt 保留最近 2 桶，a 整桶淘汰')
+  assert.deepEqual(pruneLedgerParents(parents, 5), parents, '未超限原样返回')
+  const withDirty = { ...mk('a', 100), ...mk('b', 300), empty: [], dirty: 'x', ...mk('c', 200) }
+  const kept2 = pruneLedgerParents(withDirty, 2)
+  assert.deepEqual(Object.keys(kept2).sort(), ['b', 'c'], '空桶与非数组桶不参与计数')
+  const kept3 = pruneLedgerParents({ ...mk('a', 100), x: [{ childId: 'x', agentType: 'hermes' }] }, 1)
+  assert.deepEqual(kept3, mk('a', 100), '缺失 updatedAt 视为 0，最旧被淘汰')
 })

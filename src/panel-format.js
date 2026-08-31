@@ -45,13 +45,16 @@ export function formatRelativeTime(ts, now = Date.now()) {
 /**
  * Extract the fallback redispatch marker written by the broker when a failed
  * run is re-queued on its fallback chain ("[备选 n/m] 失败 → 自动切换备选 …").
+ * The broker always writes the marker at the start of its own line, so the
+ * match is anchored there (optional leading spaces/tabs allowed) — bracketed
+ * mentions in mid-text are prose, not markers, and must not fake the badge.
  * Returns `{ note, text }`: `note` is the normalized marker label
  * ("备选 n/m") or null when absent; `text` is the conclusion with the first
  * marker removed, whitespace-collapsed — suitable for one-line display.
  */
 export function extractFallbackNote(conclusion) {
   const raw = String(conclusion ?? '')
-  const m = raw.match(/\[备选\s*(\d+)\s*\/\s*(\d+)\]/)
+  const m = raw.match(/^[ \t]*\[备选\s*(\d+)\s*\/\s*(\d+)\]/m)
   if (!m) return { note: null, text: oneLine(raw) }
   return {
     note: `备选 ${m[1]}/${m[2]}`,

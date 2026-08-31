@@ -34,6 +34,9 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 - **执行模式**：单线阻塞，同一时段只能有一个子智能体运行；tisitan.10 起按
   编排会话隔离——每个父会话一条独立流水线，互不排队。
 - **Sisyphus = 主会话**：用户对话所选模型即 Sisyphus 的模型；它不单独创建。
+- **花名册可扩展**：七个内置工种之外，settings `roles` dict 支持自定义角色
+  （键名 `^[a-z][a-z-]*$`，可绑定模型/人设/工具过滤），派发面按活名册校验
+  ——扩展入口见 §2.4 与设置页角色编辑器。
 - **子智能体 = DSH continuable subagent**：通过 `subagents.startContinuable`
   创建，持久化到独立 Session，支持后续 `followup`（对应 continue）。
 
@@ -47,6 +50,10 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 | `forward`（Sisyphus 转发 need_help） | 读 helpRequest 记录 → 对既有 childId 用 continue，对类型用 go_work | broker 状态 + followup/startContinuable |
 | 结论（子→Sisyphus） | 子智能体最后输出经 `subagent/end`（或 reportFrom）注入父会话，带 conclusionId | `subagent/end` 事件 |
 
+> 另有 broker 注册给 Sisyphus 的两个观测工具（不属五种通信）：
+> `orchestration_status`（编排状态全景 + 花名册简报区）与
+> `list_subagents`（已派子代理清单：类型/childId/状态/最近一次 prompt）。
+
 ### 2.1 单线阻塞与会话隔离
 
 编排状态按编排会话分桶维护（tisitan.10 起）：`orchestrations:
@@ -56,11 +63,12 @@ Map<childId, parentSessionId>` 路由表把子代理侧事件与工具调用送�
 单个 Orchestration 维护：
 
 ```ts
+// 实况（shared/orchestration.mjs:20-27，Orchestration 类实例字段）
 interface OrchestrationState {
-  current: { childId, agentType, prompt, status } | null;  // 当前运行
-  queue: PendingWork[];      // 排队中的 go_work
-  helpRequests: HelpRequest[];  // 挂起的 need_help
-  history: RunRecord[];      // 已完成记录（含结论）
+  currentMap: Map<childId, RunRecord>;  // 活记录（含 spawning 占位；滞留上限 500，超闸淘汰最旧，见 §2.7）
+  queue: PendingWork[];                 // 排队中的 go_work
+  helpRequests: Map<helpRequestId, HelpRequest>;  // 挂起的 need_help
+  history: RunRecord[];                 // 已完成记录（含结论）
 }
 ```
 
@@ -90,9 +98,10 @@ interface OrchestrationState {
   （`work-* → childId`）与失败附因。失败附因来源：`subagent/end` 载荷无
   error 字段，broker 读子会话最后一条 `turn/end` 的 `reason.error`——
   tisitan.9 起 live store（`sessions` 服务）降级为快路径，主路径读持久化
-  档案 `<DSH_HOME>/sessions/<projectKey(cwd)>/<childId>/session.jsonl.zstd`
+  档案 `<DSH_HOME>/sessions/<projectKey(cwd)>/<encodeSegment(childId)>/session.jsonl.zstd`
   （多帧 zstd 逐帧解压；continuable 销毁顺序使 end 发射晚于 live store
-  摘除，live 读法必然落空）。读档失败静默退回无附因（console.warn 留痕），
+  摘除，live 读法必然落空；tisitan.16b 起默认项目目录未命中时按 childId
+  全局枚举 root 下各项目目录兜底，多命中取 mtime 最新）。读档失败静默退回无附因（console.warn 留痕），
   同一原因同时追加进 history 结论尾部。
 
 ### 2.2 模型与 effort 绑定
@@ -110,7 +119,8 @@ interface OrchestrationState {
   `sessionTypes` 注册表为准：spawn 成功时登记 `childId → 工种`，
   `agent/disposed` 时移入有界墓碑表（防 disposed 先于 `subagent/end`
   的竞态串号），`subagent/end` 消费后清除。会话 label 前缀约定
-  `dsh-my-go:<agentType>` 仅用于 DSV4P0813 的 assemble 过滤识别。
+  `dsh-my-go:<agentType>` 是 typeOfAgent 的兜底识别根（tisitan.15 起
+  登记优先、label 兜底，见 §2.7）。
 
 > ⚠️ effort 档位跟随 DSH 模型目录：仅在目标模型实际支持所配档位时才设置；
 > 不支持或能力未知时**不设置**（走适配器默认），拒绝硬映射/钳位
@@ -130,7 +140,74 @@ DSV4P0813 需要两阶段上下文注入流程才能发挥全部能力。实现�
   不回落。）
 
 broker 为每个智能体提供 `dsv4p0813: boolean` 开关（默认关闭）。
-Sisyphus 本身不启用（它是调度者）。
+Sisyphus 本身不启用（它是调度者）——注入识别面 `typeOfAgent` 恒不命中
+sisyphus 会话，该开关对其置灰锁定（tisitan.20）。**执行面仅 broker 半**
+（preset 部署形态）：lib-only 部署形态下此开关不生效（tisitan.20 起设置页
+文案已注明作用域）。
+
+### 2.4 名册路由与 spawn 正统通道（tisitan.14）
+
+settings `roles: dict(roleSchema)`，角色键名在 schema 层强制
+`^[a-z][a-z-]*$`；旧顶级七工种键在装载与热更时自动无损迁入 `roles`
+（幂等；失败保留原配置仅 warn，apply 不中断）。`go_work` / `forward` 的
+`agent` / `target` 参数为自由 string 按活名册校验——未注册名结构化报错
+并附当前可用清单；`orchestration_status` 尾部输出活花名册（sisyphus
+不入可派名册）。子代理 persona / toolFilter 经 `SubagentStartRequest`
+官方字段注入（descriptor v2 持久化、冷恢复原样重放），首条 prompt 的
+`<system-reminder>` 包装退役；toolFilter 派发前按活工具目录过滤降级
+（warn 留痕），allow 全缺名时丢弃 toolFilter 回落全量目录。
+
+### 2.5 draft 双形状契约（loadSettings ↔ saveSettings）
+
+client 编辑面与 host 存储面之间的形状约定（tisitan.15 起白纸黑字，
+测试锚定）：
+
+- **内置键提升回顶级**：loadSettings 把 roles 内的内置工种行提升为
+  `<type>` 顶级键回传（兼容旧前端形状），roles dict 原样附带；
+- **roles 原样附带**：loadSettings 恒回传 roles dict 本体（含自定义行），
+  是角色编辑器的数据源；
+- **顶级形状不消费 persona/toolFilter**：`<type>` 顶级键只承载绑定五字段
+  （provider / model / reasoningEffort / dsv4p0813 / fallbacks），
+  persona 与 toolFilter 只存在于 roles 行形状；
+- **显式携带才写**：saveSettings 只对 draft 行显式携带的字段产生
+  set/unset ops——部分行（如只带 persona）绝不误清已配的 provider /
+  model 绑定（tisitan.15 修复「部分行误清」回归），空值 unset、显式
+  false 可表达。
+
+### 2.6 共享源层 preset/shared/（tisitan.15）
+
+双半不再镜像双写：broker.mjs（preset 层）与 lib/index.js（global 层）
+import 同一份 `preset/shared/` 六模块（净消 1,251 行）：
+
+| 模块 | 住户 |
+| --- | --- |
+| constants.mjs | 双半共享常量单一来源 |
+| failure.mjs | 失败归一化 + 备选链错误分类器 |
+| archive.mjs | 持久化 turn-failure 档案读取（多帧 zstd 逐帧解压） |
+| roles.mjs | 角色名册数据 + 路由 helpers（bindings / promptCache 注入） |
+| orchestration.mjs | 单线阻塞编排状态机（两半同一实现） |
+| misc.mjs | 展示字符串 / 默认绑定 / XML 转义 / typeOfAgent / 台账修剪 / prompt 预载 |
+
+**铁律**：零 `@deepseek-ai/*` import、零 ctx 触碰（node: builtins 允许），
+依赖一律显式注入参数。**promptCache 双根**：broker 半以 preset 装配目录
+为根读 prompts/，lib 半以 `~/.dsh/.agent-presets/dsh-my-go` 为根——
+shared 层只认注入的 `loadPrompt`，两半各自解析。`ensurePresetInstalled`
+同步时校验 shared/ 存在性（broker 相对 import 依赖 preset 整树复制）。
+host-parity 断言随之转为「import 存在性 + ESM 同一性 + 行为直测」
+（逐字比源码的字符串对称断言退役）。
+
+### 2.7 typeOfAgent 统一与养护上限（tisitan.15）
+
+- **typeOfAgent（工种识别，双半同一实现，misc.mjs）**：sessionTypes 活
+  登记优先，会话 label（`dsh-my-go:<agentType>` 前缀）正则兜底；
+  `agent/request` waterfall 的绑定 / effort 覆盖与 DSV4P0813 assemble
+  识别同走此函数——修复 cold-resumed 子代理（进程重启后活登记已失）
+  模型绑定静默失效的真 bug。**双侧契约**：自定义角色键名 schema 强制
+  `^[a-z][a-z-]*$`，与 label 识别正则同构（角色名 ⊆ `[a-z-]+`），
+  任意名册角色都能从 label 还原，两半对同一会话识别出同一工种。
+- **台账与槽位养护**：编排台账 `parents` 分桶超 200 桶时按桶内最新
+  updatedAt 修剪（load / save 双点接入）；`currentMap` 超 500 条滞留
+  记录时 `beginSpawning` 路径闸拒绝新占位——防长生命周期进程失控泄漏。
 
 ## 3. UI 适配
 
@@ -139,7 +216,9 @@ Sisyphus 本身不启用（它是调度者）。
   点击节点可跳转子会话（经 host 半的 connection.rpc 快照桥轮询）。
   队列节点渲染 work-id 占位；快照桥未就绪时显示「编排桥未就绪」提示态
   而非静默空白（tisitan.8）。tisitan.10 起面板摊平展示所有编排会话的
-  条目，parents 多于一个时每条附会话短后缀区分。
+  条目，parents 多于一个时每条附会话短后缀区分。tisitan.15 起面板附
+  **花名册常驻区**（可折叠）：快照桥下发的 rosterLines 展示可派角色与
+  绑定摘要，host 未就绪时显示「花名册不可用」提示态。
 - **自动跳转**：子智能体运行时，client 通过 `sessions.openSubagent({
   parentSessionId, childSessionId, mode: 'continuable' })` 自动跳转到子会话，
   展示其上下文；子智能体结束（`subagent/end`）后跳回 Sisyphus 父会话。
@@ -148,15 +227,24 @@ Sisyphus 本身不启用（它是调度者）。
   跳回父会话同受门禁约束——多会话并行时绝不把用户拽去别的会话。
 - **设置页**：client 半（`src/client.js`）注册「MyGO 编排」设置页 UI；
   settings 命名空间 `dsh-my-go` 由 host 半（`lib/index.js`）注册，
-  broker 半只读取，配置每个智能体的 provider / model /
-  reasoningEffort / dsv4p0813。
+  broker 半只读取。每工种绑定五字段：provider / model / reasoningEffort /
+  dsv4p0813 / fallbacks（与 §2.2 一致；UI 经 tisitan.19 链编辑器合并编辑
+  主选 + 备选链）。tisitan.13-19 UI 增量：工具屏蔽编辑器（`toolMask.deny`
+  双列，tisitan.13）、自定义角色编辑器（roles dict 增删改 + 导入导出，
+  tisitan.14）、内置工种人设覆盖（persona textarea + 载入文件默认，
+  tisitan.15）、模型优先级链编辑器（#1 主选 + #2..N 备选，一键扶正，
+  tisitan.19）。
 
 ## 4. 交付物
 
 | 目录 | 内容 |
 | --- | --- |
-| `preset/` | dsh-my-go agent preset（由 lib 同步到 `~/.dsh/.agent-presets/dsh-my-go/`） |
-| `broker/` | ⚠️ 归档的 TS 参考实现（见 `broker/README.md`），不参与构建与运行 |
+| `preset/` | dsh-my-go agent preset（由 lib 同步到 `~/.dsh/.agent-presets/dsh-my-go/`； tisitan.15 起含 shared/ 共享源六模块） |
+| `lib/` | host 半（global 层插件 `index.js`）：settings 命名空间 / RPC / preset 同步 / 编排台账持久化 |
+| `src/` | client 半：设置页、overlay 树状图面板、自动跳转（构建产物进 `dist/`，发布包随附） |
+| `test/` | node:test 单测与桥接测试（npm test 入口） |
+| `scripts/` | 构建与运维脚本：`build-client.mjs`（esbuild 打包 client 半）、`dump-session.mjs`（zstd 会话档案 CLI 转储） |
+| `docs/legacy-broker-ts/` | ⚠️ 归档的 TS 参考实现（原根目录 `broker/`， tisitan.15 移入；见其 README），停维护、不参与构建与运行 |
 | `prompts/` | 每个智能体的 persona/prompt 文件 |
 | `docs/` | 本文档 |
 | `README.md` | 项目说明 |

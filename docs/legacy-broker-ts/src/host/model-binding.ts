@@ -32,6 +32,10 @@ export interface AgentBinding {
   reasoningEffort?: ReasoningEffortId
   /** Whether the DSV4P0813 two-phase bootstrap applies to this agent type. */
   dsv4p0813: boolean
+  /** Custom-role persona, forwarded through the spawn channel (SubagentStartRequest). */
+  persona?: string
+  /** Scoped tool surface for the child, forwarded through the spawn channel. */
+  toolFilter?: { allow?: string[]; deny?: string[] }
 }
 
 export interface BindingTable {

@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.2.3-tisitan.12",
+  "version": "0.2.3-tisitan.20",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -26,10 +26,14 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 - **单线阻塞**：同一时段每个编排会话内只有一个子智能体在运行，便于审查，增强可观测性；tisitan.10 起各会话流水线相互独立、互不排队。
 - **7 个专业工种**：Hermes（快速执行）、Explore（检索）、Librarian（文档）、Multimodal Looker（看图）、Hephaestus（写代码）、Prometheus（规划）、Oracle（最后手段：疑难/极端复杂问题的架构调试，仅当其他工种无法胜任时启用；验收是 Sisyphus 的质检本职）。
 - **按工种绑定模型**：快活小工配便宜模型，重活配强模型——默认不绑任何模型（继承环境路由），按工种分流见下文「工种模型绑定」。
+- **自定义角色名册（tisitan.14）**：内置七工种之外，可在 settings 的 `roles` dict 自由定义角色（键名 `^[a-z][a-z-]*$`），每个角色可配独立的模型绑定 / persona / 工具过滤；`go_work` 的 `agent` 参数接受名册内任意角色名，详见下文「自定义角色」。
+- **内置角色 persona 覆盖（tisitan.15）**：除 Sisyphus 外的内置工种可在设置页覆盖编辑 persona（留空 = 用 prompts/ 档案人设），与自定义角色一样经 spawn 官方通道注入；「载入文件默认」按钮（tisitan.16）一键拉取档案原文进编辑框，覆盖前不再盲写。
+- **角色卡导入导出（tisitan.15）**：每张角色卡可导出/导入全字段 JSON（剪贴板，失败降级 prompt 复制），导入前客户端校验（非法键名/重名/脏 JSON 等拒绝）。
+- **面板花名册常驻区（tisitan.15）**：编排面板底部常驻显示活角色名册（内置 + 自定义），与 `orchestration_status` 同源同格式。
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
 - **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——**按任务难度分配（不按需求难度）**：指令明确、步骤具体的执行活优先派 Hermes，需要设计/推理的才升级 Hephaestus，仅疑难/极端复杂才到 Oracle；同工种上下文连续则 `continue` 复用。
 - **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
-- **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关 / 备选链，均可在 DSH 设置页配置；tisitan.13 起含工具屏蔽（Tool Mask）双列表编辑器。
+- **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关 / 备选链，均可在 DSH 设置页配置；tisitan.13 起含工具屏蔽（Tool Mask）双列表编辑器，tisitan.14 起含「自定义角色」CRUD 卡片区，tisitan.15 起全卡片手风琴折叠，tisitan.19 起主选与备选链合并为单一「模型优先级列表」（#1 主选带徽章，备选 ↑ 到顶一键扶正）。
 - **DSH 适配**：权限请求、问题询问由主智能体执行。
 - **节省主会话上下文**：Sisyphus 主会话不加载 Skill 工具（子智能体仍保留），跳过 Skill catalog 注入以压缩主会话上下文。
 - **DSV4P0813 补丁开关**：内置过拟合补丁，让 DeepSeek V4 Pro 0813 发挥最大的实力。
@@ -41,7 +45,7 @@ _真正实现 “按量付费”_
 ### 理论最低要求
 
 - DeepSeek Harness `0.1.0-rc.6`+（基于 `agent/request` waterfall 与 continuable subagent API）
-- Node.js 20+
+- Node.js 22.15+（`node:zlib` 的 zstd 压缩接口实需 22.15+/23.8+，与 package.json `engines` 一致）
 - 一个可用的 LLM provider
 - Windows / macOS / Linux（DSH 均支持）
 
@@ -104,6 +108,7 @@ host 半（lib）注册 settings 命名空间 `dsh-my-go`，client 半提供设�
 | `<type>.reasoningEffort`        | 不指定         | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
 | `<type>.dsv4p0813`              | false          | 是否对该工种启用 DSV4P0813 两阶段引导补丁                               |
 | `<type>.fallbacks`              | 空（不启用）   | 备选链 [{provider, model}]，主绑定失败时按序重派                        |
+| `roles`                         | 空（仅内置工种）| 自定义角色名册 dict：`roles.<role>` 键名须 `^[a-z][a-z-]*$`，绑定字段同 `<type>.*`，另加 persona / toolFilter（见下方「自定义角色」） |
 | `toolMask.deny`                 | 空（不屏蔽）   | 工具名数组：从 MyGO 会话目录屏蔽指定工具（见下方「工具屏蔽」）           |
 
 `<type>` 取值：sisyphus / hermes / explore / librarian / looker / hephaestus /
@@ -148,6 +153,39 @@ dsh-my-go:
 建议分工：Sisyphus / Hephaestus 用中等能力模型，Hermes / Explore /
 Librarian / Looker 用便宜轻量模型，Prometheus / Oracle 用最强模型。
 
+### 自定义角色（roles，tisitan.14 起）
+
+内置七工种之外，可在 `roles` dict 定义自己的角色——每个角色拥有与内置
+工种相同的绑定字段（provider / model / reasoningEffort / dsv4p0813 /
+fallbacks），另可加 `persona`（人设文本，经 spawn 官方通道注入子代理）
+与 `toolFilter`（`allow` / `deny` 工具名清单）。角色键名强制
+`^[a-z][a-z-]*$`：
+
+```yaml
+dsh-my-go:
+  roles:
+    reviewer:                       # 键名：^[a-z][a-z-]*$
+      provider: your-provider
+      model: your-model
+      reasoningEffort: high
+      persona: 你是严谨的代码评审员，只查逻辑硬伤。
+      toolFilter:
+        allow: [read, glob, grep]   # 只放行名单内工具；只宜写核心稳定工具名
+```
+
+- **派发**：`go_work` / `forward` 的 `agent` / `target` 参数接受名册内
+  任意角色名（未注册名结构化报错并附当前可用清单）；
+  `orchestration_status` 尾部展示活花名册。
+- **迁移**：旧顶级七工种键在装载与热更时自动无损搬入 `roles`（幂等；
+  失败保留原配置仅 warn），YAML 手写的旧形状无需立即改写。
+- **注意**：`toolFilter` 随 descriptor v2 持久化、冷恢复按原样重放——
+  只宜写核心稳定工具名，重启后工具集变化（如 MCP 未连接）会导致
+  冷恢复失败（NOT_RESUMABLE）。
+
+设置页「MyGO 编排 → 自定义角色」提供 CRUD 卡片区：模型优先级列表
+（tisitan.19 起主选 + 备选链合并编辑）、persona 与 toolFilter，键名即
+时校验，与 YAML 手工编辑等价。
+
 ### 备选链（fallbacks，自动重派）
 
 每个工种可配 `fallbacks` 备选链：链首是上文的 `provider`/`model` 主绑定
@@ -180,8 +218,12 @@ dsh-my-go:
 - **已知限制**：备选重派的历史结论措辞先于 spawn 成功落史——重派 spawn
   失败时不改写已落历史，以 `console.error` 留痕并向原父会话推送修正通知。
 
-设置页「MyGO 编排」每工种卡片内置备选链可视化编辑器：逐行编辑备选
-provider/model、↑↓ 调整链序、模型下拉按所选渠道过滤，与 YAML 手工编辑等价。
+设置页「MyGO 编排」每工种卡片内置模型优先级列表编辑器（tisitan.19 起
+主选与备选链合并）：#1 即主选（带徽章，空值=跟随 Sisyphus），#2..N 即
+备选链顺序；逐行编辑 provider/model、↑↓ 跨边界调整链序（备选 ↑ 到顶 =
+一键扶正为主选，删 #1 则 #2 自动扶正，列表至少保留主选位 1 条）、模型
+下拉按所选渠道过滤，与 YAML 手工编辑等价（保存时拆解 #1→provider/
+model、#2..N→fallbacks，存储形状零变更）。
 
 ### 工具屏蔽（tool-mask）
 
@@ -260,20 +302,31 @@ dsh-my-go/
 ├── README.md              # 本文档
 ├── package.json           # npm 包声明（dsh.bundle.patch → cordis.patch.yml）
 ├── cordis.patch.yml       # bundle patch（dsh plugin add 后自动挂载 host 插件）
-├── lib/index.js           # npm 包 host 半（编排工具 + 状态机 + 模型绑定）
-├── src/client.js          # client 半源码（树状图面板 / 设置页 / 自动跳转）
-├── src/fallback-rows.js   # 备选链编辑器纯函数（内联进 client bundle）
-├── src/tool-mask-rows.js  # 工具屏蔽双列表编辑器纯函数（内联进 client bundle）
-├── src/panel-format.js    # 面板格式化纯函数（内联进 client bundle）
+├── lib/index.js           # npm 包 host 半（编排工具 + 状态机 + 模型绑定，import preset/shared/）
+├── src/                   # client 半源码（tisitan.15 起装配层 + 模块化）
+│   ├── client.js          #   装配层（57 行）：接线五模块 + 注册 DSH slots
+│   ├── client-constants.js#   共享常量（色板/标签/intent 文案，零 React）
+│   ├── panel-tree.js      #   树状图面板 + 600ms 轮询 + 自动跳转（花名册常驻区）
+│   ├── settings-core.js   #   设置页主组件（工种卡手风琴 / persona 覆盖 / 保存行）
+│   ├── roles-editor.js    #   自定义角色区（CRUD / persona 覆盖 / 导入导出）
+│   ├── tool-mask-editor.js#   工具屏蔽双列表编辑器
+│   ├── chain-rows.js      #   模型优先级列表编辑器纯函数（node --test 与 bundle 内联同源）
+│   ├── tool-mask-rows.js  #   工具屏蔽纯函数（同上）
+│   ├── roster-rows.js     #   自定义角色纯函数（同上，含卡摘要/导入导出/persona 覆盖）
+│   └── panel-format.js    #   面板格式化纯函数（同上）
 ├── scripts/build-client.mjs  # esbuild 打包 client → dist/client.js
+├── scripts/dump-session.mjs  # 会话档案取证 CLI（tisitan.16，npm run dump:session）
+├── test/                  # 冒烟 + 189 例单测（13 个 *.test.mjs）
 ├── dist/                  # 构建产物（发布时生成）
 ├── preset/                # agent preset「MyGO!!!!! 模式」（复制到 ~/.dsh/.agent-presets/）
 │   ├── preset.yml
 │   ├── agent.cordis.yml
+│   ├── shared/            # 双半共享源（tisitan.15）：constants / failure / archive /
+│   │                      #   roles / orchestration / misc（零 @deepseek-ai、零 ctx）
 │   └── tools/broker.mjs   # 自包含 host 插件（工具 + 模型绑定 + 状态机）
-├── broker/                # broker 插件 TS 源码（参考实现）
 ├── prompts/               # 8 个智能体 prompt
-└── docs/ARCHITECTURE.md   # 架构设计
+└── docs/                  # ARCHITECTURE.md / FORK-GUIDE.md / archive/（审查报告归档）
+    └── legacy-broker-ts/  #   归档 TS 参考实现（停维护，原根目录 broker/）
 ```
 
 ## 贡献
@@ -284,7 +337,7 @@ cd dsh-my-go
 bun install
 bun run build:client    # 构建 client bundle
 bunx tsc --noEmit       # 类型检查
-bun run test            # 冒烟 + 89 例单测套件
+bun run test            # 冒烟 + 189 例单测套件
 ```
 
 ## 维护状态

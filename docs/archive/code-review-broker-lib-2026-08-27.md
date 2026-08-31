@@ -1,3 +1,5 @@
+> 🗄️ **历史存档（tisitan.15 归档）**：本报告为 2026-08-27 审查时点的快照，所述行号、行数与结论不随实现更新；现行机制以 [ARCHITECTURE.md](../ARCHITECTURE.md) / [FORK-GUIDE.md](../FORK-GUIDE.md) 为准。
+
 # dsh-my-go v0.2.3-tisitan.10 核心运行时代码审查报告
 
 > 审查对象：`preset/tools/broker.mjs`（1627 行，agent 平面）＋ `lib/index.js`（1541 行，host 平面）

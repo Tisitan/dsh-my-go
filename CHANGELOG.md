@@ -3,6 +3,482 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.2.3-tisitan.20] - 2026-08-30
+
+「总审查修复战」批：以 docs/code-review-2026-08-30.md（五棒流水线，零
+Critical / 2 Major / 10 中 / 19 低）为工单分三波收口——Wave A 运行时
+深审八项、Wave B 前端与低值六项、Wave C 文档/UI 文案包 + 版本收口。
+测试 179 → 189。
+
+### Fixed
+
+- **Wave A · 运行时八项**：
+  - **双半台账双写竞态**（棒2-M1，Major）：lib 半 session/disposed →
+    scheduleLedgerSave 以启动时陈旧快照整体覆写台账文件，可静默回退
+    broker 半的新鲜历史。修=快照桥（`Symbol.for('dsh-my-go.snapshot')`）
+    存在时 lib 台账只读化，任何突变不再覆写台账文件。
+  - **once-guard 盲窗**（棒2-Z1）：双发 end 落在 pickFallbackEntry
+    await 窗口（含真实 listModels I/O）时重派被静默放弃，主流程收过
+    「评估中」预告却永等不到终局。修=once-guard 已登记的后续 end 按
+    迟到忽略、不提前落史、不弃重派（bridge step-3 f 钉死）。
+  - **spawn 解析前回跳残留**（棒2-Z2）：activeFallback.set 在 await
+    startContinuable 之后的窗口内，重派儿童请求经 label 兜底回跳主
+    模型。修=spawn 前登记 pending 备选表供 waterfall 匹配，spawn
+    失败同步清理不留悬空覆盖。
+  - **roles.sisyphus 死数据排除**（棒2-L1）：merge 读面不消费
+    roles.sisyphus（sisyphus 恒为顶级键），saveSettings 写面对
+    draft.roles.sisyphus 不产生任何 ops，读写两面锁死。
+  - **跨会话 continue 抢属主守卫**（棒2-L2）：属主仍活时 continue
+    拒绝跨会话操作，属主消亡才允许收养。
+  - **双半 model 校验对齐**（棒2-L3）：lib 半 waterfall 与 broker 半
+    同语义——校验不过告警并保持 seed，provider 为空判丢弃。
+  - **附因全灭终局口径**（棒2-L4）：live 与档案均读不到失败原因且
+    不进重派评估时，「取证中」预告之后必补「未读到附因，已按失败
+    落账」终局一行，协议不留真空期。
+  - **废弃面清理 + promotion 测试 + engines**（低值打包）：
+    dropQueuedFor/nextId 未用 import/promotionStateFor steps 计数器
+    等废弃面收口；DSV4P0813 promotion 行为面测试补零（棒2-L7）；
+    `engines.node` >=20 → **>=22.15**（棒4-Z5：`node:zlib` 的
+    zstdDecompressSync 于 22.15/23.8 引入，旧 Node 下附因取证静默
+    失效、dump-session CLI 崩）。
+- **Wave B · 前端与低值六项**：
+  - **设置页 null-gate 补全**（棒3-M1'，Major）：set()/setChain() 补
+    与 setDeny/setPersonaOverride 同款 null-gate（外层拦截 + 函数式
+    prev 守卫双保险），draft=null 不再能造半截 draft 解锁保存；
+    makeSelect 支持 disabled，draft=null 全控件锁定。
+  - **loadSettings 失败可见反馈**（棒3-Z1'）：加载态三分（加载中 /
+    失败 / 就绪），失败亮红字横幅并禁用全部编辑与保存，不再完全静默。
+  - **roles 投影重建脏行透传**（棒3-Z2'）：mergeRoleRowsIntoRoles
+    内置透传 + 脏行原样保留 + 投影行重建 + 删除语义成立，不再静默
+    删除未触碰脏行。
+  - **createRole 拦内置键名**（棒4-Z4）：手建 sisyphus/hermes 等同名
+    行与导入路径同则拦截，防护对称。
+  - **低值打包**：D1 空备选行保存边界过滤（stripEmptyFallbackRows，
+    编辑期保留、保存期剔除）+ D4 build 日志 UTF-16 码元冒充字节改
+    Buffer.byteLength 口径 + D5 listModels 畸形响应防御（models 非
+    对象整体丢弃不炸整页）+ D6 假备选徽章治理（extractFallbackNote
+    匹配收窄为行首/前缀）+ build metafile 断言（10 src 模块逐一
+    验证进 bundle）。
+
+### Changed
+
+- **Wave C · 文档/UI 文案包**：
+  - **失败协议补第三预告分支**（棒4-Z1）：prompts/sisyphus.md「失败
+    与备选通知协议」补「有备选链但非 error 终局（aborted）→ 不进入
+    备选评估，取证中」分支与处置指引（等「子代理失败:」附因推送即
+    终局，不空等重派），与 broker 实发三分支对齐（tisitan.18 prompt
+    层漏同步补齐）。
+  - **dsv4p0813 勾选文案补作用域**（棒4-Z2）：设置页注明「仅对 MyGO
+    preset 派发的子代理会话生效，lib-only 部署形态下不生效」。
+  - **Sisyphus 卡 dsv4p0813 死开关处置**（棒4-Z3）：注入识别面
+    typeOfAgent 恒不命中 sisyphus 会话，勾选永不生效——设置页对
+    Sisyphus 卡置灰锁定并附说明（选灰禁+说明，成本低于隐藏且保留
+    布局一致性）。
+  - **文档漂移 18 处全清**（棒5 Part 1）：ARCHITECTURE.md A1-A8
+    （OrchestrationState 实况形状/设置页字段与同文档矛盾消除/DSV4
+    仅 broker 半注记/观测工具补账/档案路径 encodeSegment+cwd 兜底/
+    面板花名册常驻区/交付物表补 lib·src·test·scripts/roles 名册扩展
+    入口）；FORK-GUIDE.md F1-F5（版本与测试计数追平实测/测试树例数
+    与缺文件行补齐/client.js 46→57/全景图左框对齐与行宽统一/scripts
+    树补 dump-session）；README.md R1-R5（meta version 追平/计数矛盾
+    消除/46→57/scripts 树补 dump-session/Node 门槛标 zstd 实需
+    >=22.15 与 engines 联动）。
+- **裸词泛化**（棒4-Z10）：tisitan.16 事故定案措辞去具体厂商名，
+  改「主模型」中性表述，句意保全。
+
+### Notes
+
+- **现场-Z3 诊断结论**：unknown-id「不在编排台账」为记录特异非系统性
+  ——continue 同桶同年代记录成功；台账文件 56 条空 parentSessionId
+  记录桶为代际差遗留（v1 旧档载入 'legacy' 兜底桶机制的已知形态），
+  修=continue 内存全实例未命中时回读台账文件兜底查找（bridge 测试
+  钉死），三方矛盾口径统一。
+- **基建观察（流中断伪装成功）**：主模型额度耗尽前后，长输出回合的
+  流被上游掐断，错误文本注入消息正文而回合按成功收尾——备选链
+  （失败终局才触发）对此类流级伪装失明；tisitan.13 已治 turn/end
+  级失明（崩溃伪装 200），流级伪装是上一层同族问题，留档待上游
+  或后续批次处置。
+
+### 测试
+
+- Wave A：`test/bridge.test.mjs` 30 → 31（once-guard 双发盲窗）+
+  台账文件兜底查找（现场-Z3）；`test/multi-session.test.mjs` 4 → 5
+  （跨会话抢属主守卫）；`test/roster-route.test.mjs` 16 → 19（spawn
+  前回跳两例 + DSV4 promotion 行为面）；`test/roster-roles.test.mjs`
+  15 → 17（roles.sisyphus 读写两面）；`test/host-parity.test.mjs`
+  31 → 33（台账只读化 + waterfall 校验对齐）；
+  `test/orchestration.test.mjs` 17 → 16（dropQueuedFor 废弃面收口）。
+- Wave B：`test/chain-rows.test.mjs` 10 → 11（stripEmptyFallbackRows）；
+  `test/roster-rows.test.mjs` 15 → 16（mergeRoleRowsIntoRoles 脏行
+  透传）；`test/panel-format.test.mjs` 9 例内一枚改测 D6 行首锚定。
+- 全量 189/189 绿；tsc 干净。重建 dist：client.js 磁盘 77,123B
+  （基线 76,432B，+691B；构建日志已是 Buffer.byteLength 口径，与
+  磁盘字节一致）。
+
+## [0.2.3-tisitan.19] - 2026-08-30
+
+「模型配置 UI 合并」批：设置页角色卡的「主选（provider/model 两个下
+拉）」与「备选链列表」两块割裂编辑区合并为单一「模型优先级列表」——
+备选扶正成主选从「改两处下拉 + 删备选行」三步操作降为一次 ↑。纯 UI
+层投影，存储零变更。测试 176 → 179（收口 fallback-rows 7 例，行为面
+并入 chain-rows 10 例）。
+
+### Changed
+
+- **主选/备选合并为单一模型优先级列表**（`src/settings-core.js` 内置
+  工种卡 + `src/roles-editor.js` 自定义角色卡共用 `renderChainEditor`）：
+  #1 即主选（带「主选」徽章，空值=跟随 Sisyphus），#2..N 即备选链顺
+  序；每行 = 序号 + provider 下拉 + model 下拉 + ↑↓× 按钮。跨 #1/#2
+  边界移动：#2 点 ↑ 与 #1 换位（一键扶正，原主选降 #2），#1 点 ↓ 同
+  理；删除 #1 则 #2 自动扶正；「+ 添加条目」追加尾部；删除守卫——链
+  至少保留主选位 1 条（× 按钮同步 disabled）。思考档位/DSV4P0813 补
+  丁/人设覆盖/toolFilter 各区域原样保留在列表下方。
+- **新纯函数模块 `src/chain-rows.js`**（与 roster-rows/tool-mask-rows
+  同风格，零依赖，bundle 内联 + node --test 双用）：
+  `composeChain`（存储形状 → 链投影）/ `decomposeChain`（链 → 存储形
+  状）/ `addChainEntry` / `removeChainEntry`（最小长度守卫）/
+  `moveChainEntry`（跨边界换位）/ `updateChainEntry`（provider 变更重
+  置该行 model）/ `normalizeChainRows`；全部纯净（输入深度不变异）。
+  视图为编辑期唯一真源：渲染经 compose 投影、编辑经 decompose 写回
+  （对齐 roster-rows 的 rows 视图先例）。
+
+### Removed
+
+- **`src/fallback-rows.js` 及其测试收口**：合并后其行迁移语义由
+  chain-rows 全覆盖（normalize/add/remove/move/update 同名同语义，
+  remove 增加最小长度守卫），UI 引用面（`renderFallbackChain` 内置卡
+  + 角色卡共用处）一并收口，不留死代码；原 7 例行为面并入
+  chain-rows 10 例。
+
+### Notes
+
+- **存储 schema 零变更**：保存时拆解 #1→`provider`/`model`、#2..N→
+  `fallbacks`，加载时合成；broker/lib 零改动，YAML 手写形状与既有
+  配置完全兼容。
+- **删除守卫的取舍**：旧备选链允许删空（空链=不启用备选，是有意义
+  的持久态）；合并链 #1 是主选位（空值=跟随 Sisyphus 同样是合法持
+  久态），链长恒 ≥1，故删最后一条为 no-op——与 removeFallbackRow
+  允许删空的语义差异在此，UI 以 × 按钮 disabled 表达同一守卫。
+- **空行过滤语义沿用现状**：链内空 provider/model 行不做保存期过
+  滤（与旧 fallback 编辑器一致），下游 `pickFallbackEntry` 对缺字段
+  条目 warn 跳过的容错路径不变。
+
+### 测试
+
+- 新文件 `test/chain-rows.test.mjs` 10 例：normalize 脏数据归一、
+  compose/decompose 投影与拆解（含脏数据防御与空形状规范化）、
+  round-trip 双向恒等、addEntry（默认空行/指定条目/非法条目防御）、
+  删除扶正 + 最小长度守卫、跨边界双向移动 + clamp no-op、
+  updateEntry provider 重置 model、全部函数不突变输入、draft 往返
+  语义（扶正/删 #1/追加空行的写回形状）。
+- 全量 179/179 绿；tsc 干净。重建 dist：client.js 磁盘 72,767B
+  （基线 73,067B，-300B）。
+
+## [0.2.3-tisitan.18] - 2026-08-30
+
+「失败通知真空期消灭战·三件套」批：harness 原生「failed before it
+finished」通知（dsh-subagent 硬编码模板，插件不可抑制）在 settle 瞬间
+同步唤醒主流程，而 broker 的失败处置（取证/备选重派）是异步的、通知
+晚到数秒——真空期内主流程不知道备选链存在，可能自行报死/手动重派与
+broker 撞车。修复 = 提示词层知识 + 零延迟同步预告。测试 163 → 176。
+
+### Added
+
+- **名册简报系统提示段**（`dsh-my-go:roster`，order=10，persona(0) 与
+  编排规则(20) 之间空档）：函数态 text 每次 assemble 从当前 bindings
+  现渲活名册（工种 → provider·model → 备选链序列 → toolFilter 概要 →
+  人设来源）+ 头部一行失败通知协议指路；儿童门控——子代理
+  （parentSession 直达 + `typeOfAgent` 冷恢复 label 兜底）返回空串，
+  根编排会话独享全文；字节稳定——渲染器（`shared/roles.mjs`
+  `renderRosterBriefing`，单一源）键排序、无时间戳/无随机，同
+  settings 两次渲染逐字节全等；bindings 沿用 `settings/updated` 整表
+  重建机制，函数态直读最新值，天然免刷新管道。
+- **prompts/sisyphus.md「失败与备选通知协议」段**（静态文案，落在
+  orchestration section 内）：harness failed 先到是常态不代表终局；
+  收到 failed 先查名册——有链一律静默等待 broker 备选处置通知（禁止
+  自行报死/手动重派），无链才立即进入失败处置；「备选重派」通知的
+  新 childId 接管一切后续引用。
+- **失败同步预告 + 终局显式通知**（双半，end 处理器同步段零 await）：
+  有链失败进评估前同步 inject「失败已知悉，备选评估中（n 条），暂缓
+  失败处置」；无链失败同步 inject「无备选链，取证中」；有链但非
+  error 终局（aborted）同步 inject「不进入备选评估，取证中」——绝不
+  谎报评估中让主流程空等。`attemptFallbackRedeploy` 三个终局分支补
+  显式通知：分类器否决「附因属中断类，不重派，按失败终局落账」；
+  无法重派（缺 prompt/父会话不在）同终局口径；链尽/预检全败「备选
+  链尽，按失败终局落账」。非失败 end 零预告；once-guard 已登记的双
+  发防御路径跳过预告（不发矛盾口径）。
+
+### Notes
+
+- **harness failed 先行不可抑制留档**：dsh-subagent 的 settle 通知为
+  硬编码模板，插件层无法抑制/改写；本批以「预告先于处置到达 + 协议
+  告知先到是常态」消灭真空期，不动 harness 通知本身。
+- **bindings 刷新机制核查结论**：broker/lib 两半均为 `let bindings =
+  {...baseBindings}` 初载合并 + `ctx.on('settings/updated')` 内
+  `bindings = mergeRoleBindings(baseBindings, next)` 整表重建（WebUI
+  unset 正确回落）；名册简报段闭包直读该 `let` 绑定，函数态每次
+  assemble 现调，settings 更新后零额外管道即生效。
+
+### 测试
+
+- 新文件 `test/failure-notice.test.mjs` 11 例：注册形态（函数态
+  text/name/order=10/无 complete）、儿童门控两路（parentSession 直达
+  + label 兜底）、简报内容全要素与键排序、字节稳定（含渲染器键插入
+  序无关直测）、settings 更新免刷新管道；预告 e2e 五例（有链失败
+  评估中预告同步到达且先于重派通知 / 无链失败取证中先于附因通知 /
+  aborted 有链不谎报评估中 / 链尽终局通知 / 成功 end 零预告）+
+  分类器否决终局通知。
+- `test/host-parity.test.mjs` 29 → 31：失败同步预告/终局通知双半
+  对称源码断言（含「预告先于 attemptFallbackRedeploy 点火」源码序
+  断言）；名册简报段 broker 独有注册 + 渲染单一源在 shared 断言。
+- 全量 176/176 绿；tsc 干净。未触碰 src/，dist 无需重建。
+
+## [0.2.3-tisitan.17] - 2026-08-30
+
+「备选覆盖复活持久化」批：tisitan.16 Notes 载明的两条已知限制（复活不
+重建覆盖 / 重启丢覆盖）闭环——备选条目本体随编排记录落盘，复活同点
+重建。测试 159 → 163。
+
+### Fixed
+
+- **continue/forward 复活已完工备选儿童回跳主模型**（生产级，当日真机
+  已咬人一次）：`activeFallback` 内存表随完工清理，复活后 waterfall 按
+  `bindings[type]` 重绑回主模型（备选儿童被驳回重做 → 回跳主绑定 → 撞
+  限额暴毙）。修=重派成功处把备选条目本体写进编排记录
+  `record.fallbackEntry`（与 `fallbackAttempt` 同点经 `beginSpawning`
+  extra 入账，随 finish→history→台账落盘全链路自然携带），continue/
+  forward 复活路径在重建 `sessionTypes` 的同点按记录回填
+  `activeFallback`（畸形条目 typeof 守卫，缺字段不重建）。双半同步。
+- **进程重启 cold-resume 丢备选覆盖**：同一锚点闭环——台账 round-trip
+  后 `record.fallbackEntry` 仍在，cold-resume 走 continue revive 路径
+  即重建，不再靠「再死一次触发链上下一条」自愈。
+
+### Notes
+
+- **清理语义不变**：完工/销毁五类清理点照旧清 `activeFallback`；
+  `fallbackEntry` 在历史记录里保留无碍（重建只发生在复活时）；链上
+  下一跳重派时新占位记录携带新条目，天然覆盖上一跳。
+- **序列化面**：台账仍是 v2 `{ version, parents }` 形状；`fallbackEntry`
+  落在 parents 分桶的记录字段层（与 `fallbackAttempt` 同层），
+  `isLedgerRow` 形状校验不要求该字段，旧台账无字段记录照常载入。
+
+### 测试
+
+- `test/bridge.test.mjs` 29 → 30（重派记录携带 fallbackEntry + 台账
+  v2 round-trip 后仍在）；`test/roster-route.test.mjs` 14 → 16
+  （continue 复活后 waterfall 保持备选不回跳 / 链上第二跳覆盖第一跳
+  且历史保留各自条目）；`test/host-parity.test.mjs` 28 → 29
+  （fallbackEntry 入账/复活重建点双半对称源码断言）。
+- 全量 163/163 绿；tsc 干净。
+
+## [0.2.3-tisitan.16] - 2026-08-30
+
+「生产事故定案 hotfix」批：主模型 5h 限额 + 备选回跳叠加八连败的真机事故
+双根因修复——备选重派运行期防回跳、失败附因取证 cwd 无关化；设置页内置
+卡补「载入文件默认」按钮。测试 141 → 150。
+
+### Fixed
+
+- **备选重派模型回跳**（生产级）：`attemptFallbackRedeploy` spawn 时把备选
+  `{provider, model}` 写进 agentOptions 只管首帧配置，而 `agent/request`
+  waterfall 每个请求无条件按 `bindings[type]` 重绑 provider/model——备选
+  儿童运行期被回跳成主模型再死一次，备选链自 tisitan.12 起真机从未真正
+  换脑。修=双半新增 `activeFallback` 覆盖表（childId → 备选条目，重派
+  成功登记、生命周期五类清理点镜像清除），waterfall 经共享纯函数
+  `resolveEffectiveBinding`（preset/shared/misc.mjs）求有效绑定：只换
+  provider/model，工种 reasoningEffort/fallbacks 等其余字段原样保留，
+  返回新对象绝不原地改共享绑定表。
+- **失败附因取证 cwd 无关化**（生产级）：`readArchivedTurnFailure` 默认按
+  `projectKey(process.cwd())` 定位项目目录，dsh web 宿主进程 cwd 与用户
+  工作区不一致时档案永远找不到——生产上「未读到附因」从未成功过。修=
+  默认路径不可读时 `findArchivedLogByChildId` 兜底搜索（preset/shared/
+  archive.mjs，双半自动共享）：枚举 sessions 根下全部项目目录按 childId
+  检测档案存在性，多命中取 mtime 最新，命中 warn 留痕。
+
+### Added
+
+- **getBuiltinPersona RPC + 内置卡「载入文件默认」按钮**：设置页内置工种
+  卡（Sisyphus 除外）persona 覆盖区可一键读取 `prompts/<type>.md` 原文
+  填入编辑框（未保存草稿态，点保存才落盘）——覆盖前不再盲写。端点
+  `ROLE_KEY_PATTERN` 防目录穿越、磁盘直读绕 promptCache（启动期缺档的
+  null 缓存不挡后续同步）、失败结构化返回绝不抛穿 RPC；前端归一纯函数
+  `resolveBuiltinPersonaResult`（src/roster-rows.js）。
+- **scripts/dump-session.mjs 会话档案取证工具**（`npm run dump:session`）：
+  事件流摘要（request/header 打 provider/model、llm/retry 打 retry 序号与
+  failure 摘要、turn/end 打 reason/error、tool 类打工具名）+ childId 全
+  项目目录搜索定位档案 + 末帧截断容错；帧界扫描与兜底搜索复用共享层
+  （preset/shared/archive.mjs 补 export scanZstdFrameRanges /
+  findArchivedLogByChildId）。
+
+### Notes
+
+- **activeFallback 是内存表**，进程重启即丢：cold-resume 的备选儿童会回跳
+  主模型，若主模型仍故障会再死一次并触发链上下一条备选（自愈收敛）。
+  不修——DSH 子代理 descriptor 不携带插件私有状态，无落盘锚点。
+- **continue/forward 复活已完工备选儿童不重建覆盖**（编排台账只存
+  fallbackAttempt 索引，不存备选条目），复活后回 `bindings[type]` 主模型
+  ——已知限制。
+- **事故定案**：主模型 5h 限额 + 回跳叠加，八连败全部实为主模型请求
+  （挂着备选名头的重派儿童运行期 config 被 waterfall 重绑回主模型）。
+
+### 测试
+
+- `test/host-parity.test.mjs` 22 → 28（activeFallback 写入/清理/消费点
+  双半对称源码断言 + resolveEffectiveBinding 行为面直测 + cwd 错配兜底
+  搜索三例 + getBuiltinPersona 端点一例）；
+  `test/roster-route.test.mjs` 12 → 14（waterfall 运行期防回跳两例：
+  备选不回跳 + effort 保留 + 常规派发不受影响 / 清理后覆盖消失）；
+  `test/roster-rows.test.mjs` 14 → 15（resolveBuiltinPersonaResult 归一）。
+- 分文件实测计数：bridge 29 / orchestration 17 / roster-roles 15 /
+  roster-rows 15 / roster-route 14 / panel-format 9 / fallback-rows 7 /
+  tool-mask-rows 7 / tool-mask 5 / multi-session 4 / host-parity 28；
+  全量 150/150 绿；tsc 干净。
+- 取证工具批追加 `test/dump-session.test.mjs` 9 例（摘要规则四例 +
+  合成多帧档案行为面两例 + 截断/损坏容错一例 + 解压全灭一例 + childId
+  搜索一例，zstdCompressSync 合成档案全 hermetic）；全量 150 → 159。
+
+## [0.2.3-tisitan.15] - 2026-08-30
+
+「共享源 + 薄壳」架构批： tisitan.14 从未推送，本版合并发布。四波落地——
+typeOfAgent 工种识别统一（修复 cold-resumed 子代理模型绑定静默失效真
+bug）、preset/shared/ 六模块单一源消双写 1,251 行、设置页 persona 覆盖
+与角色卡导入导出、src/client.js 巨石拆薄壳。测试 127 → 141。
+
+### Added
+
+- **内置角色 persona 覆盖编辑**（Sisyphus 除外）：设置页每张内置工种卡
+  可覆盖编辑 persona（留空 = 用 prompts/ 档案），经 spawn 官方通道注入；
+  `withPersonaOverride` 纯函数按部分行显式携带，空文本 = 清除覆盖。
+- **角色卡导出/导入 JSON**：每张角色卡一键导出全字段卡片（嵌套
+  toolFilter 形状）到剪贴板（失败降级 prompt 复制）；导入经客户端校验
+  （脏 JSON/非法键名/重名/非对象等 8 类拒绝分支），白名单剥离未知字段。
+- **TreePanel 花名册常驻区**：编排面板底部常驻显示活角色名册（内置 +
+  自定义，与 orchestration_status 同源同格式），snapshot RPC 挂
+  `rosterLines`，桥未就绪（无编排会话）也恒产出。
+- **preset/shared/ 共享源层**：constants / failure / archive / roles /
+  orchestration / misc 六模块 635 行单一源，双半（`broker.mjs` /
+  `lib/index.js`）import 同一实现；铁律：零 `@deepseek-ai/*` 依赖、
+  零 ctx 触碰（node: builtins 可），依赖一律显式注入。
+
+### Changed
+
+- **双半共享源化消双写**：broker 1977 → 1344 行、lib 2035 → 1417 行
+  （净消 1,251 行镜像双写）；settings 合并（mergeRoleBindings）、失败
+  分类、档案读取、名册路由、工种识别、台账修剪、prompt 预载全部走
+  shared 单一源。
+- **src/client.js 巨石拆分**：1063 行 → 46 行装配层 + 五模块
+  （client-constants / panel-tree / settings-core / roles-editor /
+  tool-mask-editor），纯重构零行为变化；手风琴折叠等既有 UI 语义保留。
+- **typeOfAgent 工种识别统一**：sessionTypes 活登记优先 + 会话 label
+  正则兜底，双半同一实现（shared/misc）；`agent/request` 绑定覆盖与
+  DSV4P0813 assemble 识别同走此函数。
+- **host-parity 断言范式升级**：字符串对称断言（逐字比源码）退役 →
+  shared import 存在性断言 + ESM 同一性（两半同一实例）+ 行为直测；
+  `ensurePresetInstalled` 增加 shared/ 存在性校验（见 Migration）。
+
+### Fixed
+
+- **cold-resumed 子代理模型绑定静默失效**（真 bug）：进程重启后 continuable
+  子代理冷恢复，sessionTypes 活登记已失、旧识别路径无法从会话 label 还原
+  工种，`agent/request` 的绑定/effort 覆盖被静默跳过——typeOfAgent 双根
+  识别（登记优先、label 兜底）修复，恢复后按名册正确套用绑定。
+- **saveSettings 部分行误清已配绑定**：draft 行只带 persona 等部分字段时，
+  旧逻辑把「字段缺失」当「未配」产生整行 5 字段 unset ops，已配的
+  provider/model 被一并清空——改为全字段显式携带才写，部分行只写携带
+  的字段（roles 行与内置提升行同规）。
+
+### Migration
+
+- **broker/ 归档移位**：根目录 `broker/` TS 参考实现移至
+  `docs/legacy-broker-ts/`（停维护声明见其 README，勿改勿引）；外部
+  如有路径引用请同步改写。
+- **preset 同步完整性**：broker 运行时相对 import `preset/shared/*`，
+  `ensurePresetInstalled` 同步 preset 时必须整树复制（含 shared/），
+  现按版本标记同步时校验 shared/ 存在性，缺失即报错重同步。
+
+### Notes
+
+- **台账与槽位养护上限**：编排台账 `parents` 分桶超 200 桶时按桶内最新
+  updatedAt 修剪（load/save 双点接入）；`currentMap` 超 500 条滞留记录
+  时 `beginSpawning` 路径闸拒绝新占位——防长生命周期进程失控泄漏。
+
+### 测试
+
+- `test/orchestration.test.mjs` 14 → 17（enforceCurrentCap /
+  beginSpawning 路径闸 / pruneLedgerParents）；`test/host-parity.test.mjs`
+  20 → 22（shared 单一源断言组替换字符串对称断言）；
+  `test/roster-roles.test.mjs` 13 → 15（部分行 saveSettings 语义 /
+  rosterLines 恒产出）；`test/roster-route.test.mjs` 9 → 12（typeOfAgent
+  三例：cold-resumed 恢复绑定 / 登记优先于畸形 label / DSV4P0813
+  assemble 识别）；`test/roster-rows.test.mjs` 10 → 14
+  （withPersonaOverride / personaOverrideSource / buildRoleCardJson /
+  parseRoleCardJson）；全量 141/141 绿；tsc 干净。
+
+## [0.2.3-tisitan.14] - 2026-08-30
+
+「自定义角色名册（B 档底座化）」批：工种名单从硬编码七枚举走向 settings
+`roles` dict——内置七工种之外可自由定义角色（独立绑定 / persona / 工具
+过滤），go_work/forward 按活名册校验路由；子代理人设与工具面改走
+spawn 官方通道，`<system-reminder>` 包装退役。测试 89 → 127。
+
+### Added
+
+- **schema**：settings 命名空间 `dsh-my-go` 新增顶级键
+  `roles: dict(roleSchema)`（roleSchema = provider/model/reasoningEffort/
+  dsv4p0813/fallbacks + persona + toolFilter{allow, deny}）；角色键名在
+  schema 层强制 `^[a-z][a-z-]*$`，非法名直接拒绝（`lib/index.js`）。
+- **设置页「自定义角色」CRUD 卡片区**（`src/client.js`）：逐行新建/删除/
+  编辑角色（绑定字段 + persona + toolFilter allow/deny），键名客户端
+  即时校验与服务端 schema 同则；操作纯函数抽 `src/roster-rows.js`
+  （零依赖，与 client bundle 内联同源）。
+- **orchestration_status 活花名册区**：输出尾部新增当前可派名册
+  （内置七工种 + roles 自定义，sisyphus 不入可派名册），Sisyphus
+  派工以活名册为准。
+- **设置页全卡片手风琴折叠**（本版收口追加）：Sisyphus / 内置七工种 /
+  自定义角色 / 工具屏蔽卡默认收起，卡头常显标题 + muted 摘要行 +
+  折叠指示符，点击切换（纯视图态，不持久化、不进 settings）；内置卡
+  摘要纯函数 `builtinSummaryText`（`src/roster-rows.js`），自定义角色卡
+  复用 `roleSummaryText`，新建角色成功后该卡保持展开。
+
+### Changed
+
+- **go_work/forward 名册路由**：`agent`/`target` 参数从固定 enum 改为自由
+  string，按活名册校验——未注册名结构化报错并附当前可用角色清单。
+- **persona/toolFilter 正统 spawn 通道**：子代理人设与工具过滤改走
+  `SubagentStartRequest.persona/toolFilter` 官方字段（descriptor v2
+  持久化、冷恢复原样重放）；首条 prompt 的 `<system-reminder>` 人设
+  包装退役，prompt 保持纯任务文本。内置工种 persona 同走该通道
+  （prompts 缺档时兜底文案）。
+- **toolFilter 缺名降级**：派发前按活工具目录过滤缺名（warn 留痕），
+  绝不把假名塞进 spawn；allow 全部为缺名时丢弃 toolFilter，子代理
+  回落全量目录。
+- **bindings 合并白名单泛化**：settings 合并/热更不再按内置工种名
+  硬编码白名单，roles 名册内任意角色键同等参与合并。
+
+### Migration
+
+- **旧顶级工种键自动迁移**：装载与 settings 热更时检测旧顶级七工种键
+  → 整行无损搬入 `roles` dict（含 fallbacks 全字段）→ 旧键废弃；幂等
+  （迁移后形状再检测返回 null，不重复搬）；roles 已有同名行时旧顶级行
+  覆盖（旧顶级是权威来源）；迁移失败保留原配置仅 warn，apply 不中断。
+
+### Notes
+
+- **toolFilter 只宜写核心稳定工具名**：DSH spawn 契约对 toolFilter 缺名
+  直接失败（broker 已在派发前按活目录过滤降级兜底），且 toolFilter 随
+  descriptor v2 持久化、冷恢复按原样重放——重启后工具集变化
+  （如 MCP 未连接）会使冷恢复 NOT_RESUMABLE。
+
+### 测试
+
+- 新增 `test/roster-roles.test.mjs`（roles schema/键名校验/迁移幂等/
+  合并/apply 容错/load·saveSettings 13 例）、`test/roster-route.test.mjs`
+  （go_work/forward 名册路由 + spawn 通道 + toolFilter 降级 + 花名册区
+  9 例）、`test/roster-rows.test.mjs`（角色编辑器纯函数 10 例，含手风琴
+  摘要 `builtinSummaryText`）；`test/host-parity.test.mjs` 增 spawn 通道/
+  名册路由/save·loadSettings roles 6 例（14 → 20）；全量 127/127 绿；
+  tsc 干净；`npm run build:client` 重跑产物字节稳定。
+
 ## [0.2.3-tisitan.13] - 2026-08-29
 
 「tool-mask 配置化 + 可视化配置 UI」批：工具屏蔽清单从硬编码走向 settings，
@@ -15,7 +491,7 @@
   `toolMask: { deny: string[] }`（`lib/index.js`，与 8 工种键平级）；
   saveSettings 对 `deny` 空数组/缺失转 unset（=不屏蔽），非空原样 set。
 - **preset 半**：`preset/tool-mask.mjs` 的 `DEFAULT_DENY` 清空为 `[]`
-  （原 7 个 `mcp__vcp__*_for_rei` 等私有示例名全部移除，注释仅保留格式示例）。
+  （原 7 个 `mcp__vcp__*` 私有示例名全部移除，注释仅保留格式示例）。
   屏蔽清单按三级优先级解析（`resolveDeny()` 纯函数，可测）：
   1. `config.deny`（agent.cordis.yml tool-mask 行显式覆盖，最高；空数组=
      显式屏蔽空，不回落）；
@@ -453,7 +929,7 @@ activation → `observer.settle()` 才 emit `subagent/end`。因此 tisitan.8 �
 ### 部署适配（Tisitan 环境）
 
 - **tool-mask 同步**：新增 `preset/tool-mask.mjs`（配方取自一个既有本地 preset），
-  在 preset 作用域屏蔽 Rei 角色记忆工具与 OpenCode 桥接共 7 个
+  在 preset 作用域屏蔽角色记忆工具与外部桥接共 7 个
   `mcp__<your-origin>__*` 工具——对 Sisyphus 与全部子代理同时生效（preset scope 覆盖
   整个 standing mount）。逐名 try/catch + 失败 `console.warn` 告警，
   工具缺席不炸挂载。`preset/agent.cordis.yml` 末尾新增 tool-mask 行。
