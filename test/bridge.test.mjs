@@ -2,7 +2,7 @@
 // Symbol.for global registry, and the lib RPC snapshot endpoint prefers it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -1374,4 +1374,98 @@ test('非 running 给 abort：finished 子代理跳过 interrupt 直接 followup
   const cur = snapOf('parent-1')?.current
   assert.equal(cur?.childId, 'sess-1', '复活语义不变')
   assert.equal(cur?.status, 'running')
+})
+
+// ── tisitan.3 回归批：台账原子写 / disposed 兜底落史 / 连带清理补通知 ─────
+
+test('tisitan.3: 台账原子写——落盘后可读且同目录无 .tmp 残留', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-my-go-ledger-atomic-'))
+  const prevHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  try {
+    const parent = { id: 'parent-1', session: { header: {} } }
+    const { ctx, listeners, tools } = mockCtxFull({
+      keepHome: true,
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      startContinuable: withRealSignalContract(async () => ({ childId: 'sess-a1' })),
+    })
+    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    await tools.get('go_work').execute({ agent: 'explore', prompt: 'atomic task' }, execOf(parent))
+    listeners.get('subagent/end')({ id: 'sess-a1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'atomic done' }] })
+    await new Promise((r) => setTimeout(r, 400)) // 台账防抖落盘窗口
+    const ledgerFile = join(dir, 'dsh-my-go', 'orchestration-ledger.json')
+    const onDisk = JSON.parse(await readFile(ledgerFile, 'utf-8'))
+    assert.equal(onDisk.version, 2)
+    assert.ok(onDisk.parents?.['parent-1']?.some((r) => r.childId === 'sess-a1'), 'tmp+rename 落盘后记录完整可读')
+    const siblings = await readdir(dirname(ledgerFile))
+    assert.ok(!siblings.some((f) => f.endsWith('.tmp')), 'rename 完成后无 .tmp 残留')
+  } finally {
+    process.env.DSH_HOME = prevHome ?? TEST_DSH_HOME
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('tisitan.3: disposed 宽限期兜底掐断落 failed 历史；正常完工路径不重复落史', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  let spawnCalls = 0
+  const { ctx, listeners, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
+  })
+  await broker.apply(ctx, { queueRetryBaseMs: 5, disposeEndGraceMs: 10 })
+  const goWork = tools.get('go_work')
+  await goWork.execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
+  // end 真缺席：兜底掐断必须落 failed 历史（结论注明系兜底掐断），而非静默蒸发
+  listeners.get('agent/disposed')({ agent: { id: 'sess-1' } })
+  await new Promise((r) => setTimeout(r, 150))
+  const snap = snapOf('parent-1')
+  assert.equal(snap.history.length, 1)
+  assert.equal(snap.history[0].childId, 'sess-1')
+  assert.equal(snap.history[0].status, 'failed')
+  assert.ok(snap.history[0].conclusion.includes('disposed grace-period fallback'), '结论注明系 disposed 宽限期兜底掐断')
+  // 宽限期内正常 end 到达的路径不受影响：正常完工只落一条 done，无重复记录
+  await goWork.execute({ agent: 'hermes', prompt: 'build' }, execOf(parent))
+  listeners.get('agent/disposed')({ agent: { id: 'sess-2' } })
+  listeners.get('subagent/end')({ id: 'sess-2', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'build done' }] })
+  await new Promise((r) => setTimeout(r, 100)) // 越过兜底宽限期
+  const after = snapOf('parent-1')
+  assert.equal(after.history.length, 2, '正常完工路径无重复落史')
+  assert.equal(after.history[1].childId, 'sess-2')
+  assert.equal(after.history[1].status, 'done')
+  assert.equal(after.history[1].conclusion, 'build done')
+})
+
+test('tisitan.3: 完工连带清理求助单发可见通知；无求助单时不通知', async () => {
+  const injected = []
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
+    let spawnCalls = 0
+    const { ctx, listeners, tools } = mockCtxFull({
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
+      subagentsExtra: { reportFrom: async () => 'delivered' },
+    })
+    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    const goWork = tools.get('go_work')
+    await goWork.execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
+    // sess-1 挂起一张求助单后直接完工：连带清理必须 warn + 通知父会话各一次
+    const childExec = { agent: { id: 'sess-1', session: { header: { parentSession: 'parent-1' } } }, signal: new AbortController().signal }
+    await tools.get('need_help').execute({ intent: 'explore', content: '帮我读个文件' }, childExec)
+    assert.equal(snapOf('parent-1').helpRequests.length, 1)
+    listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done anyway' }] })
+    assert.equal(warnings.filter((l) => l.includes('pending help request(s) cleared')).length, 1, 'warn 恰一次')
+    const notices = injected.filter((m) => m.content?.[0]?.text?.includes('未处置求助单已连带清理'))
+    assert.equal(notices.length, 1, '父会话通知恰一次')
+    assert.ok(notices[0].content[0].text.includes('sess-1') && notices[0].content[0].text.includes('1 张'), '通知文案带 childId 与清理张数')
+    // 无求助单的完工：不 warn 不通知
+    await goWork.execute({ agent: 'hermes', prompt: 'build' }, execOf(parent))
+    listeners.get('subagent/end')({ id: 'sess-2', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'clean done' }] })
+    assert.equal(warnings.filter((l) => l.includes('pending help request(s) cleared')).length, 1, '无求助单不追加 warn')
+    assert.equal(injected.filter((m) => m.content?.[0]?.text?.includes('未处置求助单已连带清理')).length, 1, '无求助单不追加通知')
+  } finally {
+    console.warn = origWarn
+  }
 })

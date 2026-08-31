@@ -3,6 +3,23 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.3.0-tisitan.3] - 2026-08-31
+
+顺手补丁批：三项均为边缘路径加固，主流程语义零变化。测试 190 → 194。
+
+### Fixed
+
+- **台账原子写**（broker）：防抖落盘改为先写 `orchestration-ledger.json.tmp`
+  再 rename 覆盖，进程崩溃写到一半时不再产生撕裂 JSON 导致全量丢账；
+  rename 失败时清理 tmp 并 warn 留痕，不打断串行写链。
+- **disposed 宽限期兜底落史**（broker）：兜底 abort 真正触发时按
+  dropQueuedFailed 同款口径落一条 failed 历史（结论注明系宽限期兜底掐断），
+  不再静默蒸发记录；宽限期内正常 end 到达的路径不受影响、不重复落史。
+- **完工连带清理求助单补通知**（broker + shared/orchestration）：
+  `clearHelpFor` 改返回实际清理张数，子代理结束（正常/失败/兜底掐断）时
+  若连带清掉 ≥1 张未处置求助单，console.warn 留痕 + notifyParent 二次
+  触达父会话（need_help 上报失败同款模式），不再静默清理。
+
 ## [0.3.0-tisitan.2] - 2026-08-31
 
 「continue 三档 urgency」批：continue 工具新增 `urgency` 参数

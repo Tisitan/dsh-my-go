@@ -42,6 +42,24 @@ test('finish clears pending helpRequests for that child (no zombie help)', () =>
   assert.equal(o.helpRequests.size, 0)
 })
 
+test('clearHelpFor returns the removed count; finish exposes clearedHelp on the returned copy only (tisitan.3)', () => {
+  const o = new Orchestration()
+  const rec = o.beginSpawning('hermes', 'task')
+  o.bindChild(rec.childId, 'sess-1')
+  o.suspend('sess-1', { id: 'help-1', childId: 'sess-1', intent: 'replan', content: 'x' })
+  o.suspend('sess-1', { id: 'help-2', childId: 'sess-1', intent: 'execute', content: 'y' })
+  assert.equal(o.helpRequests.size, 2)
+  const done = o.finish('sess-1', 'done')
+  assert.equal(done.clearedHelp, 2, '返回副本附带连带清理计数，供调用点做可见通知')
+  assert.ok(!('clearedHelp' in o.history[0]), 'history/台账记录不携带该瞬态字段')
+  assert.equal(o.helpRequests.size, 0)
+  // 无求助单时保持旧返回形状（零变化）
+  const rec2 = o.beginSpawning('hermes', 'task2')
+  o.bindChild(rec2.childId, 'sess-2')
+  const done2 = o.finish('sess-2', 'done2')
+  assert.ok(!('clearedHelp' in done2))
+})
+
 test('suspend marks waiting; resume flips back to running', () => {
   const o = new Orchestration()
   const rec = o.beginSpawning('hermes', 'task')

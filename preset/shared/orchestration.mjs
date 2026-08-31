@@ -132,22 +132,24 @@ export class Orchestration {
       updatedAt: Date.now(),
     }
     this.currentMap.delete(childId)
-    this.clearHelpFor(childId)
+    const clearedHelp = this.clearHelpFor(childId)
     this.history = [...this.history, done]
     if (this.history.length > 200) this.history = this.history.slice(-200)
     this.emit()
-    return done
+    // 返回值附带连带清理计数（tisitan.3）：仅内存返回副本，不落 history/
+    // 台账，供 broker 调用点对「清理 ≥1 张求助单」做可见通知
+    return clearedHelp > 0 ? { ...done, clearedHelp } : done
   }
 
   clearHelpFor(childId) {
-    let removed = false
+    let removed = 0
     for (const [id, help] of this.helpRequests) {
       if (help.childId === childId) {
         this.helpRequests.delete(id)
-        removed = true
+        removed += 1
       }
     }
-    if (removed) this.emit()
+    if (removed > 0) this.emit()
     return removed
   }
 

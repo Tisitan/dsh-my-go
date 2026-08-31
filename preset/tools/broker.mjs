@@ -22,7 +22,7 @@ export const name = 'dsh-my-go-broker'
 // （cordis ctx.get 仅沿 isolate 链可见）。
 export const inject = ['tools', 'subagents', 'systemPrompt', 'llm', 'settings', 'agents', 'sessions']
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -151,7 +151,7 @@ export async function apply(ctx, config = {}) {
       disposeFallbackTimers.delete(id)
     }
   }
-  function scheduleDisposeFallback(id, orch) {
+  function scheduleDisposeFallback(id, orch, parentId) {
     if (disposeFallbackTimers.has(id)) return
     const timer = setTimeout(() => {
       disposeFallbackTimers.delete(id)
@@ -159,8 +159,11 @@ export async function apply(ctx, config = {}) {
       console.warn(`[dsh-my-go] subagent/end never arrived for disposed child ${String(id)} within ${DISPOSE_END_GRACE_MS}ms; aborting record to unblock the queue`)
       // end 真缺席时同步清 abort 护航，防 guard 泄漏后误吞同 childId 复活轮的正常 end
       abortExpected.delete(id)
-      orch.clearHelpFor(id)
-      orch.abort(id)
+      // tisitan.3：兜底掐断不再静默 abort 蒸发记录——按 dropQueuedFailed
+      // 同款口径落一条 failed 历史（finish 连带清理其名下求助单），队列解冻
+      // 但账上有据；宽限期内正常 end 到达的路径走 finalizeEnd，不会重复落史
+      const done = orch.finish(id, `disposed grace-period fallback aborted this record: subagent/end never arrived within ${DISPOSE_END_GRACE_MS}ms`, true)
+      if (done?.clearedHelp) notifyClearedHelp(parentId, id, done.clearedHelp)
       childOwner.delete(id)
       bump()
       advanceQueue(orch)
@@ -320,10 +323,16 @@ export async function apply(ctx, config = {}) {
       }
       const payload = JSON.stringify({ version: 2, parents: pruneLedgerParents(parents) })
       ledgerSaveChain = ledgerSaveChain.then(async () => {
+        // 原子写（tisitan.3）：先写同目录 .tmp 再 rename 覆盖——进程崩溃写
+        // 到一半时撕裂的是 tmp，台账本体非旧即新恒完整，不再全量丢账。
+        const tmpPath = `${ledgerPath}.tmp`
         try {
           await mkdir(dirname(ledgerPath), { recursive: true })
-          await writeFile(ledgerPath, payload, 'utf-8')
+          await writeFile(tmpPath, payload, 'utf-8')
+          await rename(tmpPath, ledgerPath)
         } catch (error) {
+          // 写/rename 失败：尽力清掉 tmp 残骸，warn 留痕但不抛出打断串行链
+          await rm(tmpPath, { force: true }).catch(() => {})
           console.warn(`[dsh-my-go] orchestration ledger save failed: ${String(error)}`)
         }
       })
@@ -392,6 +401,13 @@ export async function apply(ctx, config = {}) {
   function resolveParentAgent(parentId) {
     const agents = ctx.get('agents')
     return parentId ? agents?.get?.(parentId) : undefined
+  }
+  // 完工连带清理求助单的可观测性（tisitan.3）：子代理结束（正常/失败/兜底
+  // 掐断）时其名下未处置求助单被 finish 连带清理——清掉 ≥1 张必须可见，
+  // console.warn 留痕 + notifyParent 二次触达（need_help 上报失败同款模式）。
+  function notifyClearedHelp(ownerPid, childId, count) {
+    console.warn(`[dsh-my-go] subagent ${String(childId)} finished: ${count} pending help request(s) cleared along with it`)
+    notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 子代理 ${String(childId)} 完工，其名下 ${count} 张未处置求助单已连带清理`)
   }
   // 失败附因兜底：subagent/end 的通知层载荷只有 stopReason 的 kind，
   // error.message 完整存在于子会话档案的 turn/end reason.error。
@@ -1219,7 +1235,7 @@ export async function apply(ctx, config = {}) {
       // 正常完工路径上 disposed 恒先于 subagent/end 到达：只立墓碑并挂
       // 宽限期兜底，活记录留给紧随的 end 正常落账；end 缺席才由兜底清槽。
       tombstoneType(id)
-      scheduleDisposeFallback(id, owned.orch)
+      scheduleDisposeFallback(id, owned.orch, owned.parentId)
     } else if (tombstoneType(id)) {
       bump()
     }
@@ -1373,6 +1389,7 @@ export async function apply(ctx, config = {}) {
   // 不推进队列——advanceQueue 时机由调用方决定（重派成功路径占槽不推进）。
   function finalizeEnd(orch, ownerPid, type, childId, conclusion, failed, failure) {
     const done = orch.finish(childId, conclusion, failed)
+    if (done?.clearedHelp) notifyClearedHelp(ownerPid, childId, done.clearedHelp)
     if (failed && failure) {
       // 失败附因推送：harness 的 settled 通知只带 stopReason，补一行完整原因
       notifyParent(resolveParentAgent(ownerPid), `[dsh-my-go] 子代理失败: ${childId} (${type}): ${failure.message} [${failure.code ?? 'UNKNOWN'}]`)
@@ -1442,6 +1459,7 @@ export async function apply(ctx, config = {}) {
       advanceQueue(orch)
       return
     }
+    if (done.clearedHelp) notifyClearedHelp(ownerPid, childId, done.clearedHelp)
     sessionTypes.delete(childId)
     disposedTypes.delete(childId)
     activeFallback.delete(childId)
