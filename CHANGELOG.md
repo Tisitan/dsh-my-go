@@ -3,6 +3,81 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
+## [0.3.0-tisitan.0] - 2026-08-31
+
+「单宿主编排」批：lib 半（npm 主库）编排面整体切除，编排实现唯一归属
+preset 半（broker.mjs）——双半同构时代（tisitan.9→20）落幕。
+**BREAKING CHANGE**。测试 189 → 181。
+
+### Breaking
+
+- **lib 半编排面整体移除**：六个编排工具（`go_work` / `continue` /
+  `need_help` / `forward` / `orchestration_status` / `list_subagents`）与
+  派发 / 队列 / 台账 / 备选链 / 瀑布绑定 / 失败通知的全部实现唯一归属
+  preset 半（`preset/tools/broker.mjs`，preset scope 注册）。lib-only
+  降级形态不再提供编排能力——preset 由 `ensurePresetInstalled` 首启
+  自动安装，常态无感；preset 未装配时编排工具不存在，面板降级为空态
+  `{ seq: 0, parents: {} }`（rosterLines 花名册常驻）。
+- **npm 导出面编排 re-export 移除**：`Orchestration` 类、失败分类
+  （`normalizeTurnFailure` / `isFallbackable`）、档案取证
+  （`readArchivedTurnFailure` 等）、养护函数不再从 lib 入口导出——
+  消费方请直引 `preset/shared/` 对应模块（broker 半 re-export 不变；
+  lib 保留存储面 re-export：`ROLE_KEY_PATTERN` / `migrateLegacyRolesOps` /
+  `mergeRoleBindings`）。
+- **编排台账归属迁移**：lib 半从此不读不写
+  `orchestration-ledger.json`，台账持久化唯一归属 broker 半。
+
+### Changed
+
+- **lib/index.js 1636 → 391 行（-1245）**：职责收敛为 preset 安装器
+  （`ensurePresetInstalled`）+ settings schema/存储（命名空间注册、
+  roles dict 迁移与合并）+ 面板 RPC 端点全家（snapshot / listModels /
+  listTools / getBuiltinPersona / loadSettings / saveSettings）+ 快照桥
+  消费（桥缺位 = 「preset 未装配」降级空态）；`inject` 收敛为
+  tools/llm/settings（subagents 等编排面依赖不再声明）。
+- **host-parity 测试重写为反向 parity**（33 → 25）：原「双半对称」断言
+  全部改造为「lib 编排标记 grep=0 + broker 原计数保留」哨兵——编排代码
+  加回 lib 立即红；新增 RPC/settings 分界契约（RPC 端点全家与
+  `settings.register` 为 lib 独有，broker 只读零 RPC）与 snapshot 降级
+  形态锁（无桥 → 空态 + 花名册常驻；桥在席 → 直读 broker 实况）；
+  lib 存储/面板面行为批原样保留，shared 面行为直测直引
+  `preset/shared/`（不经 lib re-export）。
+- **快照桥单向语义固化**：broker 发布 → lib 消费，是两半间唯一运行时
+  通道；原「桥不在则回落 lib 自身状态机」语义随 lib 编排面切除删除。
+
+### Notes
+
+- **双写税归零**：编排逻辑不再存在第二份实现，修复只需改 broker 半一处。
+- **双半竞态类结构性绝种**：tisitan.20 棒2-M1 台账双写竞态、「哪半
+  应答」灵异类（现场-Z3 unknown-id 三方矛盾）随单宿主化不再可发生。
+- **双半同构时代落幕**（tisitan.9→20）：演进脉络保留于
+  docs/ARCHITECTURE.md §2 与 docs/FORK-GUIDE.md。
+
+### 测试
+
+单测 189 → 181（净 -8）：host-parity 33 → 25 全量重写（-33 双半镜像
+对称断言退役，+25 反向 parity 重建，内含 RPC/settings 分界契约与
+snapshot 降级空态锁等新增断言）；冒烟 `test/apply.mjs` 同步新增编排面
+哨兵（inject 收敛断言 + lib 源码零编排标记断言，不计入单测数）。
+逐文件实测（`node --test` 逐文件跑数）：
+
+| 文件 | 计数 |
+| --- | --- |
+| orchestration | 16 |
+| bridge | 31 |
+| multi-session | 5 |
+| host-parity | 25 |
+| roster-roles | 17 |
+| roster-route | 19 |
+| roster-rows | 16 |
+| chain-rows | 11 |
+| panel-format | 9 |
+| tool-mask | 5 |
+| tool-mask-rows | 7 |
+| dump-session | 9 |
+| failure-notice | 11 |
+| **合计** | **181** |
+
 ## [0.2.3-tisitan.20] - 2026-08-30
 
 「总审查修复战」批：以 docs/code-review-2026-08-30.md（五棒流水线，零

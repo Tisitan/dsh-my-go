@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.2.3-tisitan.20",
+  "version": "0.3.0-tisitan.0",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -31,6 +31,7 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 - **角色卡导入导出（tisitan.15）**：每张角色卡可导出/导入全字段 JSON（剪贴板，失败降级 prompt 复制），导入前客户端校验（非法键名/重名/脏 JSON 等拒绝）。
 - **面板花名册常驻区（tisitan.15）**：编排面板底部常驻显示活角色名册（内置 + 自定义），与 `orchestration_status` 同源同格式。
 - **4 个通信工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发），加 `orchestration_status`（状态总览）和 `list_subagents`（列出已有 sub-agent 及其最后 prompt）。
+- **单宿主编排（tisitan.21 起）**：编排能力唯一由 MyGO preset 提供（broker 半，preset scope），npm 安装后首启自动同步 preset，常态无感；lib-only 部署形态（preset 未装配）不提供编排能力，面板降级为空态 + 花名册常驻。
 - **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——**按任务难度分配（不按需求难度）**：指令明确、步骤具体的执行活优先派 Hermes，需要设计/推理的才升级 Hephaestus，仅疑难/极端复杂才到 Oracle；同工种上下文连续则 `continue` 复用。
 - **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
 - **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关 / 备选链，均可在 DSH 设置页配置；tisitan.13 起含工具屏蔽（Tool Mask）双列表编辑器，tisitan.14 起含「自定义角色」CRUD 卡片区，tisitan.15 起全卡片手风琴折叠，tisitan.19 起主选与备选链合并为单一「模型优先级列表」（#1 主选带徽章，备选 ↑ 到顶一键扶正）。
@@ -64,8 +65,10 @@ dsh plugin --profile web add dsh-my-go@latest --config.minimumReleaseAge=0
 dsh web
 ```
 
-安装后 broker 插件（编排工具 + 模型绑定 + 树状图面板 + 设置页）自动挂载；
-会话预设「MyGO!!!!! 模式」提供 Sisyphus 的完整编排。
+安装后 host 插件（lib：settings 存储 + 面板 RPC + preset 同步器）自动挂载，
+首启把「MyGO!!!!! 模式」preset 同步到 `~/.dsh/.agent-presets/`；编排工具 +
+模型绑定由 preset 半 broker 在该 preset 会话内提供，树状图面板数据经快照桥
+（broker 发布 → lib 消费）实时透出。
 
 ### 最小示例
 
@@ -258,12 +261,14 @@ dsh-my-go:
 
 ### 插件 config 键（broker 行为调参）
 
-以下为插件级 config（`dsh plugin add` 的 config / bundle 层），与上面的
-settings 命名空间正交；默认值即旧硬编码口径（tisitan.8 起截断阈值可配）：
+以下为 broker 行为调参 config（tisitan.21 起由 preset 半 broker 行读取；
+双半同构时代曾由 lib 半读取），与上面的 settings 命名空间正交；默认值即
+旧硬编码口径（tisitan.8 起截断阈值可配）：
 
-> ⚠️ **仅 host 半（lib）读取这些 config 键**。MyGO 主形态（preset 会话）由
-> broker 行驱动，不暴露任何插件 config——在 preset 会话上调参不改变其行为；
-> 这些键只对未装配 MyGO preset 的 fallback 部署形态生效。
+> ⚠️ **调参入口 = 已安装 preset 的 broker 行**。npm 安装后编辑
+> `~/.dsh/.agent-presets/dsh-my-go/agent.cordis.yml` 的 broker 行加
+> `config:`（同名键），对新开的 MyGO 会话生效；preset 版本升级同步会
+> 覆盖该行（版本标记变化时整树重拷），需重配。lib 半不再读取这些键。
 
 | config 键               | 默认值 | 说明                                                                 |
 |-------------------------|--------|----------------------------------------------------------------------|
@@ -302,7 +307,7 @@ dsh-my-go/
 ├── README.md              # 本文档
 ├── package.json           # npm 包声明（dsh.bundle.patch → cordis.patch.yml）
 ├── cordis.patch.yml       # bundle patch（dsh plugin add 后自动挂载 host 插件）
-├── lib/index.js           # npm 包 host 半（编排工具 + 状态机 + 模型绑定，import preset/shared/）
+├── lib/index.js           # npm 包 host 半（391 行：settings 存储 + 面板 RPC + preset 同步器；tisitan.21 起零编排面）
 ├── src/                   # client 半源码（tisitan.15 起装配层 + 模块化）
 │   ├── client.js          #   装配层（57 行）：接线五模块 + 注册 DSH slots
 │   ├── client-constants.js#   共享常量（色板/标签/intent 文案，零 React）
@@ -316,14 +321,15 @@ dsh-my-go/
 │   └── panel-format.js    #   面板格式化纯函数（同上）
 ├── scripts/build-client.mjs  # esbuild 打包 client → dist/client.js
 ├── scripts/dump-session.mjs  # 会话档案取证 CLI（tisitan.16，npm run dump:session）
-├── test/                  # 冒烟 + 189 例单测（13 个 *.test.mjs）
+├── test/                  # 冒烟 + 181 例单测（13 个 *.test.mjs）
 ├── dist/                  # 构建产物（发布时生成）
 ├── preset/                # agent preset「MyGO!!!!! 模式」（复制到 ~/.dsh/.agent-presets/）
 │   ├── preset.yml
 │   ├── agent.cordis.yml
-│   ├── shared/            # 双半共享源（tisitan.15）：constants / failure / archive /
-│   │                      #   roles / orchestration / misc（零 @deepseek-ai、零 ctx）
-│   └── tools/broker.mjs   # 自包含 host 插件（工具 + 模型绑定 + 状态机）
+│   ├── shared/            # 共享源（tisitan.15）：constants / failure / archive /
+│   │                      #   roles / orchestration / misc（零 @deepseek-ai、零 ctx；
+│   │                      #   tisitan.21 起编排面模块仅 broker 消费）
+│   └── tools/broker.mjs   # 自包含 host 插件（编排唯一实现：工具 + 模型绑定 + 状态机）
 ├── prompts/               # 8 个智能体 prompt
 └── docs/                  # ARCHITECTURE.md / FORK-GUIDE.md / archive/（审查报告归档）
     └── legacy-broker-ts/  #   归档 TS 参考实现（停维护，原根目录 broker/）
@@ -337,7 +343,7 @@ cd dsh-my-go
 bun install
 bun run build:client    # 构建 client bundle
 bunx tsc --noEmit       # 类型检查
-bun run test            # 冒烟 + 189 例单测套件
+bun run test            # 冒烟 + 181 例单测套件
 ```
 
 ## 维护状态

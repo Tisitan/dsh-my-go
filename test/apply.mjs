@@ -1,7 +1,7 @@
 // dsh-my-go smoke test: the host plugin module must load and export the
 // expected Cordis plugin surface (name / inject / apply), and the client
 // source must be syntactically valid.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -15,8 +15,13 @@ const check = (name, ok) => {
 // 1. Host plugin module loads and exports the Cordis surface.
 const mod = await import(pathToFileURL(join(root, "lib", "index.js")).href);
 check("host exports name", mod.name === "dsh-my-go");
-check("host exports inject (tools/subagents/systemPrompt)", Array.isArray(mod.inject) && mod.inject.includes("tools") && mod.inject.includes("subagents"));
+// tisitan.21：编排面整体迁往 broker 半后 inject 收敛为存储/面板面依赖
+check("host exports inject (tools/llm/settings)", Array.isArray(mod.inject) && mod.inject.includes("tools") && mod.inject.includes("llm") && mod.inject.includes("settings") && !mod.inject.includes("subagents"));
 check("host exports apply function", typeof mod.apply === "function");
+
+// tisitan.21：lib 半编排面已切除——源码不得残留编排工具注册与编排事件钩子
+const hostSrc = readFileSync(join(root, "lib", "index.js"), "utf-8");
+check("host source has no orchestration surface", !hostSrc.includes("name: 'go_work'") && !hostSrc.includes("name: 'continue'") && !hostSrc.includes("ctx.on('subagent/end'") && !hostSrc.includes("orchestration-ledger.json"));
 
 // 2. Client source exists and is syntactically valid ESM.
 const clientSrc = join(root, "src", "client.js");

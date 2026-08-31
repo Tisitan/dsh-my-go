@@ -42,6 +42,25 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 
 ## 2. 实现机制（对应 AGENTS.md 的 5 种通信）
 
+> **单宿主编排时代（tisitan.21 起）**：编排的唯一实现是 preset 半
+> `broker.mjs`（preset scope 注册，仅 MyGO 会话可见）；lib 半
+> （`lib/index.js`，global 层）只承载存储 / 安装 / 面板面——preset 同步
+> （`ensurePresetInstalled`）、settings 命名空间注册与 roles 迁移合并、
+> 面板 RPC 端点全家、快照桥消费。lib-only 部署形态（preset 未装配）不再
+> 提供任何编排能力：编排工具不存在，面板降级为空态
+> `{ seq: 0, parents: {} }` + 花名册常驻。
+>
+> **两半间唯一运行时通道 = 快照桥单向语义**：broker 发布（
+> `globalThis[Symbol.for('dsh-my-go.snapshot')] = () => latestSnapshot`）
+> → lib 的 snapshot RPC 消费（实时读，零副本）。lib 半不再有自身编排
+> 状态机，桥缺位即「preset 未装配」。
+>
+> **历史形态（tisitan.9→20）**：本节成文于双半同构时代——彼时 lib 半在
+> global 层另持一份 fallback 编排（工具/状态机/模型绑定，供未装配 preset
+> 的会话使用），两半经 tisitan.15 共享源层（§2.6）消除镜像双写，再由
+> tisitan.20 快照桥只读化消灭台账双写竞态；tisitan.21 最终把编排面整体
+> 收编进 broker 半，fallback 编排删除。下文机制描述均为 broker 半实况。
+
 | AGENTS.md 通信 | 实现 | DSH 能力 |
 | --- | --- | --- |
 | `need_help`（子→Sisyphus） | broker 注册给子智能体的工具；调用后挂起自己，通过 `reportFrom` 把请求注入父会话，并生成 helpRequestId | `subagents.reportFrom` + broker 状态 |
@@ -174,37 +193,44 @@ client 编辑面与 host 存储面之间的形状约定（tisitan.15 起白纸�
   model 绑定（tisitan.15 修复「部分行误清」回归），空值 unset、显式
   false 可表达。
 
-### 2.6 共享源层 preset/shared/（tisitan.15）
+### 2.6 共享源层 preset/shared/（tisitan.15；tisitan.21 起编排面 broker 独有）
 
-双半不再镜像双写：broker.mjs（preset 层）与 lib/index.js（global 层）
-import 同一份 `preset/shared/` 六模块（净消 1,251 行）：
+broker.mjs（preset 层）与 lib/index.js（global 层）import 同一份
+`preset/shared/` 六模块（tisitan.15 净消 1,251 行镜像双写）：
 
 | 模块 | 住户 |
 | --- | --- |
 | constants.mjs | 双半共享常量单一来源 |
-| failure.mjs | 失败归一化 + 备选链错误分类器 |
-| archive.mjs | 持久化 turn-failure 档案读取（多帧 zstd 逐帧解压） |
+| failure.mjs | 失败归一化 + 备选链错误分类器（tisitan.21 起仅 broker 消费） |
+| archive.mjs | 持久化 turn-failure 档案读取（多帧 zstd 逐帧解压；tisitan.21 起仅 broker 消费） |
 | roles.mjs | 角色名册数据 + 路由 helpers（bindings / promptCache 注入） |
-| orchestration.mjs | 单线阻塞编排状态机（两半同一实现） |
+| orchestration.mjs | 单线阻塞编排状态机（tisitan.21 起 broker 独有；tisitan.15-20 为两半同一实现） |
 | misc.mjs | 展示字符串 / 默认绑定 / XML 转义 / typeOfAgent / 台账修剪 / prompt 预载 |
 
+tisitan.21 起 lib 半只引存储/面板面符号（constants 的名册键集与键名
+pattern、roles 的迁移/合并、misc 的 `defaultBindings`），编排面符号一律
+不引入；npm 导出面同步切除编排 re-export（消费方直引 `preset/shared/`）。
+
 **铁律**：零 `@deepseek-ai/*` import、零 ctx 触碰（node: builtins 允许），
-依赖一律显式注入参数。**promptCache 双根**：broker 半以 preset 装配目录
-为根读 prompts/，lib 半以 `~/.dsh/.agent-presets/dsh-my-go` 为根——
-shared 层只认注入的 `loadPrompt`，两半各自解析。`ensurePresetInstalled`
+依赖一律显式注入参数。**promptCache 双根**（历史形态，现仅 broker 消费）：
+broker 半以 preset 装配目录为根读 prompts/，lib 半曾以
+`~/.dsh/.agent-presets/dsh-my-go` 为根——shared 层只认注入的
+`loadPrompt`。`ensurePresetInstalled`
 同步时校验 shared/ 存在性（broker 相对 import 依赖 preset 整树复制）。
-host-parity 断言随之转为「import 存在性 + ESM 同一性 + 行为直测」
-（逐字比源码的字符串对称断言退役）。
+host-parity 断言 tisitan.21 起重写为**反向 parity**：lib 编排标记 grep=0
+哨兵（编排代码加回 lib 立即红）+ broker 原计数锁 + import 存在性 +
+ESM 同一性 + 行为直测（逐字比源码的字符串对称断言早已退役）。
 
 ### 2.7 typeOfAgent 统一与养护上限（tisitan.15）
 
-- **typeOfAgent（工种识别，双半同一实现，misc.mjs）**：sessionTypes 活
-  登记优先，会话 label（`dsh-my-go:<agentType>` 前缀）正则兜底；
-  `agent/request` waterfall 的绑定 / effort 覆盖与 DSV4P0813 assemble
-  识别同走此函数——修复 cold-resumed 子代理（进程重启后活登记已失）
-  模型绑定静默失效的真 bug。**双侧契约**：自定义角色键名 schema 强制
+- **typeOfAgent（工种识别，misc.mjs 单一源；tisitan.21 起仅 broker
+  消费）**：sessionTypes 活登记优先，会话 label（`dsh-my-go:<agentType>`
+  前缀）正则兜底；`agent/request` waterfall 的绑定 / effort 覆盖与
+  DSV4P0813 assemble 识别同走此函数——修复 cold-resumed 子代理（进程
+  重启后活登记已失）模型绑定静默失效的真 bug。**双侧契约**（历史名称，
+  现即 broker 单边契约）：自定义角色键名 schema 强制
   `^[a-z][a-z-]*$`，与 label 识别正则同构（角色名 ⊆ `[a-z-]+`），
-  任意名册角色都能从 label 还原，两半对同一会话识别出同一工种。
+  任意名册角色都能从 label 还原。
 - **台账与槽位养护**：编排台账 `parents` 分桶超 200 桶时按桶内最新
   updatedAt 修剪（load / save 双点接入）；`currentMap` 超 500 条滞留
   记录时 `beginSpawning` 路径闸拒绝新占位——防长生命周期进程失控泄漏。
@@ -240,7 +266,7 @@ host-parity 断言随之转为「import 存在性 + ESM 同一性 + 行为直测
 | 目录 | 内容 |
 | --- | --- |
 | `preset/` | dsh-my-go agent preset（由 lib 同步到 `~/.dsh/.agent-presets/dsh-my-go/`； tisitan.15 起含 shared/ 共享源六模块） |
-| `lib/` | host 半（global 层插件 `index.js`）：settings 命名空间 / RPC / preset 同步 / 编排台账持久化 |
+| `lib/` | host 半（global 层插件 `index.js`，391 行）：settings 命名空间 / RPC / preset 同步器；tisitan.21 起零编排面（台账持久化归属 broker 半） |
 | `src/` | client 半：设置页、overlay 树状图面板、自动跳转（构建产物进 `dist/`，发布包随附） |
 | `test/` | node:test 单测与桥接测试（npm test 入口） |
 | `scripts/` | 构建与运维脚本：`build-client.mjs`（esbuild 打包 client 半）、`dump-session.mjs`（zstd 会话档案 CLI 转储） |
