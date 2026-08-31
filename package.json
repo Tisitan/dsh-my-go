@@ -1,6 +1,6 @@
 {
   "name": "dsh-my-go",
-  "version": "0.3.0-tisitan.0",
+  "version": "0.3.0-tisitan.1",
   "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 7 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
   "author": "Tisitan",
   "license": "MIT",
@@ -35,20 +35,18 @@
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-runtime", "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-settings", "@deepseek-ai/dsh-client-ui-slots"]
+      "inject": ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-settings"]
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-subagent": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-locale": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-subagent": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-agent": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.2-alpha.2 <0.2.0",
     "react": "^18.2.0"
   },
   "dependencies": {
@@ -56,9 +54,9 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-subagent": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-agent": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-subagent": ">=0.1.2-alpha.2 <0.2.0",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.6.0"
