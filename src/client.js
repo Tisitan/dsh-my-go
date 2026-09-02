@@ -27,6 +27,23 @@ export const name = 'dsh-my-go'
 
 export const inject = ['slots', 'settingsScope', 'connection']
 
+// 宿主 timer 服务缺席时的回落（E2/A-01）：浏览器形态下 globalThis 即 window，
+// 故这就是 window.setInterval/clearInterval；每次建链返回自管 disposer，
+// unapply 一并清干净，绝不留孤儿轮询。留痕只打一次。
+function createSelfManagedTimer() {
+  let warned = false
+  return {
+    interval(fn, ms) {
+      if (!warned) {
+        warned = true
+        console.warn('[dsh-my-go] client: timer service unavailable; panel polling falls back to window.setInterval (self-managed disposer)')
+      }
+      const id = globalThis.setInterval(fn, ms)
+      return () => globalThis.clearInterval(id)
+    },
+  }
+}
+
 export function apply(ctx) {
   const client = ctx
 
@@ -34,11 +51,19 @@ export function apply(ctx) {
   if (!slots) return
 
   const connection = client.connection
+  // sessions / timer 有意**不**进 inject（客户端半的既有形态）：拿不到就得
+  // 降级，而不是挂载失败。但降级不能是静默的（tisitan.8 E2/A-01）——此前
+  // timer 缺席时 `timer && timer.interval` 直接短路，面板永不刷新、也永不
+  // 说明原因；现在补一次性留痕 + 真自管的回落定时器。
   const sessions = client.get('sessions')
   const timer = client.get('timer')
+  if (!sessions) console.warn('[dsh-my-go] client: sessions service unavailable; panel click-to-jump and auto-jump disabled (snapshot polling unaffected)')
+  const panelTimer = timer && typeof timer.interval === 'function'
+    ? timer
+    : createSelfManagedTimer()
 
   // ── orchestration panel + polling + auto-jump（ tisitan.15 拆分至 panel-tree.js）
-  const stopPanel = createOrchestrationPanel({ slots, connection, sessions, timer })
+  const stopPanel = createOrchestrationPanel({ slots, connection, sessions, timer: panelTimer })
 
   // ── settings page ───────────────────────────────────────────────────────
   const scope = client.get('settingsScope')

@@ -8,42 +8,16 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as broker from '../preset/tools/broker.mjs'
+import { createMockCtx, withRealSignalContract, execOf, snapshotNow, snapOf, waitFor } from './helpers/mock-ctx.mjs'
 
 // 测试隔离：台账持久化在 apply 时从 DSH_HOME 读回——指向独立临时目录。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-multi-home-'))
 
-// 全功能 mock：捕获 tools.register 与事件监听；ctx.get('subagents') 给出
-// startContinuable/followup/reportFrom mock，ctx.get('agents') 给出 get()
-// mock（台账读档、agent/request 之外的路径都会触到它们）。
-function mockCtxFull({ startContinuable, agents, subagentsExtra } = {}) {
-  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-multi-home-'))
-  const listeners = new Map()
-  const tools = new Map()
-  const subagents = { startContinuable, ...subagentsExtra }
-  const ctx = {
-    get: (name) => {
-      if (name === 'agents') return agents
-      if (name === 'subagents') return subagents
-      return undefined
-    },
-    on: (event, fn) => { listeners.set(event, fn) },
-    effect: (fn) => { try { fn() } catch { /* section mocks */ } },
-    systemPrompt: { section: () => {} },
-    tools: { register: (tool) => { tools.set(tool.name, tool) } },
-    subagents,
-  }
-  return { ctx, listeners, tools, subagents }
+// 全功能 mock 契约见 helpers/mock-ctx.mjs（六文件共用）；本文件专属默认值是
+// 台账目录前缀（每例换一枚全新 DSH_HOME，用例间流水线不串档）。
+function mockCtxFull(options = {}) {
+  return createMockCtx({ homePrefix: 'dsh-my-go-multi-home-', ...options })
 }
-
-// 真实契约包装：dsh-subagent 的 startContinuable 无条件解引用 spec.signal
-const withRealSignalContract = (fn) => async (spec) => {
-  spec.signal.throwIfAborted()
-  return fn(spec)
-}
-
-const execOf = (agent) => ({ agent, signal: new AbortController().signal })
-const snapshotNow = () => globalThis[Symbol.for('dsh-my-go.snapshot')]()
-const snapOf = (pid) => snapshotNow()?.parents?.[pid]
 
 const parentA = { id: 'parent-A', session: { header: {} } }
 const parentB = { id: 'parent-B', session: { header: {} } }
@@ -86,7 +60,7 @@ test('A 忙时 B 的 go_work 不排队：两个编排会话各自独立的流水
 test('childOwner 路由：need_help 落进属主流水线，subagent/end 只推进属主队列', async () => {
   let spawnCalls = 0
   const reports = []
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
     subagentsExtra: {
@@ -117,8 +91,10 @@ test('childOwner 路由：need_help 落进属主流水线，subagent/end 只推�
   assert.equal(reports[0].childId, 'sess-2')
 
   // A 的子代理完工：只推进 A 的队列，B 的 waiting 记录原样保留
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
-  await new Promise((resolve) => setTimeout(resolve, 50))
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
+  await waitFor(() => snapOf('parent-A')?.history?.length >= 1
+    && snapOf('parent-A')?.queue?.length === 0
+    && snapOf('parent-A')?.current?.agentType === 'oracle', { what: 'A 完工落账且队首上岗' })
   const snapA = snapOf('parent-A')
   assert.equal(snapA.history.length, 1)
   assert.equal(snapA.history[0].agentType, 'explore')
@@ -132,7 +108,7 @@ test('childOwner 路由：need_help 落进属主流水线，subagent/end 只推�
 
 test('session/disposed 销毁该会话的整条流水线，其他会话不受影响', async () => {
   let spawnCalls = 0
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
   })
@@ -144,13 +120,13 @@ test('session/disposed 销毁该会话的整条流水线，其他会话不受影
   await goWork.execute({ agent: 'hermes', prompt: 'B 的任务' }, execOf(parentB)) // sess-2
 
   // A 编排会话被删除：其实例整个销毁（current/queue 清空、从 parents 摘除）
-  listeners.get('session/disposed')({ id: 'parent-A' })
+  dispatch('session/disposed', { id: 'parent-A' })
   const snap = snapshotNow()
   assert.deepEqual(Object.keys(snap.parents), ['parent-B'])
   assert.equal(snapOf('parent-B').current?.childId, 'sess-2')
 
   // A 的孤儿子代理迟到的 end：无处落账但不得拖垮 B（留痕忽略）
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'orphan' }] })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'orphan' }] })
   await new Promise((resolve) => setTimeout(resolve, 50))
   const after = snapshotNow()
   assert.deepEqual(Object.keys(after.parents), ['parent-B'])
@@ -158,8 +134,8 @@ test('session/disposed 销毁该会话的整条流水线，其他会话不受影
   assert.equal(snapOf('parent-B').history.length, 0)
 
   // B 完工后正常落账推进
-  listeners.get('subagent/end')({ id: 'sess-2', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'B done' }] })
-  await new Promise((resolve) => setTimeout(resolve, 50))
+  dispatch('subagent/end', { id: 'sess-2', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'B done' }] })
+  await waitFor(() => snapOf('parent-B')?.history?.length >= 1, { what: 'B 完工落账' })
   assert.equal(snapOf('parent-B').history.length, 1)
   assert.equal(snapOf('parent-B').history[0].conclusion, 'B done')
   assert.equal(snapOf('parent-B').current, null)
@@ -168,7 +144,7 @@ test('session/disposed 销毁该会话的整条流水线，其他会话不受影
 test('continue 先查调用方实例再全局扫描：复活已完工子代理并重新登记属主', async () => {
   let spawnCalls = 0
   const followups = []
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
     subagentsExtra: {
@@ -179,7 +155,7 @@ test('continue 先查调用方实例再全局扫描：复活已完工子代理�
   const goWork = tools.get('go_work')
 
   await goWork.execute({ agent: 'explore', prompt: 'A 的任务' }, execOf(parentA)) // sess-1
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
   assert.equal(snapOf('parent-A').history.length, 1)
 
   // A 驳回重做：revive 后记录回到 A 的 currentMap
@@ -193,7 +169,7 @@ test('continue 先查调用方实例再全局扫描：复活已完工子代理�
   assert.equal(snapOf('parent-A').history.length, 0)
 
   // 再次完工：经 childOwner 重登记路由回 A 的流水线正常落账
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A redone' }] })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A redone' }] })
   const snapA = snapOf('parent-A')
   assert.equal(snapA.history.length, 1)
   assert.equal(snapA.history[0].conclusion, 'A redone')
@@ -205,7 +181,7 @@ test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作�
   let parentALive = true
   const registry = { get: (id) => (id === 'parent-A' ? (parentALive ? parentA : undefined) : parentB) }
   const followups = []
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: registry,
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
     subagentsExtra: {
@@ -214,7 +190,7 @@ test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作�
   })
   await broker.apply(ctx, { queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: 'A 的任务' }, execOf(parentA)) // sess-1
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
   assert.equal(snapOf('parent-A').history.length, 1)
 
   // B 续聊 A 的记录：属主（A）仍是活会话 → 拒绝。复活/续聊会落进属主流水线

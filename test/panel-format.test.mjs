@@ -62,7 +62,7 @@ test('extractFallbackNote：无标注原样单行化', () => {
   assert.deepEqual(extractFallbackNote(undefined), { note: null, text: '' })
 })
 
-test('extractFallbackNote：匹配收窄为行首/前缀位置（tisitan.20 D6 假徽章治理）', () => {
+test('extractFallbackNote：匹配收窄为行首/前缀位置（0.2.3-tisitan.20 D6 假徽章治理）', () => {
   // 行文中间的括注是叙述，不是 broker 标记——不得伪造徽章
   assert.deepEqual(extractFallbackNote('前 [备选 2/4] 后'), { note: null, text: '前 [备选 2/4] 后' })
   // 行首允许空格/制表符前缀（broker 缩进写出时仍识别并剥离）

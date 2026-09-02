@@ -1,4 +1,4 @@
-// tisitan.18 失败通知真空期消灭战·三件套：
+// 0.2.3-tisitan.18 失败通知真空期消灭战·三件套：
 //   ① 名册简报系统提示段（dsh-my-go:roster，函数态 text、儿童门控、字节稳定）
 //   ③ broker 失败同步预告（评估中/取证中）+ attemptFallbackRedeploy 终局通知
 // 双半对称源码断言在 host-parity.test.mjs（新范式断言）。
@@ -9,36 +9,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as broker from '../preset/tools/broker.mjs'
 import { renderRosterBriefing } from '../preset/shared/roles.mjs'
+import { createMockCtx, withRealSignalContract, waitFor } from './helpers/mock-ctx.mjs'
 
 // 测试隔离：台账持久化在 apply 时从 DSH_HOME 读回——指向独立临时目录。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-fnotice-home-'))
 
-// 与 bridge.test.mjs mockCtxFull 同契约，额外捕获 systemPrompt.section 注册。
-function mockCtxFull({ startContinuable, agents, llm, settings, sessions, subagentsExtra } = {}) {
-  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-fnotice-home-'))
-  const listeners = new Map()
-  const tools = new Map()
-  const sections = []
-  const ctx = {
-    get: (name) => {
-      if (name === 'agents') return agents
-      if (name === 'llm') return llm
-      if (name === 'settings') return settings
-      if (name === 'sessions') return sessions
-      return undefined
-    },
-    on: (event, fn) => { listeners.set(event, fn) },
-    effect: (fn) => { try { fn() } catch { /* section mocks */ } },
-    systemPrompt: { section: (def) => { sections.push(def) } },
-    tools: { register: (tool) => { tools.set(tool.name, tool) } },
-    subagents: { startContinuable, ...subagentsExtra },
-  }
-  return { ctx, listeners, tools, sections }
-}
-
-const withRealSignalContract = (fn) => async (spec) => {
-  spec.signal.throwIfAborted()
-  return fn(spec)
+// 与 bridge.test.mjs 同一 mock 契约（helpers/mock-ctx.mjs），额外捕获
+// systemPrompt.section 注册项——本文件的重点是名册简报段的渲染断言。
+function mockCtxFull(options = {}) {
+  return createMockCtx({ homePrefix: 'dsh-my-go-fnotice-home-', captureSections: true, ...options })
 }
 
 const execOf = (agent) => ({ agent, signal: new AbortController().signal })
@@ -123,19 +102,19 @@ test('名册简报 bindings 取法：沿用 settings/updated 整表重建，函�
     register: () => ({}),
     get: () => stored,
   }
-  const { ctx, listeners, sections } = mockCtxFull({ settings })
+  const { ctx, listeners, dispatch, sections } = mockCtxFull({ settings })
   await broker.apply(ctx, {})
   const def = rosterSectionOf(sections)
   const root = { agent: { id: 'root-1', session: { header: {} } } }
   assert.ok(def.text(root).includes('- hermes → p0·m0'), '初载 settings 合并生效')
   // WebUI 改配置 → settings/updated → bindings 整表重建 → 函数态现调直读新值
   stored = { roles: { hermes: { provider: 'p9', model: 'm9', fallbacks: [{ provider: 'p8', model: 'm8' }] } } }
-  listeners.get('settings/updated')('dsh-my-go')
+  dispatch('settings/updated', 'dsh-my-go')
   const next = def.text(root)
   assert.ok(next.includes('- hermes → p9·m9 → 备选链 1 条（p8·m8）'), 'settings 更新后无需任何刷新管道即反映新绑定')
   // 非本命名空间的更新事件被忽略
   stored = { roles: { hermes: { provider: 'pX', model: 'mX' } } }
-  listeners.get('settings/updated')('other-plugin')
+  dispatch('settings/updated', 'other-plugin')
   assert.ok(!def.text(root).includes('pX·mX'), '异命名空间 settings/updated 不触发重绑')
 })
 
@@ -145,7 +124,7 @@ test('预告：有链失败同步 inject「备选评估中」，先于异步重�
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
   const specs = []
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -160,13 +139,15 @@ test('预告：有链失败同步 inject「备选评估中」，先于异步重�
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'build' }, execOf(parent))
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
   // 零延迟断言：end 处理器同步段（无 drain）预告已在父会话
   const preview = injected.find((m) => m.content?.[0]?.text?.includes('备选评估中'))
   assert.ok(preview, '有链失败同步 inject 评估中预告（真空期消灭）')
   assert.ok(preview.content[0].text.includes('失败已知悉: sess-1 (hermes) 备选评估中（1 条），暂缓失败处置'), '预告口径含 childId/工种/链数/暂缓指令')
   assert.equal(injected.filter((m) => m.content?.[0]?.text?.includes('备选重派')).length, 0, '同步段内重派通知尚未到达（异步处置）')
-  await drain()
+  // 等「重派通知真的到了」而不是等 25ms：中间隔着 listModels + spawn 两个 await
+  // 边界，并行抢 CPU 时固定 sleep 会让 iRedeploy 还是 -1 而假红（C-12）
+  await waitFor(() => injected.some((m) => m.content?.[0]?.text?.includes('备选重派')), { what: '备选重派通知到达父会话' })
   const texts = injected.map((m) => m.content?.[0]?.text ?? '')
   const iPreview = texts.findIndex((t) => t.includes('备选评估中'))
   const iRedeploy = texts.findIndex((t) => t.includes('备选重派'))
@@ -176,7 +157,7 @@ test('预告：有链失败同步 inject「备选评估中」，先于异步重�
 test('预告：无链失败同步 inject「无备选链，取证中」，先于附因通知', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     sessions: {
       get: (id) => (id === 'sess-1'
@@ -187,7 +168,7 @@ test('预告：无链失败同步 inject「无备选链，取证中」，先于�
   })
   await broker.apply(ctx, { queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
   const preview = injected.find((m) => m.content?.[0]?.text?.includes('无备选链，取证中'))
   assert.ok(preview, '无链失败同步 inject 取证中预告')
   assert.ok(preview.content[0].text.includes('失败已知悉: sess-1 (explore)'), '预告含 childId/工种')
@@ -201,7 +182,7 @@ test('预告：无链失败同步 inject「无备选链，取证中」，先于�
 test('预告：有链但非 error 终局（aborted）→「不进入备选评估，取证中」，绝不谎报评估中', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
   })
@@ -210,7 +191,7 @@ test('预告：有链但非 error 终局（aborted）→「不进入备选评估
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'task' }, execOf(parent))
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] })
   const preview = injected.find((m) => m.content?.[0]?.text?.includes('不进入备选评估，取证中'))
   assert.ok(preview, '有链但 aborted：预告取证中（不谎报评估中，否则主流程空等）')
   assert.ok(!injected.some((m) => m.content?.[0]?.text?.includes('备选评估中')), '不进入评估绝不发评估中预告')
@@ -224,7 +205,7 @@ test('终局通知：备选链尽（备选也失败）→「备选链尽，按�
     'sess-1': { message: 'no such model: m0', code: 'HTTP_404', status: 404 },
     'sess-2': { message: 'provider 429 exhausted', code: 'RATE_LIMIT', status: 429 },
   }
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -239,11 +220,14 @@ test('终局通知：备选链尽（备选也失败）→「备选链尽，按�
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'task' }, execOf(parent))
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  await drain()
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
+  // 等「条件成立」而不是「墙钟走过 25ms」：备选重派要穿过 listModels / spawn 两个
+  // await 边界，20 文件并行时固定 sleep 会假红（0.3.0-tisitan.11 C-12 实测约 1/5）。
+  await waitFor(() => specs.length === 2, { what: '链首失败后备选重派（specs=2）' })
   assert.equal(specs.length, 2, '链首失败已切备选重派')
-  listeners.get('subagent/end')({ id: 'sess-2', stopReason: 'error', lastAssistantMessage: [] })
-  await drain() // 终局通知在 attemptFallbackRedeploy 的 await 边界之后，等异步处置落地
+  dispatch('subagent/end', { id: 'sess-2', stopReason: 'error', lastAssistantMessage: [] })
+  // 终局通知在 attemptFallbackRedeploy 的 await 边界之后，同样等条件而非等时间
+  await waitFor(() => injected.some((m) => m.content?.[0]?.text?.includes('备选链尽')), { what: '链尽终局通知到达父会话' })
   // 链尽终局通知也走评估中预告路径（sess-2 有链且未决策过）→ 先预告后终局
   const terminal = injected.find((m) => m.content?.[0]?.text?.includes('备选链尽，按失败终局落账'))
   assert.ok(terminal, '链尽收到终局通知')
@@ -257,7 +241,7 @@ test('终局通知：备选链尽（备选也失败）→「备选链尽，按�
 test('终局通知：分类器否决（abort 类附因）→「附因属中断类，不重派，按失败终局落账」', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -272,8 +256,8 @@ test('终局通知：分类器否决（abort 类附因）→「附因属中断�
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'task' }, execOf(parent))
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  await drain()
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
+  await waitFor(() => injected.some((m) => m.content?.[0]?.text?.includes('附因属中断类，不重派，按失败终局落账')), { what: '分类器否决的终局口径已注入' })
   const terminal = injected.find((m) => m.content?.[0]?.text?.includes('附因属中断类，不重派，按失败终局落账'))
   assert.ok(terminal, '分类器否决收到终局通知')
   assert.ok(terminal.content[0].text.includes('失败终局: sess-1 (hermes)'))
@@ -283,7 +267,7 @@ test('终局通知：分类器否决（abort 类附因）→「附因属中断�
 test('预告：成功 end 零预告（失败已知悉/失败终局均不出现）', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, tools } = mockCtxFull({
+  const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
   })
@@ -292,7 +276,7 @@ test('预告：成功 end 零预告（失败已知悉/失败终局均不出现�
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'task' }, execOf(parent))
-  listeners.get('subagent/end')({ id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done' }] })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done' }] })
   await drain()
   assert.equal(injected.filter((m) => m.content?.[0]?.text?.includes('失败已知悉')).length, 0, '成功 end 零预告')
   assert.equal(injected.filter((m) => m.content?.[0]?.text?.includes('失败终局')).length, 0, '成功 end 零终局通知')

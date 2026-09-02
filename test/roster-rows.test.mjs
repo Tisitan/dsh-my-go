@@ -152,7 +152,7 @@ test('纯函数纪律：所有操作不变异输入数组与行对象', () => {
   assert.equal(JSON.stringify(rows), snapshot, '输入深度未被触碰')
 })
 
-// ── 人设覆盖 + 角色卡导入导出（tisitan.15 前端功能批） ─────────────────
+// ── 人设覆盖 + 角色卡导入导出（0.2.3-tisitan.15 前端功能批） ─────────────────
 
 test('withPersonaOverride：部分行只带 persona 字段并透传既有字段；空文本 = 清除覆盖', () => {
   const stored = { provider: 'p9', model: 'm9', fallbacks: [{ provider: 'p8', model: 'm8' }] }
@@ -213,7 +213,7 @@ test('parseRoleCardJson：合法卡入册；脏 JSON/非法键/重名/非对象�
   assert.match(parseRoleCardJson(JSON.stringify({ key: 'hermes' }), ['hermes']).error, /已存在/)
 })
 
-test('resolveBuiltinPersonaResult：getBuiltinPersona RPC 结果归一（tisitan.16b）', () => {
+test('resolveBuiltinPersonaResult：getBuiltinPersona RPC 结果归一（0.2.3-tisitan.16b）', () => {
   assert.deepEqual(
     resolveBuiltinPersonaResult({ ok: true, value: { type: 'hermes', persona: '原文' } }),
     { ok: true, persona: '原文' },
@@ -241,7 +241,7 @@ test('resolveBuiltinPersonaResult：getBuiltinPersona RPC 结果归一（tisitan
   )
 })
 
-test('mergeRoleRowsIntoRoles：内置透传 + 脏行原样保留 + 投影行重建 + 删除语义成立（tisitan.20 Z2\'）', () => {
+test('mergeRoleRowsIntoRoles：内置透传 + 脏行原样保留 + 投影行重建 + 删除语义成立（0.2.3-tisitan.20 Z2\'）', () => {
   const old = {
     hermes: { provider: 'p-h', persona: '内置部分行' },
     'custom-x': { provider: 'old-p', model: 'old-m' },

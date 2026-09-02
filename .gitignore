@@ -1,9 +1,17 @@
 node_modules/
 .npm-cache/
-package-lock.json
+# lockfile 必须入库（0.3.0-tisitan.11 D-14）：CI 走 npm ci，没有 lockfile 就没有
+# 可复现依赖树；「浮动区间声明 + lockfile 钉版本」才是本地/CI/装机同一棵树。
 bun.lock
 bun.lockb
-dist/
+# dist 入库政策（release commit 提交构建产物，见 docs/FORK-GUIDE.md「发布流程」）：
+# 只放行发布物 `dist/client.js`（package.json exports["./client"] 指向它，缺它 Web UI
+# 起不来），其余中间产物一律不入库。写成 `dist/*` + 例外而不是 `dist/`，因为 git 一旦
+# 忽略了父目录，里面的 `!` 例外永不生效（那形同 `git add -f` 才救得回来）。
+# 注：scripts/build-client.mjs 走 esbuild write:false，client.core.js 从 0.3.0-tisitan.11
+# 起就不再落盘（构建时顺手删历史遗留），所以例外只需点名 client.js。
+dist/*
+!dist/client.js
 *.tgz
 tmp/
 .idea/

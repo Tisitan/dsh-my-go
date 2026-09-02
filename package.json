@@ -1,6 +1,6 @@
 {
   "name": "dsh-my-go",
-  "version": "0.3.0-tisitan.3",
+  "version": "0.3.0-tisitan.12",
   "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 7 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
   "author": "Tisitan",
   "license": "MIT",
@@ -12,9 +12,22 @@
     "url": "https://github.com/Tisitan/dsh-my-go/issues"
   },
   "homepage": "https://github.com/Tisitan/dsh-my-go#readme",
-  "keywords": ["deepseek-harness", "dsh", "plugin", "agent", "orchestration", "sisyphus", "subagent", "multi-agent"],
-  "engines": { "node": ">=22.15" },
-  "publishConfig": { "access": "public" },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "agent",
+    "orchestration",
+    "sisyphus",
+    "subagent",
+    "multi-agent"
+  ],
+  "engines": {
+    "node": ">=22.15"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -22,20 +35,39 @@
     "./client": "./dist/client.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "dist", "src", "scripts", "prompts", "preset", "docs", "README.md", "CHANGELOG.md", "AGENTS.md", "LICENSE", "cordis.patch.yml"],
+  "files": [
+    "lib",
+    "dist",
+    "scripts",
+    "prompts",
+    "preset",
+    "docs",
+    "!docs/legacy-broker-ts",
+    "!docs/archive",
+    "README.md",
+    "CHANGELOG.md",
+    "AGENTS.md",
+    "LICENSE",
+    "cordis.patch.yml"
+  ],
   "scripts": {
-    "build": "bun run build:client",
+    "build": "node scripts/build-client.mjs",
     "build:client": "node scripts/build-client.mjs",
     "dump:session": "node scripts/dump-session.mjs",
-    "typecheck": "tsc --noEmit",
-    "test": "node test/apply.mjs && node --test test/orchestration.test.mjs test/bridge.test.mjs test/multi-session.test.mjs test/host-parity.test.mjs test/roster-roles.test.mjs test/roster-route.test.mjs test/roster-rows.test.mjs test/chain-rows.test.mjs test/panel-format.test.mjs test/tool-mask.test.mjs test/tool-mask-rows.test.mjs test/dump-session.test.mjs test/failure-notice.test.mjs"
+    "typecheck:archive": "tsc --noEmit",
+    "test": "node scripts/build-client.mjs && node test/apply.mjs && node --test \"test/*.test.mjs\""
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-settings"]
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
   "peerDependencies": {
@@ -54,11 +86,12 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": ">=0.1.2-alpha.2 <0.2.0",
-    "@deepseek-ai/dsh-llm": ">=0.1.2-alpha.2 <0.2.0",
-    "@deepseek-ai/dsh-subagent": ">=0.1.2-alpha.2 <0.2.0",
+    "@deepseek-ai/dsh-agent": "^0.1.2-alpha.4",
+    "@deepseek-ai/dsh-llm": "^0.1.2-alpha.4",
+    "@deepseek-ai/dsh-subagent": "^0.1.2-alpha.4",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
+    "js-yaml": "^4.1.0",
     "typescript": "^5.6.0"
   }
 }

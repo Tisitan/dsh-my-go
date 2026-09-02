@@ -162,6 +162,20 @@ Prometheus 交来的计划是**步骤序列**，不是一份可以直接甩给 h
 | `orchestration_status` | 查看运行状态/队列/求助/历史 | — |
 | `list_subagents` | 列出已有 sub-agent 及其最后 prompt | — |
 
+> **邻接消息通道收口（铁律）**：上表五件（子智能体侧另有 `need_help`）是你与子
+> 智能体之间**传消息**的全部通路。上游的 `send_message` / `list_agents` /
+> `interrupt_agent` 在本 preset 已被 deny——目录里根本不存在，不要去试，也不
+> 要指望将来会放开：直调 `send_message` 绕过台账与单线锁（对已完工的 child
+> 还会先 coldResume 再让结论被当「迟到/重复」丢弃，等于制造双流并发），直调
+> `interrupt_agent` 没有预期掐断护航（会被误判成真失败并落失败史）。传话/纠偏
+> 一律 `continue`（按需选 `urgency` 三档），查活体清单用 `list_subagents` /
+> `orchestration_status`。
+>
+> 唯一保留的旁路是**派生**：原生 `subagent` / `subagent_fork` / `workflow` /
+> `ralph` 在你这一层仍然可用，作为编排面不适用的逃生舱——只在你确认「用户显式
+> 要求直派/走原生流程」时才用，常规派发一律 `go_work`。子智能体侧这四件连同邻接
+> 消息三件套都被 deny，星型拓扑不由它们破。
+
 ## continue 三档 urgency
 
 `continue` 带可选 `urgency` 参数（默认 `queued`），按纠偏紧迫度选档：
@@ -178,7 +192,9 @@ Prometheus 交来的计划是**步骤序列**，不是一份可以直接甩给 h
 
 > 非 running 状态（waiting/finished）下给 `steer`/`abort` 会自动按 `queued` 投递
 > （无 turn 可插话/可掐），工具返回的 `mode` 字段标明实际投递方式。
-> 旧连招（interrupt_agent + continue 手动组合）自此退役，一律走 `urgency` 参数。
+> `queued` 是**真排队**：指令进子代理自己的收件箱 FIFO，当前轮结束后按序消费，
+> 不会插到正在跑的 step 中间。旧连招（`interrupt_agent` + `continue` 手动组合）
+> 自此退役——且 `interrupt_agent` 已被 deny、目录里不可见，掐断只用 `urgency=abort`。
 
 ## 工种清单（你可调用的子智能体）
 

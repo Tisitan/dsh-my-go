@@ -1,4 +1,4 @@
-// 角色名册数据层（tisitan.14）：roles dict schema + 旧顶级键迁移 + 合并
+// 角色名册数据层（0.2.3-tisitan.14）：roles dict schema + 旧顶级键迁移 + 合并
 // 泛化回归。本文件只加载 lib/index.js（独立进程，避免 Symbol.for 快照桥被
 // broker 半覆盖）。
 import { test } from 'node:test'
@@ -15,7 +15,7 @@ import {
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-roster-home-'))
 
-// 迁移源形状：旧 settings.yaml（tisitan.13 及之前）= sisyphus + 七个顶级
+// 迁移源形状：旧 settings.yaml（0.2.3-tisitan.13 及之前）= sisyphus + 七个顶级
 // 工种键 + toolMask。工种行含 fallbacks 全字段，验证无损搬运。
 const LEGACY_STORED = {
   sisyphus: { provider: 'p-s', model: 'm-s', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] },
@@ -319,7 +319,7 @@ test('saveSettings：draft.roles.sisyphus 不产生任何写面（sisyphus 恒�
   assert.ok(ops.some((o) => o.path[1] === 'hermes' && o.path[2] === 'provider'), '正常角色行不受影响（哨兵）')
 })
 
-// ── tisitan.15 前端功能批：persona 部分行 + snapshot 花名册 ──────────────
+// ── 0.2.3-tisitan.15 前端功能批：persona 部分行 + snapshot 花名册 ──────────────
 
 test('saveSettings：只带 persona 的部分行不产生 5 字段 ops（已配绑定绝不被误清）', async () => {
   const mutates = []

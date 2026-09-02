@@ -3,6 +3,9 @@
  * default bindings, XML escaping, agent-type resolution, ledger pruning and
  * the prompt preload loop.
  *
+ * 上游邻接消息面（sessionEvents/canQueueAdjacent/deliverToAdjacent/reportToParent）
+ * 不在此档：那一档「跟着上游 API 形状变」的契约适配独立在 shared/adjacent.mjs。
+ *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx —
  * former closure dependencies (sessionTypes, promptCache, loadPrompt) are
  * explicit injection parameters.
@@ -51,18 +54,18 @@ export function defaultBindings() {
 }
 
 // XML 实体转义：need_help 上报体与 forward 转发信封共用同一套，防止
-// 求助单 content 内的伪闭合标签逃逸出包裹结构（tisitan.11）。
+// 求助单 content 内的伪闭合标签逃逸出包裹结构（0.2.3-tisitan.11）。
 export function escapeXml(text) {
   return String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
 
-// 工种识别单一入口（tisitan.15）：活登记优先，label 正则兜底——
+// 工种识别单一入口（0.2.3-tisitan.15）：活登记优先，label 正则兜底——
 // sessionTypes 不持久化，cold-resume 后为空，而 session.header.label 落盘在案。
 export function typeOfAgent(sessionTypes, agent) {
   return sessionTypes.get(agent?.id) ?? /^dsh-my-go:([a-z-]+)/.exec(agent?.session?.header?.label ?? '')?.[1]
 }
 
-// 备选重派覆盖合并（tisitan.16）：重派成功时两半把备选 {provider, model} 登记进
+// 备选重派覆盖合并（0.2.3-tisitan.16）：重派成功时两半把备选 {provider, model} 登记进
 // activeFallback（childId 键），agent/request waterfall 每请求经本函数求有效
 // 绑定——覆盖存在时只换 provider/model，工种其余字段（reasoningEffort/
 // fallbacks/toolFilter…）原样保留。返回新对象，绝不原地改 bindings[type]：
@@ -72,7 +75,11 @@ export function resolveEffectiveBinding(binding, override) {
   return { ...binding, provider: override.provider, model: override.model }
 }
 
-// 台账养护（tisitan.15）：parents 桶数超限时按桶内最新 updatedAt 保留最近的
+// ── 邻接消息通道适配（sessionEvents/canQueueAdjacent/deliverToAdjacent/
+//    reportToParent）已独立为 shared/adjacent.mjs（健康度批）：本文件只留
+//    台账/名册/展示字符串一档纯函数，两档共享源的上游耦合点互不牵连 ──────
+
+// 台账养护（0.2.3-tisitan.15）：parents 桶数超限时按桶内最新 updatedAt 保留最近的
 // LEDGER_PARENTS_CAP 个桶，更旧的桶整桶淘汰。加载时与落盘前各修剪一次。
 export function pruneLedgerParents(parents, cap = LEDGER_PARENTS_CAP) {
   if (!parents || typeof parents !== 'object' || Array.isArray(parents)) return {}

@@ -1,34 +1,61 @@
-# dsh-my-go CI: typecheck + build + smoke test on every push/PR.
+# dsh-my-go CI: typecheck + build + smoke test + unit tests on every push/PR,
+# on both Linux and Windows.
+#
+# 0.3.0-tisitan.11 (D-14) 三处结构性改动：
+#   ① 去 bun 化：旧版整条腿跑 `bun install` / `bunx tsc` / `bun run test`，而仓库
+#      从未声明或提交 bun 锁文件 → CI 解析出的依赖树既不代表本地、也不代表
+#      `npm publish` 消费者拿到的那棵树（alpha 线的 peer 约束因此从未被验证）。
+#      现在统一 npm ci + 提交 package-lock.json，本地/CI/装机同一棵树。
+#   ② 节点版本用 node-version-file: .nvmrc，与 package.json engines 同源。
+#   ③ 矩阵加 windows-latest：本仓就是在 Windows 上开发与部署的（路径分隔符、
+#      fs 语义、npm 脚本引号都在那台机器上才为真），只跑 Linux 等于没测部署环境。
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  ci:
-    name: Typecheck, build, test
-    runs-on: ubuntu-latest
+  test:
+    name: Typecheck, build, test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          # 与 package.json engines（>=22.15）同源：换 Node 只改 .nvmrc 一处
+          node-version-file: .nvmrc
+          cache: npm
 
       - name: Install dependencies
-        # No lockfile is committed (.gitignore), so --frozen-lockfile would
-        # fail on a fresh clone; resolve floating versions instead.
-        run: bun install
+        # lockfile 已入库 → npm ci（可复现树；与 package.json 漂移会当场报错，
+        # 而不是像旧的 floating install 那样静默换一套版本）
+        run: npm ci
 
       - name: Typecheck
-        run: bunx tsc --noEmit
+        run: npm run typecheck:archive
 
-      - name: Build client bundle
-        run: bun run build:client
+      - name: Test (build client, smoke, unit)
+        # npm test = 构建 client bundle → dist 新鲜度冒烟 → node --test 全档
+        run: npm test
 
-      - name: Smoke test
-        run: bun run test
+      - name: Verify the publishable tarball
+        # files 白名单瘦身（D-15）后，这一步保证「发布物里该有的都有」不靠肉眼
+        run: npm pack --dry-run

@@ -9,12 +9,13 @@
  * module holds no state of its own.
  */
 
+import * as React from 'react'
+
 import { normalizeDenyList, blockTool, unblockTool, availableTools, denyEntries } from './tool-mask-rows.js'
 import { MONO_FONT } from './client-constants.js'
 
 export function renderToolMaskEditor(deps) {
   const {
-    React,
     draft,
     roster,
     maskFilter,

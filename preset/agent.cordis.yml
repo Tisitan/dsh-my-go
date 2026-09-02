@@ -165,12 +165,28 @@
 
 # ── tool mask ────────────────────────────────────────────────────────────────
 # Hides tools from this preset's catalog — applies to Sisyphus and every
-# sub-agent on the preset. The deny list resolves in this order (tisitan.13):
-#   1. `config.deny` on this row (explicit override, highest);
+# sub-agent on the preset. The deny list resolves as the UNION of (0.2.3-tisitan.13,
+# union semantics since the 防旁路加固批):
+#   1. `config.deny` on this row — what the fork itself requires masked;
 #   2. settings namespace 'dsh-my-go' key `toolMask.deny` (WebUI 设置页
 #      「工具屏蔽」双列表编辑器);
-#   3. DEFAULT_DENY in ./tool-mask.mjs — empty by default; an absent tool is
-#      skipped per-name (warn) so the mount never fails because of the mask.
-# Mask changes take effect on NEW sessions only.
+#   3. DEFAULT_DENY in ./tool-mask.mjs — empty by default.
+# No source overrides another: the fork-shipped security entries below must
+# not erase the user's own list, and the user's list cannot un-mask them.
+# Only names the scope can see are restrictable (tools.restrict filters
+# *inherited* registrations), so this row masks host-bundle tools such as the
+# adjacent-messaging trio below — the fork's own preset-plane tools
+# (go_work/continue/…) are instead denied per agent by the broker's
+# `agent/created` gate. An absent tool is skipped per name (warn) so the mount
+# never fails because of the mask. Mask changes take effect on NEW sessions only.
 - id: tool-mask
   name: ./tool-mask.mjs
+  config:
+    # 防旁路加固（R1/R3）：上游邻接消息三件套对 MyGO 会话整体下线——编排只走
+    # broker 的六件套（go_work/continue/forward/need_help/orchestration_status/
+    # list_subagents）。broker 的 agent/created 闸对同三名另做一道 agent-scope
+    # deny（双保险，且不依赖宿主 bundle 是否全局注册它们）。
+    deny:
+      - send_message
+      - list_agents
+      - interrupt_agent

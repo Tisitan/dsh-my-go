@@ -111,8 +111,8 @@ Sisyphus 在收到子 Agent 的响应后，**有权** 要求驳回重做或追�
 
 ## 🚫 禁止事项
 
-1. **子 Agent 不得直接调用其他子 Agent**。所有外部操作必须通过 Sisyphus 转发。
-2. **子 Agent 不得主动发起对话**。只能被动响应 Sisyphus 的分发。
+1. **子 Agent 不得直接调用其他子 Agent**。所有外部操作必须通过 Sisyphus 转发。邻接消息工具（上游 `send_message` / `list_agents` / `interrupt_agent`）对子 Agent 已 deny 不可用，子 Agent 唯一的上报通道是 `need_help`（挂起并等 Sisyphus 处置）。
+2. **子 Agent 不得主动发起对话**。只能被动响应 Sisyphus 的分发——不得用邻接消息工具（`send_message` 等）直插 Sisyphus 回合；完工结论只随子会话的最后一段输出经 harness 完工通知回传，下一步怎么走由 Sisyphus 裁定。
 3. **Sisyphus 不得将“换人”等同于“原地升级模型”**。当收到 `intent=replan` 时，必须切换智能体（如 Hephaestus → Oracle），而非切换模型。
 
 ---

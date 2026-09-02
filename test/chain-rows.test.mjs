@@ -135,7 +135,7 @@ test('updateChainEntry：provider 变更重置该行 model（防悬空模型名�
   assert.deepEqual(updateChainEntry(rows, 0, 'model', 42), [{ provider: 'p1', model: '' }, rows[1]])
 })
 
-test('stripEmptyFallbackRows：保存边界剔除全空备选行（tisitan.20 D1）', () => {
+test('stripEmptyFallbackRows：保存边界剔除全空备选行（0.2.3-tisitan.20 D1）', () => {
   // provider/model 双空（含缺失、null、非对象条目）的备选不落盘；半填行保留
   assert.deepEqual(
     stripEmptyFallbackRows({ provider: 'p0', model: 'm0', fallbacks: [{ provider: '', model: '' }, { provider: 'p1', model: '' }, null, {}] }),

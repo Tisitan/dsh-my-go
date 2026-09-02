@@ -7,52 +7,80 @@
 #   2. On npmjs.com, open the package → Access → Trusted Publishing →
 #      add provider "GitHub Actions" for your fork repo (<owner>/dsh-my-go).
 #   3. From then on, tag and push to publish automatically:
-#        git tag v0.1.0 && git push origin v0.1.0
+#        git tag v0.3.0-tisitan.11 && git push origin v0.3.0-tisitan.11
 #
 # The workflow uses GitHub's OIDC identity (id-token: write) to mint a short-lived
 # npm token, and --provenance attaches a verifiable build provenance statement.
+#
+# 0.3.0-tisitan.11 (D-14): 去 bun 化（npm ci + npm test，与 ci.yml 同一棵树）、
+# tag↔package.json 一致性断言（挡住「忘了 bump version 就打 tag」这种把错版本
+# 永久发到线上的事故）、dist-tag 按版本串派生（含 `-` 的预发布不再抢占 latest）、
+# timeout / concurrency / workflow_dispatch 补齐。
 name: Publish to npm
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的版本 tag（如 v0.3.0-tisitan.11）；留空则用触发 ref'
+        required: false
+        default: ''
 
 permissions:
   contents: read
   id-token: write # required for npm Trusted Publishing / provenance
 
+# 发布不设 cancel-in-progress：一旦开始就要跑完，半途取消会留下「npm 上有版本
+# 但没有对应构建记录」的空档。
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: Build and publish
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version-file: .nvmrc
+          cache: npm
+          # 故意不设 registry-url / NODE_AUTH_TOKEN：认证走 OIDC Trusted Publishing
 
       - name: Install dependencies
-        # No lockfile is committed (.gitignore), so --frozen-lockfile would
-        # fail on a fresh clone; resolve floating versions instead.
-        run: bun install
+        run: npm ci
 
       - name: Typecheck
-        run: bunx tsc --noEmit
+        run: npm run typecheck:archive
 
-      - name: Build client bundle
-        run: bun run build:client
+      - name: Test (build client, smoke, unit)
+        run: npm test
 
-      - name: Smoke test
-        run: bun run test
+      - name: Assert tag matches package version
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          TAG="${DISPATCH_TAG:-$GITHUB_REF_NAME}"; TAG="${TAG#v}"
+          VERSION="$(node -p "require('./package.json').version")"
+          [ "$TAG" = "$VERSION" ] || { echo "::error::tag v$TAG ≠ package.json version $VERSION（先发版再打 tag，别把错版本永久留在线上）"; exit 1; }
+
+      - name: Derive npm dist-tag
+        # 版本串含 `-`（如 0.3.0-tisitan.11）= semver 预发布 → 不抢占 latest，
+        # 免得 `npm i dsh-my-go` 的订阅者被动吃到 fork 的预发布线。
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          case "$VERSION" in
+            *-*) echo "NPM_TAG=next" >> "$GITHUB_ENV"; echo "prerelease 版本 $VERSION → dist-tag next" ;;
+            *)   echo "NPM_TAG=latest" >> "$GITHUB_ENV"; echo "正式版 $VERSION → dist-tag latest" ;;
+          esac
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag "$NPM_TAG"

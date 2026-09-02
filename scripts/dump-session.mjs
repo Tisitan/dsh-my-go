@@ -1,4 +1,4 @@
-// dsh-my-go — 会话档案取证 CLI（tisitan.16c）。
+// dsh-my-go — 会话档案取证 CLI（0.2.3-tisitan.16c）。
 //
 // 用法：
 //   node scripts/dump-session.mjs <childId>          在 <DSH_HOME>/sessions 下

@@ -1,4 +1,4 @@
-// dump-session 取证 CLI 单测（tisitan.16c）：zstdCompressSync 合成多帧档案
+// dump-session 取证 CLI 单测（0.2.3-tisitan.16c）：zstdCompressSync 合成多帧档案
 // hermetic 验证——摘要规则、逐帧事件流、末帧截断容错、解压全灭非零语义、
 // childId 全项目目录搜索定位。零外部依赖，不读真实 sessions 目录。
 import { test } from 'node:test'

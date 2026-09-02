@@ -67,28 +67,69 @@ export function rosterKeys(bindings) {
   return [...AGENT_TYPES, ...custom]
 }
 
-// 名册简报渲染（tisitan.18）：Sisyphus 系统提示段「dsh-my-go:roster」的
+// 名册条目（0.3.0-tisitan.9 A-05）：花名册三处消费面（设置页/面板、编排状态文本、
+// Sisyphus 系统提示简报）的**共同语义源**。此前 lib 半与 broker 半各持一份逐字
+// 相同的 18 行 renderRosterLines，而本文件的 renderRosterBriefing 又自成一式
+// （分隔符 `|` vs `→`、有无备选链明细）——文档宣称的「同源同格式」是假的，同一
+// 个角色在不同界面上会长出不同摘要。现在三处都从这份条目投影：文本面经
+// formatRosterRow / formatRosterChainDetail，面板面直读结构化字段自持排版。
+// 纯函数：同一 bindings 两次调用逐字节全等（排序与内容都不含时间与随机）。
+export function rosterEntries(bindings) {
+  const source = bindings && typeof bindings === 'object' ? bindings : {}
+  return rosterKeys(source).map((role) => {
+    const row = source[role] ?? {}
+    const provider = typeof row.provider === 'string' ? row.provider : ''
+    const model = typeof row.model === 'string' ? row.model : ''
+    const chain = (Array.isArray(row.fallbacks) ? row.fallbacks : []).map((entry) => ({
+      provider: typeof entry?.provider === 'string' ? entry.provider : '',
+      model: typeof entry?.model === 'string' ? entry.model : '',
+    }))
+    const toolFilter = row.toolFilter && typeof row.toolFilter === 'object' ? row.toolFilter : {}
+    const allow = (Array.isArray(toolFilter.allow) ? toolFilter.allow : []).map(String).filter((name) => name !== '')
+    const deny = (Array.isArray(toolFilter.deny) ? toolFilter.deny : []).map(String).filter((name) => name !== '')
+    const builtin = AGENT_TYPES.includes(role)
+    const parts = []
+    if (allow.length > 0) parts.push(`仅 ${allow.join(', ')}`)
+    if (deny.length > 0) parts.push(`除 ${deny.join(', ')}`)
+    return {
+      role,
+      builtin,
+      provider,
+      model,
+      // 绑定摘要：只认 provider/model 的有无，空值语义与「跟随环境」一致
+      modelText: provider && model ? `${provider}·${model}`
+        : model ? `?·${model}`
+        : provider ? `${provider}·跟随环境`
+        : '跟随环境',
+      chain,
+      toolFilterText: parts.length > 0 ? parts.join('；') : '全量（除全局掩码）',
+      personaSource: typeof row.persona === 'string' && row.persona.length > 0
+        ? '自定义人设'
+        : builtin ? '内置文件' : '无（跟随环境）',
+    }
+  })
+}
+
+// 文本投影：编排状态与 rosterLines（deprecated 兼容字段）的行格式
+export function formatRosterRow(entry) {
+  return `- ${entry.role} | ${entry.modelText} | 备选${entry.chain.length} | ${entry.toolFilterText} | ${entry.personaSource}`
+}
+
+// 备选链明细（系统提示简报专用；面板直读 entry.chain）
+export function formatRosterChainDetail(entry) {
+  return entry.chain.length > 0
+    ? `备选链 ${entry.chain.length} 条（${entry.chain.map((e) => `${e.provider || '?'}·${e.model || '?'}`).join(' → ')}）`
+    : '无备选链'
+}
+
+// 名册简报渲染（0.2.3-tisitan.18）：Sisyphus 系统提示段「dsh-my-go:roster」的
 // 纯渲染单一源（broker 半消费）。字节稳定铁律：工种键排序渲染、无时间戳/
 // 无随机——同一份 bindings 两次渲染逐字节全等。头部一行失败通知协议提示
 // （协议正文在 prompts/sisyphus.md「失败与备选通知协议」段，此处只做指路）。
 export function renderRosterBriefing(bindings) {
   const lines = ['失败通知协议：harness 的 failed 通知先到是常态，不代表终局；有备选链的工种一律静默等待 broker 的备选处置通知（协议全文见下方「失败与备选通知协议」段）。']
-  for (const type of rosterKeys(bindings).slice().sort()) {
-    const b = bindings[type] ?? {}
-    const model = b.provider && b.model ? `${b.provider}·${b.model}` : b.model ? `?·${b.model}` : b.provider ? `${b.provider}·跟随环境` : '跟随环境'
-    const chain = Array.isArray(b.fallbacks) ? b.fallbacks : []
-    const chainText = chain.length > 0
-      ? `备选链 ${chain.length} 条（${chain.map((e) => `${typeof e?.provider === 'string' && e.provider ? e.provider : '?'}·${typeof e?.model === 'string' && e.model ? e.model : '?'}`).join(' → ')}）`
-      : '无备选链'
-    let tf = '全量（除全局掩码）'
-    if (b.toolFilter && typeof b.toolFilter === 'object') {
-      const parts = []
-      if (Array.isArray(b.toolFilter.allow) && b.toolFilter.allow.length > 0) parts.push(`仅 ${b.toolFilter.allow.join(', ')}`)
-      if (Array.isArray(b.toolFilter.deny) && b.toolFilter.deny.length > 0) parts.push(`除 ${b.toolFilter.deny.join(', ')}`)
-      if (parts.length > 0) tf = parts.join('；')
-    }
-    const persona = typeof b.persona === 'string' && b.persona.length > 0 ? '自定义人设' : AGENT_TYPES.includes(type) ? '内置文件' : '无（跟随环境）'
-    lines.push(`- ${type} → ${model} → ${chainText} → 工具: ${tf} → 人设: ${persona}`)
+  for (const entry of rosterEntries(bindings).sort((a, b) => (a.role < b.role ? -1 : a.role > b.role ? 1 : 0))) {
+    lines.push(`- ${entry.role} → ${entry.modelText} → ${formatRosterChainDetail(entry)} → 工具: ${entry.toolFilterText} → 人设: ${entry.personaSource}`)
   }
   return lines.join('\n')
 }

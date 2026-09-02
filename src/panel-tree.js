@@ -7,8 +7,11 @@
  * Everything is closed over by `createOrchestrationPanel` — no module-level
  * mutable singletons, the caller's `apply` creates exactly one instance.
  *
- * Consumes the snapshot RPC value verbatim: { seq, parents: { [id]:
- * { parentSessionId, current, queue, helpRequests, history } }, rosterLines }.
+ * Consumes the snapshot RPC value: { seq, parents: { [id]: { parentSessionId,
+ * current, queue, helpRequests, history } }, roster, rosterLines }. `roster`
+ * is the structured roster (tisitan.9 A-05) the panel lays out itself;
+ * `rosterLines` is its deprecated text mirror, only kept as a fallback for an
+ * older host half.
  */
 
 import * as React from 'react'
@@ -32,38 +35,82 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
   // 多会话聚合形状：{ seq, parents: { [parentSessionId]: { parentSessionId,
   // current, queue, helpRequests, history } } }
   let snapshot = { seq: 0, parents: {} }
-  // null=尚未探活, true=编排桥就绪, false=未就绪（面板显示提示态而非静默空白）
-  let bridgeOk = null
+  let snapshotLoaded = false
+  // 快照桥健康度（E10/B-03 后分两型）：null=正常，'absent'=host 端 RPC 根本没
+  // 应答（插件未激活/仍在启动），'internal'=host 端在、但桥函数抛了错。
+  let bridgeProblem = null
+  let bridgeDetail = ''
+  // 轮询节流（E5/A-02）：一次 in-flight 只允许一个刷新在跑（快照体积随编排
+  // 历史线性增长，慢宿主上 600ms 一轮会自我堆叠）；连续失败按
+  // 600 → 1500 → 3000ms 退避，成功即复位到基准档。
+  const POLL_BASE_MS = 600
+  const POLL_BACKOFF_MS = [600, 1500, 3000]
+  let pollInFlight = false
+  let pollBackoffStep = 0
+  let nextPollAt = 0
   const listeners = new Set()
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* noop */ } } }
 
+  // 状态迁移点各留一行痕（E5）：只在真正翻转时打，绝不每 600ms 刷屏——
+  // 面板静默重连是最难查的一类故障。
+  function setBridgeProblem(problem, detail) {
+    if (bridgeProblem === problem && bridgeDetail === (detail ?? '')) return false
+    bridgeProblem = problem
+    bridgeDetail = detail ?? ''
+    if (problem === null) {
+      console.warn('[dsh-my-go] panel: orchestration snapshot bridge recovered')
+    } else {
+      console.warn(`[dsh-my-go] panel: orchestration snapshot bridge ${problem === 'internal' ? 'threw inside the host' : 'unavailable'}${bridgeDetail ? ` (${bridgeDetail})` : ''}`)
+    }
+    return true
+  }
+  function notePollFailure(problem, detail) {
+    pollBackoffStep = Math.min(pollBackoffStep + 1, POLL_BACKOFF_MS.length - 1)
+    nextPollAt = Date.now() + POLL_BACKOFF_MS[pollBackoffStep]
+    if (setBridgeProblem(problem, detail)) emit()
+  }
+  function notePollSuccess() {
+    pollBackoffStep = 0
+    nextPollAt = 0
+    if (setBridgeProblem(null, '')) emit()
+  }
+
   async function refresh() {
+    if (pollInFlight) return
+    if (Date.now() < nextPollAt) return
     if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') {
-      if (bridgeOk !== false) { bridgeOk = false; emit() }
+      notePollFailure('absent', 'no rpc channel')
       return
     }
+    pollInFlight = true
     try {
       const res = await connection.rpc.call('/dsh-my-go', 'snapshot', {})
       if (res && res.ok) {
-        const wasOk = bridgeOk
-        bridgeOk = true
         const next = res.value
+        // 首帧必 emit（哪怕 seq 恰与初值同）：花名册区在 seq=0 的降级空态里
+        // 也有内容，漏掉这一发会让面板停在空白上
+        const firstFrame = !snapshotLoaded
         const changed = next && next.seq !== snapshot.seq
-        if (next) snapshot = next
-        if (changed || wasOk !== true) emit()
-      } else if (bridgeOk !== false) {
-        bridgeOk = false
-        emit()
+        if (next) { snapshot = next; snapshotLoaded = true }
+        notePollSuccess()
+        if (changed || firstFrame) emit()
+      } else if (res && res.error && res.error.code === 'internal') {
+        // host 端桥函数抛错（lib snapshot 端点自带 try 后的结构化失败信封）：
+        // 与「桥未注册」分开提示，前者说明装配完成但状态读挂了
+        notePollFailure('internal', String(res.error.message ?? ''))
+      } else {
+        notePollFailure('absent', res ? 'unexpected response envelope' : 'no response')
       }
-    } catch {
-      // host 未就绪（插件未激活/仍在启动/ RPC 未注册）：标记提示态，
-      // 仅状态迁移时 emit，避免 600ms 轮询每次重渲染
-      if (bridgeOk !== false) { bridgeOk = false; emit() }
+    } catch (error) {
+      // 调用本身抛错（通道未注册/传输层断）：提示态，按退避节奏自动重试
+      notePollFailure('absent', String(error))
+    } finally {
+      pollInFlight = false
     }
   }
 
   const stopPolling = timer && typeof timer.interval === 'function'
-    ? timer.interval(() => { void refresh() }, 600)
+    ? timer.interval(() => { void refresh() }, POLL_BASE_MS)
     : undefined
 
   // ── tree panel component (overlay) ──────────────────────────────────────
@@ -86,17 +133,22 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
     React.useEffect(() => {
       const rerender = () => force((c) => c + 1)
       listeners.add(rerender)
-      // 相对时间（「3 分钟前」）需要自刷新：快照不变时不触发重渲染
-      const tick = setInterval(() => force((c) => c + 1), 30_000)
+      // 相对时间（「3 分钟前」）需要自刷新：快照不变时不触发重渲染。
+      // 刷新链只在面板可见时做功（tisitan.8 A-09）：面板关着时这枚 30s tick
+      // 每轮都强制重渲染一个返回 null 的组件，纯烧电。
+      const tick = setInterval(() => { if (panelOpen) force((c) => c + 1) }, 30_000)
       return () => { listeners.delete(rerender); clearInterval(tick) }
     }, [])
 
     if (!panelOpen) return null
     const s = snapshot
-    // 面板扁平化展示所有编排会话的条目；parents 数量 >1 时每条附
-    // parentSessionId 短后缀 chip 区分归属
     const parents = s.parents && typeof s.parents === 'object' ? s.parents : {}
-    const parentList = Object.values(parents)
+    // 面板扁平化展示所有编排会话的条目；parents 数量 >1 时每条附
+    // parentSessionId 短后缀 chip 区分归属。
+    // 'legacy' 是台账 v1 兼容桶（broker 载入时造出的幽灵父区）：它没有属主
+    // 会话、current 恒空、点开无处可跳，出现在父区列表里只会被误认成一个
+    // 真实编排会话（tisitan.8 A-04，父区直接过滤）。
+    const parentList = Object.values(parents).filter((p) => p && p.parentSessionId !== 'legacy')
     const multi = parentList.length > 1
 
     // 统一徽章（chip）：标识符一律等宽小字、浅底圆角；title 悬浮给全量值
@@ -204,11 +256,15 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
         React.createElement('button', { onClick: () => { panelOpen = false; emit() } }, '×'),
       ),
 
-      bridgeOk === false
+      bridgeProblem === 'internal'
         ? React.createElement('div', {
-            style: { marginBottom: 10, padding: '6px 8px', borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 12 },
-          }, '⚠ 编排桥未就绪：host 端 /dsh-my-go RPC 无响应（插件未激活或仍在启动），面板将持续自动重试。')
-        : null,
+            style: { marginBottom: 10, padding: '6px 8px', borderRadius: 6, background: 'rgba(255,152,0,0.12)', border: '1px solid rgba(255,152,0,0.35)', fontSize: 12 },
+          }, `⚠ host 端编排快照读取异常（装配已完成，桥函数抛错）：${bridgeDetail || '未提供原因'}；面板停在最后一次实况，按退避节奏自动重试。`)
+        : bridgeProblem === 'absent'
+          ? React.createElement('div', {
+              style: { marginBottom: 10, padding: '6px 8px', borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 12 },
+            }, '⚠ 编排桥未就绪：host 端 /dsh-my-go RPC 无响应（插件未激活或仍在启动），面板将持续自动重试。')
+          : null,
 
       // 运行中：保留区块（空时显示「空闲」，用户习惯看它），等待求助的条目用红色
       React.createElement('div', { style: { marginBottom: 10 } },
@@ -254,7 +310,10 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
         ? React.createElement('div', { style: { marginBottom: 10 } },
             sectionHeader('求助', helps.length),
             helps.map((h, i) => row({
-              key: `hlp-${h.parentSessionId}-${h.childId ?? i}`,
+              // 求助单 id 才是这一行的身份（tisitan.8 A-08）：同一儿童可以
+              // 先后挂着两张不同 intent 的求助单，按 childId 做 key 会让 React
+              // 把第二张就地复用成第一张（intent 文案串台）
+              key: `hlp-${h.parentSessionId}-${h.id ?? i}`,
               glyph: '❓',
               accent: ACCENT_HELP,
               onClick: h.childId ? () => jump(h.childId, h.parentSessionId) : undefined,
@@ -293,28 +352,49 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
           )
         : null,
 
-      // 花名册常驻区（tisitan.15）：snapshot 响应附带的 rosterLines（与
-      // orchestration_status roles 区同源，由 host 半 renderRosterLines 产出），
-      // 与编排状态无关——桥未就绪/无编排会话也能显示。默认折叠。
-      rosterOpen
-        ? React.createElement('div', { style: { marginBottom: 10 } },
-            sectionHeader('花名册', Array.isArray(s.rosterLines) ? s.rosterLines.length - 1 : 0, '可派角色与绑定摘要（点击标题折叠）'),
-            Array.isArray(s.rosterLines) && s.rosterLines.length > 1
-              ? s.rosterLines.slice(1).map((line, i) => React.createElement('div', {
-                  key: `ros-${i}`,
-                  title: line,
-                  style: { fontFamily: MONO_FONT, fontSize: 11, color: '#a0a0a0', padding: '2px 8px', overflowWrap: 'anywhere' },
-                }, line))
-              : React.createElement('div', { style: { color: '#888', fontSize: 12, padding: '2px 8px' } }, '花名册不可用（host 未就绪）'),
-          )
-        : React.createElement('div', {
+      // 花名册常驻区（tisitan.15；tisitan.9 A-05 起吃结构化 roster）：渲染依据
+      // 是 snapshot.roster 数组——表头文案、计数、行排版全部客户端自持。旧写法
+      // 靠「rosterLines[0] 必为表头」的位置约定 slice(1) 取数、用 length-1 当
+      // 计数，等于把 host 的字符串格式当 API：host 一改措辞（或哪天想加个脚注）
+      // 这里就静默少一行或多渲染一行标题。rosterLines 只作旧 host 的兼容回落。
+      (() => {
+        const rows = Array.isArray(s.roster) ? s.roster : null
+        const legacyLines = !rows && Array.isArray(s.rosterLines) && s.rosterLines.length > 1 ? s.rosterLines.slice(1) : null
+        const count = rows ? rows.length : (legacyLines ? legacyLines.length : 0)
+        if (!rosterOpen) {
+          return React.createElement('div', {
             style: { cursor: 'pointer', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 },
             onClick: () => setRosterOpen(true),
             title: '展开可派角色与绑定摘要',
           },
             React.createElement('span', { style: { fontWeight: 600, fontSize: 12 } }, '▸ 花名册'),
-            Array.isArray(s.rosterLines) ? React.createElement('span', { style: { fontSize: 11, lineHeight: '15px', padding: '0 6px', borderRadius: 8, background: 'rgba(255,255,255,0.08)', color: '#999' } }, String(s.rosterLines.length - 1)) : null,
-          ),
+            count > 0
+              ? React.createElement('span', { style: { fontSize: 11, lineHeight: '15px', padding: '0 6px', borderRadius: 8, background: 'rgba(255,255,255,0.08)', color: '#999' } }, String(count))
+              : null,
+          )
+        }
+        return React.createElement('div', { style: { marginBottom: 10 } },
+          sectionHeader('花名册', count, '可派角色与绑定摘要（点击标题折叠）'),
+          rows
+            ? rows.map((entry) => React.createElement('div', {
+              key: `ros-${entry?.role ?? ''}`,
+              title: `${entry?.role ?? ''}：${entry?.modelText ?? '跟随环境'}；备选 ${Array.isArray(entry?.chain) ? entry.chain.length : 0} 条；工具 ${entry?.toolFilterText ?? ''}；人设 ${entry?.personaSource ?? ''}`,
+              style: { fontFamily: MONO_FONT, fontSize: 11, color: '#a0a0a0', padding: '2px 8px', overflowWrap: 'anywhere', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' },
+            },
+              React.createElement('span', null, `${entry?.role ?? '?'}`),
+              React.createElement('span', { style: { color: '#c8c8c8' } }, `· ${entry?.modelText ?? '跟随环境'}`),
+              Array.isArray(entry?.chain) && entry.chain.length > 0 ? chip(`+${entry.chain.length}`, `备选链 ${entry.chain.length} 条`, ACCENT_QUEUE) : null,
+              entry?.builtin === false ? chip('自定义', '自定义角色（不在内置八工种内）') : null,
+            ))
+            : legacyLines
+              ? legacyLines.map((line, i) => React.createElement('div', {
+                key: `ros-${i}`,
+                title: line,
+                style: { fontFamily: MONO_FONT, fontSize: 11, color: '#a0a0a0', padding: '2px 8px', overflowWrap: 'anywhere' },
+              }, line))
+              : React.createElement('div', { style: { color: '#888', fontSize: 12, padding: '2px 8px' } }, '花名册不可用（host 未就绪）'),
+        )
+      })(),
     )
   }
 

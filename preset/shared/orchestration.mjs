@@ -1,14 +1,18 @@
 /**
- * dsh-my-go — single-line-blocking orchestration state machine (both halves).
+ * dsh-my-go — single-line-blocking orchestration state machine.
  *
- * Minimal, dependency-free core: pure in-memory state + listeners. Exported
- * from the shared layer so broker.mjs and lib/index.js run the exact same
- * state machine instead of mirrored copies.
+ * Minimal, dependency-free core: pure in-memory state + listeners. Since
+ * 0.3.0-tisitan.0 (单宿主编排批) the broker half is the ONLY
+ * consumer that builds Orchestration instances; the lib half no longer holds a
+ * state machine of its own — it reads broker state one-way through the snapshot
+ * bridge (`globalThis[Symbol.for('dsh-my-go.snapshot')]`). The class still lives
+ * in the shared layer (not inlined into broker) so it stays ctx-free and unit-
+ * testable in isolation.
  *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx.
  */
 
-import { CURRENT_MAP_CAP } from './constants.mjs'
+import { CURRENT_MAP_CAP, HISTORY_CAP } from './constants.mjs'
 
 let seq = 0
 export function nextId(prefix) {
@@ -134,9 +138,9 @@ export class Orchestration {
     this.currentMap.delete(childId)
     const clearedHelp = this.clearHelpFor(childId)
     this.history = [...this.history, done]
-    if (this.history.length > 200) this.history = this.history.slice(-200)
+    if (this.history.length > HISTORY_CAP) this.history = this.history.slice(-HISTORY_CAP)
     this.emit()
-    // 返回值附带连带清理计数（tisitan.3）：仅内存返回副本，不落 history/
+    // 返回值附带连带清理计数（0.3.0-tisitan.3）：仅内存返回副本，不落 history/
     // 台账，供 broker 调用点对「清理 ≥1 张求助单」做可见通知
     return clearedHelp > 0 ? { ...done, clearedHelp } : done
   }
@@ -175,7 +179,7 @@ export class Orchestration {
       updatedAt: Date.now(),
     }
     this.history = [...this.history, done]
-    if (this.history.length > 200) this.history = this.history.slice(-200)
+    if (this.history.length > HISTORY_CAP) this.history = this.history.slice(-HISTORY_CAP)
     this.emit()
     return done
   }
@@ -199,7 +203,7 @@ export class Orchestration {
     this.emit()
   }
 
-  /** 兜底闸（tisitan.15）：超限时按 updatedAt 淘汰最旧的滞留记录，防异常路径无界增长。 */
+  /** 兜底闸（0.2.3-tisitan.15）：超限时按 updatedAt 淘汰最旧的滞留记录，防异常路径无界增长。 */
   enforceCurrentCap() {
     if (this.currentMap.size <= CURRENT_MAP_CAP) return
     let oldestId = null
@@ -219,7 +223,7 @@ export class Orchestration {
   }
 
   /** Record the latest prompt Sisyphus sent to one child (go_work or continue).
-   * urgency（tisitan.2，continue 三档声明）为可选第三参：非空字符串入账、否则
+   * urgency（0.3.0-tisitan.2，continue 三档声明）为可选第三参：非空字符串入账、否则
    * 清字段——字段语义恒为「最新一条 prompt 的投递档」，不留上一条的残留值；
    * 旧记录（从未传过 urgency）天然无此字段，零变化。 */
   followupPrompt(childId, prompt, urgency) {
