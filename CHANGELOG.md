@@ -3,9 +3,11 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
-> **批号命名空间（重要）**：本仓有**两条独立序号线**——`0.2.3-tisitan.N`（0.2.3 线，
-> N=1..20）与 `0.3.0-tisitan.N`（0.3.0 线，N=0..11）。裸写 `tisitan.N` 时，N=1..9 在
-> 两线**同号不同批**，须读上下文语义判定归属（对照下方各节标题）；N≥10 唯一落在 0.2.3 线。
+> **批号命名空间（重要）**：本仓有**三条独立序号线**——`0.2.3-tisitan.N`（0.2.3 线，
+> N=1..20）、`0.3.0-tisitan.N`（0.3.0 线，N=0..12）与 `0.4.0-tisitan.N`（0.4.0 线，
+> 自 0.4.0-tisitan.0 起号）。裸写 `tisitan.N` 时 N=1..12 在多线**同号不同批**（N=0 在
+> 0.3.0/0.4.0 两线撞号），须读上下文语义判定归属（对照下方各节标题）；N=13..20
+> 唯一落在 0.2.3 线（0.3.0 线止于 .12，0.4.0 线自 .0 重新起号）。
 > 另有三个旧裸批号是 0.3.0 线发布前的一次性序号，现并入正式版本：
 >
 > | 裸批号（旧） | 归属 | 本批正式写法 |
@@ -20,7 +22,328 @@
 
 ## [Unreleased]
 
-分发链路批（**纯文档 + 仓库政策，零代码逻辑变更**）：把「怎么装本 fork」从一条会装到
+### [0.5.0-tisitan.1]（起草中，未发布——报告提交制：report_submit 四字段 + broker 合成回执）
+
+报告机制代际改造（主人拍板，第二代替换第一代）：子代交付从「最后一条消息手写
+摘要块 + 格式闸解析」迁移为「完工时 report_submit 一次交齐四字段 + broker 从
+已校验字段确定性合成主编回执」。消息侧解析器（第一代摘要块三件套）与
+SUMMARY_CLAUSE 整体退役；全仓旧机制字样归零，仅本 CHANGELOG 历史条目保留字样。
+
+### Changed
+
+- **report_submit 四字段 schema**（`preset/tools/broker.mjs`）：`report`（完整报告
+  全文，落板供主编 report_fetch 切片取阅）/ `conclusion`（2-4 句自包含结论）/
+  `evidence`（裸「路径:行号」字符串数组，无文件证据传 `["无"]`）/ `open`（遗留，
+  无则「无」），四字段全 required。校验器 `validateReportArgs` 唯一出处
+  `preset/shared/report-format.mjs`（复用 EVIDENCE_LINE_PATTERN）：evidence 逐项
+  校验、非法项返回带数组索引的错误清单、空数组与 `["无"]` 归一化为「无」；校验
+  不过 → 工具逐条报错原地重调，不落板、不登记；校验过 → writeBoard 落板 +
+  conclusion/evidence/open 随成功事实登记。
+- **成功事实登记 `reportSubmitted`**（`preset/shared/child-registry.mjs` 新表）：
+  childId → 已校验的三字段，供终局合成回执消费；「含历史轮」口径——只在终局
+  retireChild 清，复活轮不重交也视为已交付。
+- **闸门 E7' 简化**（`preset/shared/end-attribution.mjs`）：判定源从「消息块解析」
+  改为「提交登记」。已提交 → finalize（回执 = 合成概要）；从未提交 → 首次走
+  report-gate-repair 补发（决策出口与 once-guard 形态保留，触发条件改为「未提交」），
+  buildRepairPrompt 重写为固定措辞；补发后仍未提交 → 「未交付：」前缀 verdict
+  finalize 转主编裁决（防死循环机制原样）。failed 与开关关路径零变化。
+- **主编回执合成 `buildOwnerSummary`**（`preset/shared/report-format.mjs`）：终局
+  通知内芯由已校验字段确定性拼装（conclusion 全文 + evidence 逐行 + open +
+  「全文落板，report_fetch childId=<id> 切片取阅」指引一行），通知外包装不变；
+  pass 路径全文已随提交落板，落板兜底从该路径摘除（补发/verdict 路径保留）。
+- **条款与提示词**：SUMMARY_CLAUSE → REPORT_CLAUSE（「[报告提交条款]」，spawnChild
+  尾注唯一出处不变）；7 份工种 md「交付收尾协议（铁律）」整段替换为提交制口径；
+  sisyphus.md 通信工具速查表补一行回执形态与 report_fetch 取阅指引。
+- **测试面重写**：第一代解析器语料测试删除；新增 validateReportArgs 矩阵（索引级
+  错误/`["无"]`/空数组归一/行形态）、合成回执形态断言、四字段 schema pin、
+  「未提交→补发→仍未交→verdict」端到端链路、新条款措辞 pin 与提示词面旧机制
+  字样零出现断言；relay 三件套 GOOD_END 语料改为「先提交登记再派 end」。
+
+### [0.5.0-tisitan.0]（起草中，未发布——用量统计首批）
+
+0.5.0 线首批（单列 minor：0.4.0 线语义已封，用量统计是新功能域）。按契约
+`docs/usage-stats-design.md`（D1~D5 五点显式裁决 + 18 场景降级矩阵 Z1~Z18）施工的
+「按父会话 × 按模型」用量统计：模型单价表（可视化自填，未定价只记 token 不计成本）+
+面板三视图（按模型 / 按子代 / 合计）。架构铁律：**落账只存 token 事实，渲染层乘单价**
+——单价热更零失效成本，聚合缓存永不因价格变动失效。
+
+### Added
+
+- **单价表 schema `usagePrices`**（契约 D1）：`{provider}/{model}` 扁平字典（只在第一个
+  `/` 切分，provider 不含 `/`、model 余部可含 `/`，`PRICE_KEY_PATTERN`
+  （`preset/shared/constants.mjs`）锚定切分规则防聚合期归属歧义），value 四桶
+  `input`/`output` 必填 + `cacheRead`/`cacheWrite` 可选（per-1M tokens，`.min(0)`
+  拒负数）；空表 = 仅统计 token、不计成本。`totalTokens`/`reasoningTokens` v1 不消费
+  （前者派生口径允许与分桶不一致、后者无 disjoint 承诺，采纳即双计风险）。
+- **全局币种 `usageCurrency`**（契约 D1a，主人真机反馈追加——四桶裸数字 + 只有美元
+  难填）：`'USD' | 'CNY'`，默认 `'USD'`，整张单价表一个币种，**否决按行币种**
+  （混币种合计随汇率漂移，无意义）。`getUsage` 响应组装时随价格 join 一并回显
+  `currency` 字段（R6 同点实时读，未知/缺席回落 USD），面板成本列按响应币种渲染
+  符号（$ / ¥）并在成本列头注明币种；设置页卡片顶部币种下拉 + 四桶中文标签
+  （输入/输出/缓存读取/缓存写入）+ 单位提示随币种联动（USD→「美元 / 1M tokens」、
+  CNY→「元 / 1M tokens」），校验逻辑不变；`saveSettings` 纳入局部合并写回（无键
+  零触碰、非法值 fail-closed 丢弃）。
+- **单价写入时校验双层兜底**（schemastery 无 isFinite 表达力，`.min(0)` 拦不住
+  NaN/Infinity——契约 D1 裁决归写入路径）：lib 半 `sanitizePriceValue` + client 保存
+  边界（`buildPersistDraft` × `src/usage-price-rows.js`）双重过滤——数字串 coerce、
+  必填桶非法整行拒、可选桶非法桶级剔除（Z11 视同该桶未定价），脏键 fail-closed 丢弃，
+  一行坏数据绝不毒杀整批原子 mutate（E7/B-05 先例）。`saveSettings` 对 usagePrices 做
+  **行级局部合并写回**：draft 携带即全表权威（逐行 set + 存储缺行 unset + 空表全清），
+  无键零触碰（显式携带才写，存量不被保存动作洗掉）。
+- **单价表编辑器**（设置页，「用量单价表」手风琴卡）：行 = `provider/model` 键 +
+  四桶数字输入（中文标签 + 单位提示随全局币种联动，D1a），增删改 + 创建键守卫 +
+  行级中文报错；创建键输入为**模型组合框**（0.5.0 二次 UX 修正，与角色编辑器同款
+  input+datalist——选项 = listModels 投影的 `provider/model` 键，与
+  PRICE_KEY_PATTERN 格式天然一致；已配键从选项剔除防重复行；清单拉取失败/渠道
+  缺席时零候选降级纯手填，不炸设置页）；编辑态宽松（number input 原始串进 draft、
+  半填行不消失）、保存边界严格；空表说明列出四档单价名。纯函数在
+  `src/usage-price-rows.js`（node --test 直测 + esbuild 内联双消费），渲染在
+  `src/usage-prices-editor.js`（deps 显式注入，写口经 mutateDraft dirty 汇聚）。
+- **聚合引擎 `lib/usage-aggregator.mjs`**（契约 D2，纯依赖注入模块，lib 半独立于
+  Symbol.for 快照桥——lib-only 降级部署同样可聚合）：`getUsage(parentSessionId)`
+  on-demand 聚合 + per-child 游标缓存（lastSeq 单调不重不漏）；live 快路径
+  （`ctx.get('sessions')` + `snapshotEvents` 特性探测，F4）+ 档案主路径
+  （`readArchivedUsage`，F5「end 时 live 已摘除」铁律）双读；终态一次全量扫即冻结
+  （R3）、冻结后轮询零 IO、复活解冻续扫（R4，复活即新世代 F7，冻结必须可逆否则复活
+  后用量静默丢失）、LRU 4 parent（R2）、价格永不进缓存（R6，响应组装时实时 join）。
+- **档案读取 `readArchivedUsage`**（`preset/shared/archive.mjs`，F5 同族）：同步逐帧
+  zstd 解压 + `fromSeq` 过滤 + `findArchivedLogByChildId` 兜底；坏帧/截断行跳过留痕
+  （console.warn，不静默吞）。
+- **`getUsage` RPC 端点**（契约 D3，lib 半单通道）：`{parentSessionId}` 入参（空/非串
+  不抛错，回 `ok:true + found:false` 空结构，Z8）→ UsageReport（children 按台账 spawn
+  序、byModel 服务端跨子代预归且 unknown 段恒排末尾、桶 `null` = 数据源未上报（≠0）
+  且 `partial` 沿段→totals→byModel 逐级 OR，数字恒可用部分性恒可见）；整体 try 失败回
+  结构化 internal（Z17）。host-parity「RPC 端点全家 lib 独有」pin 补入 getUsage（双
+  host 裂脑防线：lib 恰一处、broker 零 RPC 不变）。
+- **面板用量区**（契约 D4/D5，`src/usage-panel.js` + `src/usage-views.js` +
+  `panel-tree.js` 挂载）：三视图共用**同一次** getUsage 响应（byModel 服务端预归并，
+  归并口径单点实现，前端零二次聚合）；轮询骑既有 600ms 快照节拍且折叠/关面板零 RPC，
+  失败并入既有退避梯（Z17）；成本唯一计费点在渲染层（`Σ 已知桶token × 已定价桶`，
+  部分定价/未上报桶带 `≥` 下界标记），缺桶显示「—」绝不补 0，整表无单价隐藏成本列。
+- **跨半集成例**（`test/usage-integration.test.mjs`）：真 broker apply 走 orchestration
+  流（spawn + subagent/end 落真台账文件）→ 档案 zstd 造 usage 帧 → lib hostApply 的
+  getUsage 出账——「orchestration 流写下的台账行恰是聚合器读的形状」的台账契约
+  （桶键=属主会话 id、agentType 补源、completed→done 终态映射、冻结）两半贯通验证。
+- **父会话自身用量入账**（契约 D6 追加裁决，主人拍板——「本次会话的完整开销」）：
+  `getUsage` 在子代枚举之外恒常扫描父会话自身事件流——活父走 live 增量、冷父走
+  zstd 档案（`readArchivedUsage` 按 sessionId 本就通用，零改动），复用 per-child
+  游标缓存 / idle-freeze / R4 解冻全套机制（bucket 独立 `self` 槽位，不混子代
+  childId 空间；父会话无台账终态行，冻结走空扫 idle-freeze，最坏面与子代同）。
+  合成行 `isSelf: true` 恒排 children 最前（`agentType`/`status` 恒 null，客户端
+  「主编排」身份徽章不冒充工种）；按模型视图自然并入对应 `{provider,model}` 行
+  （`childCount` 仍只数子代），合计 = self + 子代完整开销；self 流无 assistant
+  消息时不注入行（Z19——零值行是噪音，且会翻 Z8 found 语义）。设计文档
+  `docs/usage-stats-design.md` 补 D6 裁决（含否决备选与性能选型）+ 响应形状
+  `isSelf?` 字段 + 降级矩阵 Z19。
+
+### Docs
+
+- 契约文档 `docs/usage-stats-design.md`（v1 定稿，唯一规格源）：数据源事实 F1~F12、
+  决策 D1~D6（含否决备选）+ D1a 全局币种追加、缓存失效规则 R1~R7、降级矩阵
+  Z1~Z19、施工接缝清单 §5、验收对照 §7。
+- README 特性区与 src 目录树补用量统计条目（随施工批次更新）。
+
+### Fixed
+
+- **面板「用量统计」会话识别三连修复**（真机实测「编排数据链路完好、面板却
+  永远不显示用量」的根因收口）：① **单 parent 回落**——当前会话 id 缺失时
+  不再直接落 no-session，编排快照恰有一个真实父会话（`legacy` 幽灵桶除外；
+  自动跳转单 parent 退化门禁同款判定）即借用其 `parentSessionId` 查用量，
+  多 parent 不猜归属维持 no-session（`usageSessionTarget` 纯函数，
+  `src/usage-views.js` + `panel-tree.js` pollUsage 接线）；② **pending 与
+  识别失败分态**——会话列表首拉期（宿主 `SessionListPhase='pending'`）显示
+  「会话列表加载中…」，真识别失败才保留「无法确定当前会话」原文案，启动
+  窗口不再被误报成故障（`sessionsListPhase` 防御式读 + `usageEmptyState`
+  新 `session-pending` 态）；③ **sessions 惰性解析**——`src/client.js`
+  装配点一次性 `client.get('sessions')` 换成 Proxy 按属性访问实时解析，
+  宿主服务晚于面板装配的时序不再永久锁死跳转能力，缺席仍一次性留痕
+  （文案改为 degrade until the service appears）、在席即恢复无需重建面板。
+
+全量 `npm test` 534/534 全绿（本批新增 8：会话识别修复 3——单 parent 回落判定 /
+`sessionsListPhase` 防御读 / 惰性解析装配缺席→在席恢复回归；D6 父会话自身入账 5——
+self live 流 / 档案路径 idle-freeze / 空流降级 / 复活解冻 / `childRowCount` 透传，
+另跨半集成例补 self 档案帧贯通断言；relay-chain-review R4 全量并发下偶发 waitFor
+超时为既有 flaky，单跑复绿）；`tsc --noEmit` 干净；`dist/client.js` 重建通过
+（src 模块全覆盖断言）。
+
+## [0.4.0-tisitan.7]（起草中，未发布——发版整体挂起，随主编统一定稿）
+
+0.4.0 线三期「读→写挂起三档审阅 + 不可逆跳同步门（接力链）」批
+（next-gen-architecture 规划步骤 3.1~3.7，D10~D13/D21~D29 裁决，设计文档
+`docs/plans/relay-chain-semantics.md`）。**版本号未 bump**（同上：随 preset
+树部署，`relayChains` 缺省 false = 接力链默认关，关闭态编排行为与 tisitan.4
+逐字节等价）。
+
+### Added
+
+- **接力链状态机**（步骤 3.2，`preset/shared/relay-chain.mjs`）：链声明
+  （`createChain`/`validateChainDeclaration`，2~8 跳、首跳 gate 必须 auto、
+  auto 跳读→读硬约束）、迁移事件机（`advanceChain`，T1~T17 全景：auto 自动
+  接力/review·sync 挂起/gate-verdict 裁决挂起/fallback 换绑/input-missing/
+  queue-dropped/restart 恢复/dispose 终局）、回填契约
+  （`reconcileWorkEnqueued`/`reconcileHopDispatch`，hop 占位键→真 id 两级回
+  填）、台账 v3 恢复归一（`normalizeRestoredChain`，坏档空起步不猜修）。决
+  策纯同步、op 词表封闭（唯一成员 `enqueue-hop`），I/O 全在 broker dispatcher。
+- **链工具对**（步骤 3.3，`chain_start`/`chain_resolve`，主编会话专属，子代
+  deny）：声明即派发首跳；`continue`/`abort` 处置挂起链（review 可覆盖预写、
+  sync 现场必填、abort 带 prompt 拒绝）。`relayChains` 总闸缺省关（D21），
+  开启时强依赖 `reportExternalization`（D23 fail-fast）。
+- **数据面直投**（步骤 3.4）：hop prompt = 预写指令 + 上一棒全文数据块
+  （`<mygo_relay_input trusted="false" source="board/...">`，闭合串转义防容
+  器击穿），全文不经过主编上下文（D29 零 cap）；派发唯一通道 enqueue+
+  advanceQueue（INV-1，readPoolSize=1 退化单线时链 hop 与人派 work 同队串
+  行）；board 缺席 → 链挂起 `input-missing` + 通知主编，绝不发空输入 prompt；
+  子代层输入语义不可用由 `RELAY_CLAUSE` 验收条款教 need_help 打回（两层打
+  回正交，步骤 3.6）。
+- **三档审阅门 + 同步门**（步骤 3.5）：review/sync 跳挂起（D13 永不超时放
+  行），挂起通知带跳号/工种/上一跳摘要/report_fetch 指针；
+  `orchestration_status` 渲染 `⛓ relay-chain` 状态行（每次回合快照可见），面
+  板快照 chains 透传且 prompt 剥除；主编会话销毁时非终态链 warn + metrics
+  `aborted-by-dispose` 双留痕后随实例清理（D27，台账不留 aborted 行）。
+- **台账 v3**（D12）：payload 增 `chains` 桶（终态链含全量持久化，存量受
+  `RELAY_CHAINS_CAP` 32 滚动）；v2 档兼容读取，坏行整行拒收留痕。
+- **relay-chain metrics 事件**：`{kind:'relay-chain', phase, chainId, cursor,
+  sessionId}`（started/hop-advanced/suspended/done/aborted-by-dispose/failed/
+  input-missing），只读快照零分支影响。
+- **接力链设计文档**（步骤 3.1，`docs/plans/relay-chain-semantics.md`）：链
+  模型与声明 schema、状态机全景、数据面直投时序、九出口 × 链交互矩阵、决策
+  裁决 D10~D13/D21~D29、实施状态表。
+
+### Fixed
+
+- **子代理闸「查无此具」日志噪音**：agent/created 星型闸的 deny 名单无条件
+  含 `report_fetch`（tisitan.1 起入名单）与 `chain_start`/`chain_resolve`
+  （本批 3.3 起入名单），但三者注册各挂 `reportExternalization`/`relayChains`
+  开关——开关关时工具未注册，每次 agent/created 都触发 restrict 批级拒绝 +
+  逐名兜底的 `could not deny` 刷屏。现 deny 名单随开关联动组装（开关关 =
+  工具不存在 = 闸的意图被真空满足；开关开 = deny 照常生效），基础名单与
+  per-name 兜底告警通道不动；行为断言补齐开关关/开两向（anti-bypass）。
+
+### Tech Debt（本批不清，范围纪律记录）
+
+- `chainHopsByWork` 回填反查表在 spawn 悬挂（占位审计回收路径）时可能残留
+  单条目（workId → 链引用），无累积面、无行为影响；随后续批的清理统一面
+  处理（3.5 已在 session/disposed 路径同点清理）。
+
+### [0.4.0-tisitan.4]（起草中，未发布——二期「读平面并行池」施工中，2.5/2.6 未完成）
+
+0.4.0 线二期批（next-gen-architecture 规划步骤 2.1~2.4，裁决 D5/D7/D8/D9/D16~D20）。
+**版本号未 bump**（同上：随 preset 树部署，`readPoolSize` 缺省 1 = 并行池默认关）。
+D16 裁决：E2 缓冲 grace 独立 config 键 `spawnEndGraceMs ?? 2000`（默认即生效）。
+
+### Changed
+
+- **【默认行为 delta，有意为之的正确性修复】E2 归因：占位猜测兜底退役，改为 end
+  缓冲重放**（步骤 2.4，方案 A，read-pool-semantics.md §4.3）：`subagent/end` 在
+  spawn resolve 前抢跑到达（类型登记与台账双双缺席）时，旧实现按「恰有一条 spawning
+  占位即归因」猜测挂靠（并行下多条占位是常态，find-first 收集会把第二发的 end
+  静默归给第一条 = 串号幽灵；且 end 被丢后 spawn 正常 resolve 会留下永挂 running
+  的记录 = lane 槽泄漏）。新实现将抢跑 end 暂存缓冲（cap 16），spawn 登记追上后按
+  **真 id 精确认领**并重放全量归因管线（E4/E5/E6/E7/E9 全量生效）；缓冲超
+  `spawnEndGraceMs` 未被认领则显式落档 + 滞留占位审计回收（failed 落账 + retire +
+  advanceQueue 解冻）。**该修复在 readPoolSize=1（并行池关闭）下同样生效**——缺陷
+  在单线下同样潜伏（极窄竞态窗口），并行只放大其概率；此为 2.4 唯一的默认路径行为
+  变化，其余并行语义（泳道/lane-aware skip/直派补位）均在 `readPoolSize ?? 1` 缺省
+  下逐字节等价改造前。
+- **重派 label 内嵌 spawnToken**（R2.3，§5.1）：备选重派的会话 label 追加
+  `#<占位id>` 后缀，使 `pendingFallbackByLabel` 在并发同工种同 prompt 双重派时各
+  条目键天然互异（旧裸 label 键后写覆盖先写 = 备选配置串号）。waterfall 消费侧经
+  `header.label`（= request.label 落盘镜像）精确命中，无需迁移（纯内存表）。
+- **queue/复活闸容量语义泳道化**（步骤 2.3）：`advanceQueue` 改 lane-aware global-scan
+  循环（队首扫描第一个 lane 有空位的 work 上岗，满池 lane 原地保留——lane 内 FIFO
+  与全局序可观测不变）；go_work 直派与 continue/forward 复活闸按目标 lane 空位判定；
+  直派成功占槽后补一次队列推进（D19，防读池等待任务饿死）。`readPoolSize=1` 时
+  isLaneFree 退化为全局单线，以上全部与旧行为逐字节等价。
+
+### Added
+
+- **泳道模型**（步骤 2.2，`preset/shared/orchestration.mjs`）：`laneOf(agentType)`
+  判定表（explore/librarian → read；其余含 looker 与自定义角色 → write，D7/D8）、
+  `clampReadCapacity`（`?? 1` 默认关，>3 钳 3）、`laneCount`/`isLaneFree`/`capacityOf`
+  原语、`dequeueById`；record 增加 `lane` 字段（beginSpawning 派生写死、extra 不可
+  越权覆盖，revive 对旧台账记录归一化补写）。isBusy 复合化（任何 lane 满），容量 1
+  下与旧 `size>0` 逐点等价。占位审计与缓冲行为测试见 `test/end-buffer.test.mjs`，
+  调度行为测试见 `test/lane-scheduling.test.mjs`。
+- **并行语义设计文档**（步骤 2.1，`docs/plans/read-pool-semantics.md`）：九出口 ×
+  并行化决议矩阵、E2 加固方案（缓冲重放）、失败全家桶并行适配与三红线映射、
+  泳道模型与调度语义规格、决策空白 D16~D20（已全部裁决）。
+
+### Tech Debt（本批不清，范围纪律记录）
+
+- snapshot RPC 的 `rosterLines`（roster 结构化字段的文本镜像）在 0.3.0-tisitan.9
+  A-05 已标 deprecated，兼容期保留至今——本批快照形状改造（current →
+  currentRecords）未顺手清理该兼容行；待旧 dist 包消化窗口结束后随后续批移除。
+
+### [0.4.0-tisitan.1]（起草中，未发布——发版整体挂起，主批裁决：基线采集优先）
+
+0.4.0 线一期「报告外部化」批（next-gen-architecture 规划步骤 1.1~1.7，D5/D6/D14/D15
+及 help-mtn753lh/help-mtn8uwgr-ds1fes 两轮主人裁决口径）。**版本号保持
+0.4.0-tisitan.0 不动**：digest 门认文件树不认版本号，本批随 preset 树在主人下次重启
+dsh web 时即部署生效——但装机 yml 的 broker 行显式 `reportExternalization: false`
+（显式配置优先于代码默认 `?? true`），外部化保持关，metrics 单独点亮采「外部化开启
+前」的对照基线；基线关窗后改 `true` 或删该行回落默认即点亮。
+
+### Added
+
+- **报告板存储层 `preset/shared/board.mjs`**（步骤 1.1）：`writeBoard(sessionId,
+  childId, text)` / `readBoardSlice(sessionId, childId, offset, limit)` / `boardPath`。
+  根焊死 `<DSH_HOME>/dsh-my-go/board/`，段名经 `encodeSegment` 双段编码（`..` 与路径
+  分隔符全编码，防跨会话路径逃逸）；读侧 0-based 行切片，越界钳制并在返回体回显实际
+  生效值；文件不存在返回 `{error:'not-found', path}`（正常查询形态，不抛）。
+- **报告格式契约 `preset/shared/report-format.mjs`**（步骤 1.2）：`<mygo_report>`
+  摘要块的 `parseSummaryBlock` / `validateSummary` / `extractReportBlock`。
+  多块取**最后一个完整闭合块**并记 `ambiguous`；`ok` 口径排除 ambiguous（fatalOf）；
+  evidence 行校验「路径:行号」形态；conclusion 上限走 config 位（`reportMaxConclusionChars`，
+  本期 null 不限，0.2 基线 P90 到手后定稿）。
+- **`report_submit` 子代理工具**（步骤 1.3，主编面向 deny 之外）：完整报告全文落板，
+  身份只从 exec.agent 推导（childId = agent.id、sessionId = header.parentSession），
+  子代不可能伪造他人板；主编侧 invoke 抛错（isSubAgent 运行时守卫）。D14 容量观测
+  `board-write` 事件（bytes/sessionId/childId）。
+- **报告格式条款注入**（步骤 1.4）：systemPrompt section 按工种路由注入
+  SUMMARY_CLAUSE（终局消息只输出摘要块、完整报告先走 report_submit）；REPORT_EXT 闸内。
+- **机械闸门 + 补发链**（步骤 1.5，方案甲裁决）：end 归因第九出口
+  `report-gate-repair`——completed 终局且闸门开时过闸：合格直通（台账 conclusion 存
+  摘要块整段、全文落板兜底）；首次不合格 → once-guard（`childRegistry.repairRetried`，
+  retireChild 终局清 + rearmChild 复活清双点）+ followupPrompt（携带 validateSummary
+  具体 errors 清单）+ queued 投递补发一轮，**不 finish 不 revive**（记录留 currentMap
+  实体占槽，advance='no'）；已补发仍不合格 → 转裁决（「格式不合格：」前缀落账 +
+  notifyOwner 终局通知）；投递失败兜底「格式不合格（补发投递失败）：」落账解冻队列。
+  failed 永不过闸；ambiguous 视为不合格；双发残余窗口为已知边界（结论按不合格落账，
+  不比现状差）。观测新 kind `report-gate`（pass/repair/verdict/repair-failed 四 phase，
+  D2 阈值反馈环原料）。
+- **`report_fetch` 主编工具**（步骤 1.6）：切片读板（offset 0-based 跳行、默认 limit
+  200、上限钳 2000、越界钳制回显实际生效值）；sessionId 焊死主编会话自身（deny 闸 +
+  canOrchestrate 守卫 + boardPath 双段编码三道纵深）；not-found 包装主编可读返回；
+  description 自教（D15：「切片是常态，全文取回是异常路径」）。子代理 deny 闸追加
+  `report_fetch`（与 go_work/continue 同待遇）。
+- **config 键 `reportExternalization`**（broker 行 config 轨；D5 一期默认开）：
+  代码 `?? true`；装机 yml 显式 `false`（见上，基线采集期口径）。关 → 两工具不注册、
+  条款不注入、收尾不落板不闸门，编排退回 0.3.x 现状（`test/report-fetch.test.mjs`
+  等三处行为档锁定）。
+
+### Changed
+
+- 子代理 deny 闸清单追加 `report_fetch`（读板是主编的复核动作，子代自读无意义）。
+- 既有 102 处机制用例批量显式 `reportExternalization: false`（1.5 起默认闸门开启，
+  completed+无块终局进入补发路径——机制用例显式声明「关闸世界」，闸门行为由
+  report-gate 行为档专锁）。
+
+### Docs
+
+- 规划文档 1.5 节两条互斥规格按方案甲改写 + Sisyphus 裁决记录行；1.7 节 yml 键值按
+  方案 A（显式 false）改写 + 裁决记录行。
+- README config 键表补 `reportExternalization` 行（默认值列 = 代码默认 true，注明
+  yml 当前显式 false 与基线口径）。
+- 测试：新增 `test/board.test.mjs`（round-trip + 越界钳制 + 编码防逃逸 + 变异探针）、
+  `test/report-format.test.mjs`（解析/校验/多块 ambiguous/证据行形态）、
+  `test/report-submit.test.mjs`、`test/report-clause.test.mjs`、`test/report-gate.test.mjs`
+  （五路径 + 双发已知边界）、`test/report-fetch.test.mjs`（八例）；anti-bypass 双向
+  增补；host-parity 身份标记与消费在册三处兑现；child-registry 第 9 表行为档。
+  全量 `npm test` 397/397 全绿（tisitan.0 基线 334 → 1.x 累计 +63）。
+
+### 分发链路批（纯文档 + 仓库政策，零代码逻辑变更）
+
+本批把「怎么装本 fork」从一条会装到
 别人包名上的 npm 指令，改写成一条 clone 即用、装方零构建权限的 git 路径；配套把构建
 产物的入库政策写进 git 与三份文档，并把 npm 发布渠道正式标注为**休眠**。
 本批**不 bump version**（未触碰 `preset/` 任何文件，不触发装机副本重拷）。
@@ -109,6 +432,61 @@
    `0.3.0-tisitan.12`。两处都不是本批引入的，且改它们属于版本口径动作（应与 bump
    同批做），已在 FORK-GUIDE「发布流程」第 1 步写明"meta 块一并对齐"的口径，等下一次
    真发版顺手带走。
+
+## [0.4.0-tisitan.0] - 2026-09-04
+
+**0.4.0 线首批**：第 0 期观测埋点批（next-gen-architecture 规划步骤 0.1，D5/D6 已裁决
+口径）。**纯观测零行为变更**：不改任何既有编排行为 / 通知内容 / 时序——既有 324 例
+零变化即行为未动的证据；新增观测面只读既有状态快照，写盘全部异步串行、fs 异常只
+warn 吞掉，编排热路径零 await、零感知。
+
+### Added
+
+- **观测埋点模块 `preset/tools/metrics.mjs`**（broker 本地模块，刻意不进 shared——只有
+  broker 消费，避免无谓扩大单源守卫面；铁律同 shared：零 `@deepseek-ai/*`、零 ctx）：
+  `createMetrics({ dir, enabled, cap })` → `{ record(event), close() }`。事件 JSONL
+  追加写（一行一事件，`ts` 统一注入、显式传入不覆盖）；record 为 fire-and-forget
+  串行 Promise 链，调用序即落盘序；**任何 fs 异常只 console.warn 吞掉，绝不抛进编排
+  热路径**（R0.1，变异探针已实测：删掉 try/catch 该用例必红）。`enabled=false` 零盘触
+  （连目录都不建）；close 幂等，close 后 record 静默丢弃。
+- **行数 cap 兜底闸（R0.2，仿 CURRENT_MAP_CAP 哲学）**：events.jsonl 超 10 万行
+  （`METRICS_EVENTS_CAP`）截头保留最新一半 + 每次截头动作恰一条 warn；截头的整文件
+  重写走同目录 `.tmp` + rename 原子范式（writeLedgerSync 同款，失败清残骸）；cap 跨
+  重启有效（初始化时数现存行数）。按日轮转不做（YAGNI，规划 0.1 明确排除）。
+- **broker 埋点接线七点**（全部只读快照、零分支改动、零通知内容变化）：
+  - `{kind:'dispatch', agentType, promptBytes, ts}`——dispatchWork 成功处（go_work 直派 /
+    队列补位 / forward 转派三路共用出口）；
+  - `{kind:'end', childId, agentType, stopReason, conclusionBytes, runMs?}`——end
+    dispatcher finalize 分支（报告大小分布 + 子代运行时长基线；记录缺席时 runMs 如实
+    缺席）；
+  - `{kind:'queue-pop', waitMs}`——advanceQueue dequeue 后（队列等待基线）；
+  - `{kind:'continue', promptBytes, urgency}`——continue 投递两处（steer 成功分支 +
+    queued/abort 通用投递，记声明档）与 forward 投递处（forward 无 urgency 概念，
+    如实记实际投递档 delivery）；
+  - `{kind:'inject', bytes}`——notifyParent（notifyOwner 转调此函数，单点即全集；这是
+    「插件自己注入了多少」的口径，内核 notifySettlement 全文注入不可拦，不在观测面）。
+  事件 schema 开放（record 透传任意 kind）：第一期的 board 容量观测（R1.5/D14）与
+  report-gate 补发次数（R1.1'/D2 阈值反馈环）届时直接打新 kind，metrics 模块零改动。
+- **config 键 `metrics`**（broker 行 config 轨；D6 已裁决第 0 期默认开——采基线是第一
+  目的）：`config.metrics ?? true`；`false` 零写盘。落盘路径
+  `<DSH_HOME || ~/.dsh>/dsh-my-go/metrics/events.jsonl`（台账惯例同款）。插件卸载收尾
+  `close()` 排空在飞写入链（观测日志容忍尾巴，绝不阻塞卸载）。
+- **防回潮双入册**：`test/apply.mjs` lib 半负向链追加 `createMetrics(`；
+  `test/host-parity.test.mjs` 新增「观测面为 broker 独有」分界断言（三标记 lib=0 /
+  broker>=1，按 C-10 口径降级为在册弱标记）。新测试 `test/metrics.test.mjs` 9 例
+  （模块直测 7 + broker 接线行为档 2）：追加/保序/ts 注入/close 幂等/enabled=false
+  零写盘/R0.1 变异探针/cap 截头与 warn 语义/cap 跨重启续算/端到端接线。正向等待全
+  谓词轮询、零固定 sleep；测试清理统一 `removeHomeWithRetry`（9-2 防抖写竞态纪律）。
+  全量 `npm test` 334/334 全绿（既有 324 + 新增 10）。
+
+### Docs
+
+- 规划文档 D5 行订正：「一、二期默认开」旧表述与步骤 2.6 的 `readPoolSize ?? 1` 冲突，
+  按已裁决口径改写为「一期默认开、二、三期默认关」，文档恢复自洽。
+- README config 键表补 `metrics` 行。
+- 两处先前批次遗留的版本号漂移随本批 bump 顺手带走（上一批 [Unreleased] 意外项 6
+  的预告兑现）：README meta 块 `0.3.0-tisitan.10`、FORK-GUIDE 目录树注释
+  `0.3.0-tisitan.11` → 一并对齐 `0.4.0-tisitan.0`。
 
 ## [0.3.0-tisitan.12] - 2026-09-03
 

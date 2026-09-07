@@ -50,16 +50,38 @@ import { AGENT_TYPES, SELF_REGISTERED_TOOLS, ADJACENT_BYPASS_TOOLS, HISTORY_CAP,
 import { normalizeTurnFailure, isFallbackable } from '../shared/failure.mjs'
 import { readArchivedTurnFailure } from '../shared/archive.mjs'
 import { mergeRoleBindings, rosterKeys as sharedRosterKeys, rolePersona as sharedRolePersona, resolveRoleToolFilter as sharedResolveRoleToolFilter, renderRosterBriefing as sharedRenderRosterBriefing, rosterEntries as sharedRosterEntries, formatRosterRow as sharedFormatRosterRow } from '../shared/roles.mjs'
-import { Orchestration } from '../shared/orchestration.mjs'
+import { Orchestration, nextId } from '../shared/orchestration.mjs'
 import { createChildRegistry } from '../shared/child-registry.mjs'
 import { agentLabel, defaultBindings, describeAgent, escapeXml, typeOfAgent, resolveEffectiveBinding, pruneLedgerParents, loadAllPrompts as sharedLoadAllPrompts } from '../shared/misc.mjs'
 import { sessionEvents, deliverToAdjacent, canQueueAdjacent, reportToParent } from '../shared/adjacent.mjs'
 // subagent/end 的归因决策（0.3.0-tisitan.12 B5）：纯函数出 decision/ops/notices/facts，
 // 本文件只留 dispatcher——写表、发通知、起异步重派链、按 facts.advance 推进队列。
 import { attributeEnd, shouldAdvanceQueue } from '../shared/end-attribution.mjs'
+// 观测埋点（0.4.0-tisitan.0 步骤 0.1）：broker 本地模块（只有本文件消费，不进
+// shared——避免无谓扩大单源守卫面）。事件 JSONL 追加写 + 行数 cap 截头，
+// 任何 fs 异常在模块内部吞掉，编排热路径零感知（规划风险表 R0.1）。
+import { createMetrics } from './metrics.mjs'
+// board 存储层（第一期 1.1）：report_submit（1.3）落板唯一出口，读侧切片
+// 归 report_fetch（1.6）与 1.5 的「已落板」探测。段名编码与根焊死都在
+// shared/board.mjs 单点。
+import { writeBoard, readBoardSlice } from '../shared/board.mjs'
+// 摘要格式条款（第一期 1.2 单源，1.4 注入 spawnChild）：条款措辞与解析器同形
+// 由 test/report-format.test.mjs 锁定——此处 import 复用，不另抄第二份文本。
+// RELAY_CLAUSE（三期 3.6）：接力链 hop 的下游验收条款，composeRelayPrompt 在
+// 数据块在场时注入，同样单源复用。
+import { RELAY_CLAUSE, REPORT_CLAUSE, validateReportArgs } from '../shared/report-format.mjs'
+// 泳道原语（二期 2.2/2.3，read-pool-semantics.md §一/§二）：laneOf 判定表 +
+// 容量钳制。laneOf 同时是 dispatchWork/复活闸/advanceQueue 的上岗判定输入
+// （Orchestration 本体已在上方 import，此处不重复声明）。
+import { clampReadCapacity, laneOf } from '../shared/orchestration.mjs'
+// 接力链状态机（三期 3.2/3.3，relay-chain-semantics.md）：决策纯函数出
+// { decision, patch, ops, notices, facts }，本文件是 dispatcher——链记录的
+// patch/ops 落地、通知转发、台账 v3 恢复归一都按它的返回值执行（调用方协议
+// 三条见该文件头：先匹配后决策 / 决策显式登记 / 同步段零 await）。
+import { advanceChain, createChain, matchChainForEnd, matchChainForWork, normalizeRestoredChain, reconcileHopDispatch, reconcileWorkEnqueued, validateChainDeclaration, RELAY_CHAINS_CAP } from '../shared/relay-chain.mjs'
 
 // 保持两半既有导出面（测试与外部消费者经由两半入口引用共享实现）。
-export { Orchestration } from '../shared/orchestration.mjs'
+export { Orchestration }
 export { pruneLedgerParents, describeAgent, resolveEffectiveBinding } from '../shared/misc.mjs'
 export { sessionEvents, deliverToAdjacent, canQueueAdjacent, reportToParent } from '../shared/adjacent.mjs'
 export { projectKey, encodeSegment, readArchivedTurnFailure } from '../shared/archive.mjs'
@@ -137,6 +159,31 @@ export async function apply(ctx, config = {}) {
   const STATUS_CONCLUSION_MAX = config.statusConclusionMax ?? 400
   const HELP_CONTENT_MAX = config.helpContentMax ?? 240
   const SUBAGENT_PROMPT_MAX = config.subagentPromptMax ?? 200
+  // 观测埋点开关（0.4.0-tisitan.0 步骤 0.1，D6 已裁决：第 0 期默认开——采基线是
+  // 第一目的）。纯观测：只读既有状态快照组事件，零分支改动、零通知内容变化；
+  // 落盘路径沿用台账惯例（DSH_HOME || ~/.dsh）/dsh-my-go/metrics/events.jsonl。
+  const METRICS = createMetrics({
+    dir: join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'dsh-my-go', 'metrics'),
+    enabled: config.metrics ?? true,
+  })
+  // 卸载收尾：排空在飞写入链（close 幂等，fire-and-forget——卸载路径不等异步，
+  // 观测日志容忍尾巴，绝不阻塞卸载；与台账 writeLedgerSync 同点职责、宽松一档）。
+  ctx.effect(() => () => { void METRICS.close() }, 'dsh-my-go-broker.metrics()')
+  // 报告提交制开关（第一期，D5 已裁决一期默认开）：关 → report_submit 不注册、
+  // 提交闸门不启用、条款不注入——三条同闸。config 在会话组装期固定，
+  // 挂载时读一次即可，不做运行时切换（规划 1.7 只补 agent.cordis.yml 与文档）。
+  const REPORT_EXT = config.reportExternalization ?? true
+  // 读平面并发容量（二期 2.3 接线，D5 已裁决）：?? 1 = 关闭 = 全局单线现状；
+  // 2~3 启用读池（>3 钳制 3，钳制在 clampReadCapacity 内）。挂载期读一次，
+  // 与 REPORT_EXT 同律不做运行时切换——orchFor 创建实例时注入。
+  const READ_POOL_SIZE = clampReadCapacity(config.readPoolSize ?? 1)
+  // 接力链开关（三期 3.3，D5 三期默认关口径）：关 = chain_start/chain_resolve
+  // 不注册。与 REPORT_EXT 同律挂载期读一次，不做运行时切换。
+  const RELAY_CHAINS = config.relayChains ?? false
+  // E2 缓冲 grace（二期 2.4，D16 已裁决独立键）：抢跑 end 暂存后等 spawn 登记
+  // 追上的宽限，超时按「无从归属」落档 + 占位审计回收。等的是 spawn 网络窗口
+  // （天然长于 disposed 宽限的进程内事件赛跑），故不复用 DISPOSE_END_GRACE_MS。
+  const SPAWN_END_GRACE_MS = config.spawnEndGraceMs ?? 2000
   const disposeFallbackTimers = new Map()
   function cancelDisposeFallback(id) {
     const entry = disposeFallbackTimers.get(id)
@@ -240,7 +287,7 @@ export async function apply(ctx, config = {}) {
   function orchFor(parentId) {
     let orch = orchestrations.get(parentId)
     if (!orch) {
-      orch = new Orchestration()
+      orch = new Orchestration({ readCapacity: READ_POOL_SIZE })
       orch.onChange(() => bump())
       orch.onChange(() => scheduleLedgerSave())
       orchestrations.set(parentId, orch)
@@ -306,11 +353,35 @@ export async function apply(ctx, config = {}) {
   async function loadLedger() {
     try {
       const raw = JSON.parse(await readFile(ledgerPath, 'utf-8'))
-      if (raw && raw.version === 2 && raw.parents && typeof raw.parents === 'object') {
-        // v2：按编排会话分桶的台账，逐 parentId 恢复到各流水线实例
+      if (raw && (raw.version === 3 || raw.version === 2) && raw.parents && typeof raw.parents === 'object') {
+        // v2/v3：按编排会话分桶的台账，逐 parentId 恢复到各流水线实例
         for (const [pid, list] of Object.entries(pruneLedgerParents(raw.parents))) {
           if (!Array.isArray(list)) continue
           orchFor(pid).history = list.filter(isLedgerRow).slice(-HISTORY_CAP)
+        }
+        // v3（三期 3.3，D12）：chains 桶——恢复经 normalizeRestoredChain 归一
+        // （running→suspended('restart')、pending-fallback→failed、fallback 挂起
+        // 的 hopChildId 按 T8 自查谓词保留/归 restart，D28 裁决 + §5.3 精化）。
+        // 谓词查本实例 history（先于本循环恢复完毕，顺序即正确性）；坏行整行
+        // 丢弃留痕，绝不猜式修补。v2 档无 chains 桶 → 空起步。
+        if (raw.version === 3 && raw.chains && typeof raw.chains === 'object') {
+          for (const [pid, list] of Object.entries(raw.chains)) {
+            if (!Array.isArray(list)) continue
+            const orch = orchFor(pid)
+            for (const row of list) {
+              const rec = normalizeRestoredChain(row, {
+                hasSettledGeneration: (childId) => orch.history.some((r) => r.childId === childId),
+              })
+              if (rec) {
+                orch.chains.push(rec)
+                if (rec.state === 'suspended' && rec.suspendReason === 'restart') {
+                  console.warn(`[dsh-my-go] relay chain ${rec.id} restored as suspended(restart) at hop ${rec.cursor + 1} — awaiting chain_resolve (D13 snapshot visibility)`)
+                }
+              } else {
+                console.warn(`[dsh-my-go] relay chain ledger row dropped (malformed) under ${String(pid)}`)
+              }
+            }
+          }
         }
       } else {
         // 向后兼容 v1（单份 history 数组）：载入 key 为 'legacy' 的实例，
@@ -332,10 +403,17 @@ export async function apply(ctx, config = {}) {
   let ledgerClosed = false
   function ledgerPayload() {
     const parents = {}
+    const chains = {}
     for (const [pid, orch] of orchestrations) {
       if (orch.history.length > 0) parents[pid] = orch.history.slice(-HISTORY_CAP)
+      // v3 chains 桶（三期 3.3，D12）：终态含全量持久化（存量由 RELAY_CHAINS_CAP
+      // 在 chain_start 入口钳制），主销毁路径的桶删（D27）随 orchestrations
+      // 摘除自然生效。
+      if (orch.chains.length > 0) chains[pid] = orch.chains
     }
-    return JSON.stringify({ version: 2, parents: pruneLedgerParents(parents) })
+    const payload = { version: 3, parents: pruneLedgerParents(parents) }
+    if (Object.keys(chains).length > 0) payload.chains = chains
+    return JSON.stringify(payload)
   }
   function writeLedgerSync(payload) {
     const tmpPath = `${ledgerPath}.tmp`
@@ -398,7 +476,7 @@ export async function apply(ctx, config = {}) {
     if (inMemory) return inMemory
     try {
       const raw = JSON.parse(await readFile(ledgerPath, 'utf-8'))
-      const parents = raw && raw.version === 2 && raw.parents && typeof raw.parents === 'object'
+      const parents = raw && (raw.version === 3 || raw.version === 2) && raw.parents && typeof raw.parents === 'object'
         ? raw.parents
         : { legacy: Array.isArray(raw) ? raw : raw?.history }
       for (const [pid, list] of Object.entries(parents)) {
@@ -436,6 +514,10 @@ export async function apply(ctx, config = {}) {
           summary: text.length <= 120 ? text : `${text.slice(0, 119)}…`,
         },
       })
+      // 埋点（0.4.0-tisitan.0）：主编上下文增长的代理指标——插件自己注入了多少
+      // 字节（notifyOwner 转调本函数，单点即全集；内核 notifySettlement 全文注入
+      // 不可拦，不在本观测面内）。inject 同步受理成功才计。
+      METRICS.record({ kind: 'inject', bytes: text.length })
     } catch { /* 父会话已销毁/注入被拒：静默兜底 */ }
   }
   function resolveParentAgent(parentId) {
@@ -647,6 +729,21 @@ export async function apply(ctx, config = {}) {
     work.retries = (work.retries ?? 0) + 1
     if (work.retries > QUEUE_RETRY_MAX) {
       orch.dropQueuedFailed(work, error)
+      // 链感知（T14，§四矩阵外落账点）：链 hop 的 work 重试放弃 → 链 failed，
+      // 绝不留 running 滞留（终局真空防线）。matchChainForWork 的键 = hopWorkId
+      //（未上岗窗口），放弃只可能发生在该窗口内。
+      const droppedChain = matchChainForWork(orch.chains, work.id)
+      if (droppedChain) {
+        const cr = advanceChain(droppedChain, { type: 'queue-dropped', workId: work.id, reason: String(error) })
+        if (cr.decision !== 'idle') {
+          if (cr.patch) Object.assign(droppedChain, cr.patch)
+          for (const notice of cr.notices) notifyOwner(droppedChain.parentSessionId, notice.text)
+          METRICS.record({ kind: 'relay-chain', phase: cr.decision, chainId: droppedChain.id, cursor: droppedChain.cursor, sessionId: droppedChain.parentSessionId })
+        }
+        chainHopsByWork.delete(work.id)
+        bump()
+        scheduleLedgerSave()
+      }
       console.error(`[dsh-my-go] queued task ${work.id} (${work.agentType}) abandoned after ${QUEUE_RETRY_MAX} failed dispatch attempts:`, error)
       bump()
       // 继续消化后续排队任务
@@ -664,28 +761,52 @@ export async function apply(ctx, config = {}) {
     queueRetryTimers.set(orch, timer)
   }
 
-  // 插件卸载时清理重试定时器与 disposed 宽限期兜底定时器
+  // 插件卸载时清理重试定时器、disposed 宽限期兜底定时器与 E2 缓冲定时器
   ctx.effect(() => () => {
     for (const timer of queueRetryTimers.values()) clearTimeout(timer)
     queueRetryTimers.clear()
     for (const entry of disposeFallbackTimers.values()) clearTimeout(entry.timer)
     disposeFallbackTimers.clear()
+    for (const timer of endBufferTimers.values()) clearTimeout(timer)
+    endBufferTimers.clear()
+    endBuffer.clear()
   }, 'dsh-my-go-broker.queueRetry()')
 
   function advanceQueue(orch, parentHint) {
-    if (!orch || orch.isBusy()) return
-    const work = orch.dequeue()
-    if (!work) return
-    const agents = ctx.get('agents')
-    // 父会话兜底：按 work.parentId 从 agents 注册表重解析（队列推进没有
-    // 调用方 agent 对象可留存）；解析不到则由 dispatchWork 抛错走回补重试
-    const parentAgent = (work.parentId && agents ? agents.get(work.parentId) : undefined) ?? parentHint
-    void dispatchWork(work.agentType, work.prompt, parentAgent, undefined, work, orch).catch((error) => {
-      orch.requeueHead(work)
-      bump()
-      console.error('[dsh-my-go] queued dispatch failed, task requeued:', error)
-      scheduleQueueRetry(orch, work, parentAgent, error)
-    })
+    if (!orch) return
+    // 二期 2.3（D18 已裁决 global-scan，read-pool-semantics.md §2.1）：自队首扫描
+    // 全队列，第一条其 lane 有空位的 work 上岗；满池 lane 的 work 原地保留——
+    // skip 不重排队列序，lane 内 FIFO 与全局序可观测都不变。readPoolSize=1 时
+    // isLaneFree 退化为全局单线（size===0 才 free），本循环与旧「队首一刀切」
+    // 逐字节等价：上岗一条即满，扫描自然终止。
+    // 终止性：每轮 picked 必然出队（dequeueById）或队空返回；派发是 void 异步链，
+    // 其同步段（至 beginSpawning 占槽）先于下一轮扫描执行，laneCount 即时反映，
+    // 循环填池到无空位为止。派发同步段抛错（unknown role/无 parent）时占位未入
+    // 槽、work 已出队，由下方 catch 在微任务里 requeueHead 回补——本循环不会
+    // 二次考察同一条 work（已不在队列），无死循环面。
+    for (;;) {
+      const queueSnapshot = orch.queue
+      let picked = -1
+      for (let i = 0; i < queueSnapshot.length; i++) {
+        if (orch.isLaneFree(laneOf(queueSnapshot[i].agentType))) { picked = i; break }
+      }
+      if (picked < 0) return
+      const work = orch.dequeueById(queueSnapshot[picked].id)
+      if (!work) continue
+      // 埋点（0.4.0-tisitan.0）：队列等待时长基线（work.createdAt 于 enqueue 时落账，
+      // shared/orchestration.mjs）。只读快照，零时序影响。
+      METRICS.record({ kind: 'queue-pop', waitMs: Date.now() - work.createdAt })
+      const agents = ctx.get('agents')
+      // 父会话兜底：按 work.parentId 从 agents 注册表重解析（队列推进没有
+      // 调用方 agent 对象可留存）；解析不到则由 dispatchWork 抛错走回补重试
+      const parentAgent = (work.parentId && agents ? agents.get(work.parentId) : undefined) ?? parentHint
+      void dispatchWork(work.agentType, work.prompt, parentAgent, undefined, work, orch).catch((error) => {
+        orch.requeueHead(work)
+        bump()
+        console.error('[dsh-my-go] queued dispatch failed, task requeued:', error)
+        scheduleQueueRetry(orch, work, parentAgent, error)
+      })
+    }
   }
 
   // ── 名册路由辅助（0.2.3-tisitan.14 数据层 roles dict 的消费面） ────────────────
@@ -730,8 +851,14 @@ export async function apply(ctx, config = {}) {
     ])
     const request = {
       label,
+      // 提交条款注入（REPORT_CLAUSE，唯一出处）：此处是直派与备选重派唯一共用
+      // 组装点（事实 C），一处追加两路同覆盖。continue 走 adjacent 不经 spawnChild
+      // （条款随首派上下文自然存续，不另开接缝）。开关关 = prompt 数组保持单项，
+      // 现状零变化。尾块是独立 text 项：任务原文保持首项原样，子代过程工具链
+      // 对 prompt[0] 的既有假设不受扰。
       prompt: [
         { type: 'text', text: prompt },
+        ...(REPORT_EXT ? [{ type: 'text', text: REPORT_CLAUSE }] : []),
       ],
       ...(persona !== undefined ? { persona } : {}),
       ...(roleFilter !== undefined ? { toolFilter: roleFilter } : {}),
@@ -763,7 +890,10 @@ export async function apply(ctx, config = {}) {
     // 队列路径（advanceQueue）没有调用方信号可传——必须合成一个永不中止的信号，
     // 否则队列派发必败 TypeError（0.2.3-tisitan.6 部署实测：重试 4 次全败后放弃）。
     const sig = signal ?? new AbortController().signal
-    if (orch.isBusy()) {
+    // 泳道容量分叉（二期 2.3，原 isBusy 判定迁移）：目标 lane 有空位即直接 spawn，
+    // 满则入队等本 lane 释放。readPoolSize=1 时 isLaneFree 退化口径 = 全局空，
+    // 与旧 isBusy() 判定逐字节等价（D5 默认关 = 现状）。
+    if (!orch.isLaneFree(laneOf(agentType))) {
       const workId = orch.enqueue(agentType, prompt, parent?.id)
       bump()
       return { childId: workId, status: 'queued', label: agentLabel(agentType, prompt.slice(0, SUBAGENT_PROMPT_MAX)), queued: true }
@@ -794,11 +924,38 @@ export async function apply(ctx, config = {}) {
       orch.bindChild(placeholder.childId, childId)
       childOwner.set(childId, parent.id)
       bump()
+      // 链 hop 回填（三期 3.4，§4.2-① 时序契约的本体）：登记同步段回填真 id，
+      // 位置锁死在下方 E2 认领（claimBufferedEnd）之前——认领重放走全归因管线
+      // 后查链时回填必已就位，重放查不到链的时序窗口结构性消失（R11 探针锁
+      // 此位置约束：挪到认领之后必红）。同步段零 await（协议第 3 条）。
+      if (queuedWork) {
+        const hopChain = chainHopsByWork.get(queuedWork.id)
+        if (hopChain) {
+          const rp = reconcileHopDispatch(hopChain, { workId: queuedWork.id, childId, now: Date.now() })
+          if (rp) Object.assign(hopChain, rp)
+          chainHopsByWork.delete(queuedWork.id)
+        }
+      }
+      // E2 缓冲认领点（二期 2.4，方案 A）：登记已落地（type/台账/childOwner 三表
+      // 就位），spawn resolve 前抢跑的那条 end 若在缓冲里，此刻按真 id 精确认领
+      // 并同步重入归因管线（重放走全管线：E4/E5/E6/E7/E9 全量生效）。同步段零
+      // await：认领与重放不引入任何新真空期。
+      const buffered = claimBufferedEnd(childId)
+      if (buffered !== undefined) processEnd(buffered)
+      // 埋点（0.4.0-tisitan.0）：派发成功基线。spawn 已 resolve、登记已落位，
+      // 此处即「成功处」——三条派发路（go_work 直派/队列补位/forward 转派工种）
+      // 共用本出口，一处埋点全量覆盖。
+      METRICS.record({ kind: 'dispatch', agentType, promptBytes: prompt.length, ts: Date.now() })
       // 队列任务上岗映射推送：占位 work-* 与真身 childId 的对应关系低频高价值
       // （Sisyphus 手里的 go_work 返回值只有占位 id），注入一行短通知补齐。
       if (queuedWork) {
         notifyParent(parent, `[dsh-my-go] 队列任务上岗: ${queuedWork.id} → ${childId} (${agentType})`)
       }
+      // D19 直派补位（二期 2.3，read-pool-semantics.md §2.2）：直派占槽后同 lane
+      // 可能仍有空位，立即推进队列——否则读池 2~3 时队列中同 lane 等待任务无人
+      // 驱动，饿死到下一个 end。满池/队列无匹配时本调用是 no-op（global-scan
+      // 扫不到可上岗 work 即返回），容量 1 退化下恒 no-op（= 旧「直派后不推进」）。
+      advanceQueue(orch, parent)
       return { childId, status: 'running', label, queued: false }
     } catch (error) {
       orch.abort(placeholder.childId)
@@ -850,8 +1007,13 @@ export async function apply(ctx, config = {}) {
       throw new Error(`sub-agent ${id} belongs to another live orchestration session (${String(ownerPid)}); ${verb} it from that session`)
     }
     const isFinished = !orch.currentMap.has(id)
-    if (isFinished && orch.isBusy()) {
-      throw new Error(`another sub-agent is currently running; wait for it to finish before ${verb === 'continue' ? 'reviving' : 'forwarding to'} a completed sub-agent (single-line blocking)`)
+    // 复活闸泳道化（二期 2.3，原 isBusy 判定迁移）：复活/转发把记录放回其 lane
+    // 的槽，判定「目标 lane 有没有空位」而非「实例是否全忙」——容量 ≥2 时一条
+    // explore 的复活不再被在飞的写平面任务挡住，也不得挤爆已满的读池。
+    // readPoolSize=1 时退化口径 = 全局空，与旧判定逐字节等价。
+    if (isFinished && !orch.isLaneFree(laneOf(record.agentType))) {
+      const lane = laneOf(record.agentType)
+      throw new Error(`no free slot in the ${lane} lane (capacity ${orch.capacityOf(lane)}); wait for a slot before ${verb === 'continue' ? 'reviving' : 'forwarding to'} a completed sub-agent`)
     }
     // spawning 占位记录友好闸（0.3.0-tisitan.7 N18）：record 在册而 childId 还是
     // beginSpawning 造的占位（真身未 resolve），此时既无 turn 可 steer/abort，投递
@@ -976,8 +1138,8 @@ export async function apply(ctx, config = {}) {
     description: [
       'Dispatch a sub-agent (role) from the live roster to work on a task. The sub-agent starts with an empty context and runs with its role\'s persona and tool set.',
       'The roster = built-in specialists + custom roles. Before dispatching an unfamiliar name, check the roles section of orchestration_status for the current roster, per-role model bindings and tool filters.',
-      'Single-line blocking: if a sub-agent is already running, this task is queued and starts when the current one finishes.',
-      'Blocking is scoped to YOUR orchestration session: other sessions run their own independent pipelines and never queue behind yours (and vice versa).',
+      'Concurrency model (read-pool): the write plane (Hermes/Hephaestus/Prometheus/Oracle/Looker/custom roles) runs one at a time; the read plane (Explore/Librarian) runs up to readPoolSize in parallel — default 1 keeps the legacy fully-serial behavior.',
+      'A task whose lane is at capacity is queued and starts when a slot frees in ITS lane. Lane-aware scheduling: a queued task may start while other lanes are still busy, and dispatching a new task can immediately start already-queued work of the same lane when a slot is free (within one session; other sessions always run independent pipelines).',
       'The result contains a childId you keep for later continue/forward operations.',
       'If the task was queued (queued=true), the returned id is a queue placeholder (work-*), NOT a childId — once dispatched, find the real childId via orchestration_status.',
     ].join('\n'),
@@ -1075,6 +1237,8 @@ export async function apply(ctx, config = {}) {
         })
         if (steerMessageId !== undefined) {
           orch.followupPrompt(targetId, args.prompt, 'steer')
+          // 埋点（0.4.0-tisitan.0）：投递成功基线（steer 档）。urgency 为声明档。
+          METRICS.record({ kind: 'continue', promptBytes: args.prompt.length, urgency })
           bump()
           return { accepted: true, messageId: steerMessageId, mode: 'steer' }
         }
@@ -1100,6 +1264,9 @@ export async function apply(ctx, config = {}) {
         throw error
       }
       if (delivery === 'steer' && mode === 'queued') mode = 'steer'
+      // 埋点（0.4.0-tisitan.0）：投递成功基线（queued/abort 档及塌档重试）。
+      // urgency 取声明档（abort 掐断成功后仍如实记 'abort'）。
+      METRICS.record({ kind: 'continue', promptBytes: args.prompt.length, urgency })
       // 台账照记 urgency 声明档（queued 为默认不落字段，保持旧记录零变化）
       rearmAfterDelivery({
         orch, record, targetId, ownerPid, isFinished,
@@ -1252,6 +1419,9 @@ export async function apply(ctx, config = {}) {
       const { messageId, delivery } = await deliverWithQueueFallback({
         parent, targetId, prompt, signal: exec?.signal, label: 'forward',
       })
+      // 埋点（0.4.0-tisitan.0）：forward 投递成功基线。forward 无 urgency 概念，
+      // urgency 字段如实记实际投递档（delivery：queued / 塌档 steer）。
+      METRICS.record({ kind: 'continue', promptBytes: prompt.length, urgency: delivery })
       // M5：forward 的台账照记在复籍**之前**（continue 在其之后），差异见
       // rearmAfterDelivery 的 ledgerFirst 参数注释；求助单销账始终在投递成功之后。
       rearmAfterDelivery({
@@ -1301,12 +1471,19 @@ export async function apply(ctx, config = {}) {
       if (!orch) return { text: '○ idle' }
       const s = orch.snapshot()
       const lines = []
-      if (s.current) {
-        lines.push(`● running: ${s.current.agentType} (${s.current.childId}) — ${s.current.status}`)
+      if (s.currentRecords.length > 0) {
+        // 二期 2.5（D20）：current 单条 → currentRecords 全量列表化；并行下主编
+        // 需要一眼读出各 lane 的在飞数，每行带 lane 标注，池未扩容（两 lane 均
+        // 容量 1）时不加汇总行（保持旧观感）。
+        for (const c of s.currentRecords) lines.push(`● running: ${c.agentType} (${c.childId}) — ${c.status} [${c.lane ?? laneOf(c.agentType)}]`)
+        if (s.currentRecords.length > 1 || orch.capacityOf('read') > 1) {
+          lines.push(`  lanes: read ${orch.laneCount('read')}/${orch.capacityOf('read')} · write ${orch.laneCount('write')}/${orch.capacityOf('write')}`)
+        }
       } else {
         lines.push('○ idle')
       }
       if (s.queue.length > 0) lines.push(`⏳ queue: ${s.queue.map((w) => `${w.agentType}#${w.id}`).join(', ')}`)
+      lines.push(...renderChainLines(s.chains))
       for (const help of s.helpRequests) lines.push(`❓ help ${help.id}: [${help.intent}] ${help.content.slice(0, HELP_CONTENT_MAX)}`)
       for (const r of s.history.slice(-STATUS_HISTORY_LIMIT)) {
         const flat = (r.conclusion ?? '').replace(/\s+/g, ' ')
@@ -1326,6 +1503,23 @@ export async function apply(ctx, config = {}) {
   // 「同源同格式」只是愿望。文本格式一字不动（编排状态与既有断言零变更）。
   function renderRosterLines() {
     return ['── 角色名册（roster） ──', ...sharedRosterEntries(bindings).map(sharedFormatRosterRow)]
+  }
+
+  // 接力链行（三期 3.5，§5.1 D13 可观测兜底的主语义）：非终态链每链一行——
+  // 主编每次回合自查 orchestration_status/snapshot 都能看到挂起链与在跑链，
+  // 永不超时放行（D13 字面），处置入口（chain_resolve）随行提示。挂起原因
+  // review/sync/gate-verdict/fallback/input-missing/restart 全部原样可见。
+  // 行格式：`⛓ relay-chain <id> [state(:reason)] hop k/n (<agent>) — await …`
+  function renderChainLines(chains) {
+    const live = Array.isArray(chains) ? chains.filter((c) => c && !['done', 'failed', 'aborted'].includes(c.state)) : []
+    if (live.length === 0) return []
+    const awaitHint = { suspended: 'await resolve (chain_resolve)', 'pending-fallback': 'await fallback verdict' }
+    return live.map((c) => {
+      const state = c.suspendReason ? `${c.state}:${c.suspendReason}` : c.state
+      const agent = c.hops?.[c.cursor]?.agent ?? '?'
+      const hint = awaitHint[c.state] ? ` — ${awaitHint[c.state]}` : ''
+      return `⛓ relay-chain ${c.id} [${state}] hop ${c.cursor + 1}/${c.hops.length} (${agent})${hint}`
+    })
   }
 
   ctx.tools.register({
@@ -1350,7 +1544,7 @@ export async function apply(ctx, config = {}) {
       if (!orch) return { text: '# 当前 sub-agents\n（还没有任何 sub-agent）' }
       const s = orch.snapshot()
       const lines = ['# 当前 sub-agents']
-      const all = [...(s.current ? [s.current] : []), ...s.history.slice(-50)]
+      const all = [...s.currentRecords, ...s.history.slice(-50)]
       const seen = new Set()
       for (const r of all) {
         if (seen.has(r.childId)) continue
@@ -1366,6 +1560,473 @@ export async function apply(ctx, config = {}) {
       return { text: lines.join('\n') }
     },
   })
+
+  // ── report_submit（报告提交制，0.5.0-tisitan.1）：子代完整报告落板 + 成功事实登记 ──
+  // 身份只从 exec.agent 推导（childId = agent.id、sessionId = header.parentSession，
+  // 两者皆由 harness 填写、不经参数面），子代不可能伪造他人板——防越权写是本
+  // 工具的存在前提。子代 deny 闸不得 deny 本工具（它就是子代面向的上报通道）；
+  // 主编侧无 parentSession，运行时守卫直接抛错。四字段先过 validateReportArgs
+  //（唯一校验出处）：不过 → 逐条错误抛回原地重调，不落板、不登记；过 → 落板 +
+  // conclusion/evidence/open 登记成功事实（终局合成回执消费）。开关关 → 不注册。
+  if (REPORT_EXT) {
+    ctx.tools.register({
+      name: 'report_submit',
+      description: [
+        'Submit your COMPLETE task report to the report board, where the orchestrator can read it back with report_fetch. Call it ONCE when your task work is done, with all four fields:',
+        '- report: the COMPLETE report text (implementation details, process, all evidence). Plain text or Markdown; goes to the board for sliced reading.',
+        '- conclusion: 2-4 sentence self-contained conclusion (what was done, key decisions, outcome).',
+        '- evidence: string array; each item is one bare "path:line" anchor (e.g. preset/tools/broker.mjs:87) with no surrounding prose; pass ["无"] only when there is truly no file evidence.',
+        '- open: remaining/deferred items; write 「无」 if none.',
+        'A successful submit IS the delivery — the orchestrator receives a system-synthesized summary receipt, and your final message can be a short free-form wrap-up (one sentence is ideal). Validation failures return per-item errors: fix and re-call in place, no need to redo the task. What you submit here does NOT go into the orchestrator\'s context.',
+      ].join('\n'),
+      parameters: {
+        type: 'object',
+        properties: {
+          report: { type: 'string', description: 'The COMPLETE report text (implementation details, process, all evidence). Plain text or Markdown.' },
+          conclusion: { type: 'string', description: '2-4 sentence self-contained conclusion: what was done, key decisions, outcome.' },
+          evidence: { type: 'array', items: { type: 'string' }, description: 'One bare "path:line" anchor per item (e.g. preset/tools/broker.mjs:87), no surrounding prose. Pass ["无"] when there is no file evidence.' },
+          open: { type: 'string', description: 'Remaining/deferred items; 「无」 if none.' },
+        },
+        required: ['report', 'conclusion', 'evidence', 'open'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { ok: { type: 'boolean' }, path: { type: 'string' }, bytes: { type: 'number' } },
+          required: ['ok', 'path', 'bytes'],
+        },
+        render: (_args, value) => [{ type: 'text', text: `report_submit → 已落板 (${value.bytes} bytes)\n${value.path}` }],
+      },
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        const child = exec?.agent
+        if (!child) throw new Error('report_submit requires a calling agent (exec.agent was undefined)')
+        if (!isSubAgent(child)) throw new Error('report_submit is only available to sub-agents (orchestrator sessions read reports via report_fetch, they never submit)')
+        const sessionId = child.session?.header?.parentSession
+        if (typeof sessionId !== 'string' || sessionId === '') {
+          throw new Error(`report_submit: parent session id is missing or malformed (${String(sessionId)})`)
+        }
+        const checked = validateReportArgs(args)
+        if (!checked.ok) {
+          throw new Error(['report_submit: 字段校验未通过（未落板、未登记，原地修正重调即可）', ...checked.errors.map((e) => `- ${e}`)].join('\n'))
+        }
+        let written
+        try {
+          written = await writeBoard(sessionId, child.id, args.report)
+        } catch (error) {
+          console.warn(`[dsh-my-go] report_submit 落板失败 (${sessionId}/${child.id}): ${String(error)}`)
+          throw new Error(`report_submit failed: ${String(error)}`)
+        }
+        childRegistry.reportSubmitted.set(child.id, checked.value)
+        // D14 容量观测（开放 schema 直接打新 kind，metrics 模块零改动）：
+        // bytes 供容量基线，sessionId/childId 供 R1.5 无界增长观测按会话分桶溯源。
+        METRICS.record({ kind: 'board-write', sessionId, childId: child.id, bytes: written.bytes })
+        return { ok: true, path: written.path, bytes: written.bytes }
+      },
+    })
+  }
+
+  // report_fetch（第一期 1.6，主编面向读板）：切片是常态、全文取回是异常路径
+  // （D15：用法导向只写进 description 自教，不动 system prompt）。根焊死
+  // board/<主编会话 id>/——sessionId 一律取 exec.agent.id（主编会话自身），
+  // 不经参数面：子代即便绕过 deny 闸也读不到别家板（跨会话不可达由 1.1 的
+  // boardPath 双段编码兜底），canOrchestrate 运行时守卫与子代 deny 闸双保险。
+  // 分页口径（D1，1.1 readBoardSlice 已备）：offset 为 0-based 跳过行数，越界
+  // 钳制并回显实际生效值；默认 limit 200 行、上限 2000 行（工具层钳业务上限——
+  // 一次调用最多拉 2000 行进主编上下文，再大就该用 evidence 行号缩小窗口）。
+  if (REPORT_EXT) {
+    ctx.tools.register({
+      name: 'report_fetch',
+      description: [
+        'Read a sub-agent\'s report back from the report board, sliced by lines. Sub-agents wrote these reports there via report_submit.',
+        '切片是常态，全文取回是异常路径：日常只用 offset/limit 读关键段（报告 evidence 里的「路径:行号」可直接换算成行位），把整份报告一次性拉进上下文会挤占你自己的预算——仅在切片不足以下判断时才扩大窗口。',
+        '- childId: which sub-agent\'s report to read (ids are listed in orchestration_status).',
+        '- offset: 0-BASED line offset — how many lines to SKIP before reading (Array.slice semantics, NOT a 1-based page number). Default 0.',
+        '- limit: max lines to return per call. Default 200, capped at 2000.',
+        'The response carries totalLines so you can page precisely; out-of-range offset/limit are clamped, and the response echoes the effective values.',
+      ].join('\n'),
+      parameters: {
+        type: 'object',
+        properties: {
+          childId: { type: 'string', description: 'The sub-agent session id whose report to read.' },
+          offset: { type: 'number', description: '0-based line offset (lines to skip). Default 0.' },
+          limit: { type: 'number', description: 'Max lines to return. Default 200, capped at 2000.' },
+        },
+        required: ['childId'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean' },
+            totalLines: { type: 'number' },
+            offset: { type: 'number' },
+            limit: { type: 'number' },
+            text: { type: 'string' },
+            message: { type: 'string' },
+          },
+          required: ['ok'],
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.ok
+            ? `report_fetch → ${value.totalLines} 行中的第 ${value.offset + 1}-${value.offset + value.limit} 行\n${value.text}`
+            : `report_fetch → 未找到：${value.message}`,
+        }],
+      },
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        const parent = exec?.agent
+        if (!canOrchestrate(parent)) throw new Error('report_fetch is reserved for orchestrator sessions (agents without parentSession)')
+        const sessionId = parent.id
+        if (typeof args?.childId !== 'string' || args.childId === '') {
+          throw new Error('report_fetch requires a non-empty childId (see orchestration_status for ids)')
+        }
+        // 业务钳制在工具层（readBoardSlice 只管物理边界）：offset 非≥有限数按 0、
+        // limit 缺省 200 / 上限 2000；NaN/Infinity 一律按缺省兜（schema 已限 number，
+        // 此处是对宿主宽松传参的防御）。
+        const offset = Number.isFinite(args.offset) ? Math.max(0, Math.trunc(args.offset)) : 0
+        const limit = Number.isFinite(args.limit) ? Math.min(Math.max(0, Math.trunc(args.limit)), 2000) : 200
+        const slice = await readBoardSlice(sessionId, args.childId, offset, limit)
+        if (slice.error === 'not-found') {
+          // not-found 是正常查询形态（子代未完工/未提交/id 笔误），不抛——主编
+          // 需要的是可读指引而不是异常栈。
+          return { ok: false, message: `No report on the board for childId "${args.childId}" (not submitted yet, still running, or a wrong id — check orchestration_status).` }
+        }
+        if (slice.error) throw new Error(`report_fetch failed: ${slice.error}`)
+        return { ok: true, totalLines: slice.totalLines, offset: slice.offset, limit: slice.limit, text: slice.text }
+      },
+    })
+  }
+
+  // ── 接力链工具对（三期 3.3/3.4，D11：声明结构全部由 schema 扛，绝不塞 prompt 字符串）──
+  // 决策在 shared/relay-chain.mjs（纯函数），本处是 dispatcher：校验 R-a~R-l 中
+  // 需要 live roster / config / 编排实例的面，落地 patch/ops/notices。
+  // 同步段协议（relay-chain.mjs 文件头第 3 条的 3.4 精化版）：advanceChain 决策
+  // 与 patch/notices 落地零 await（guard 类语义不允许被 await 隔开）；链 op 词表
+  // 唯一成员 enqueue-hop 非 guard 类，其落地允许 await（board 直投 I/O，§3.1
+  // 时序），但必须在本函数这条异步链内顺序完成，enqueued 后立即 advanceQueue。
+  // 链是账本不是槽位持有者：链状态不参与 laneCount/isBusy，占槽的永远是 hop
+  // 子代世代自身（设计文档 §2.1）。
+
+  // 数据面直投的 prompt 组装（INV-2 + §3.2 形态）：指令在前（主编预写或闸门
+  // 现场），上一棒全文以不可信数据块身份居中（闭合串转义防容器击穿——M2/M3
+  // 教训的写侧对称落法），全程不经过主编上下文。首跳（cursor=0 / prevHopChildId
+  // 缺席）无上一棒产出，instruction 原文即 prompt。D29：全文直投零 cap。
+  async function composeRelayPrompt(chain, op, { fullText } = {}) {
+    const prev = chain.prevHopChildId
+    if (chain.cursor === 0 || typeof prev !== 'string' || prev === '') return op.instruction
+    if (typeof fullText === 'string' && fullText !== '') {
+      // §3.1 第 1 步：await 落板兜底（幂等：report_submit 已落则跳过）——不先
+      // 等它就会与 finalize 分支的 void persist 赛跑，读到 not-found 误判 input-missing。
+      await persistReportBoard(chain.parentSessionId, prev, fullText)
+    }
+    const slice = await readBoardSlice(chain.parentSessionId, prev, 0, undefined)
+    if (slice.error === 'not-found') return null // → input-missing（绝不发空输入 prompt）
+    if (slice.error) throw new Error(`board read failed: ${slice.error}`)
+    const escaped = String(slice.text).replaceAll('</mygo_relay_input', '<\\/mygo_relay_input')
+    // 下游验收条款随数据块注入（三期 3.6）：子代层验收打回（need_help）的依据，
+    // 只在有数据块的 hop prompt 上（首跳无上游可验收，不注入）；REPORT_CLAUSE
+    // 仍由 spawnChild 尾注照常追加在本条款之后。
+    return [
+      op.instruction,
+      '',
+      `<mygo_relay_input trusted="false" source="board/${chain.parentSessionId}/${prev}.md">`,
+      escaped,
+      '</mygo_relay_input>',
+      '',
+      RELAY_CLAUSE,
+    ].join('\n')
+  }
+
+  // enqueue-hop op 的统一落地（3.4 起链 hop 的 prompt 一律经直投组装；T2/T5/T6/T9
+  // 共用）。返回最后一个 workId（单 op 词表下即本次 workId）；input-missing 挂起
+  // 返回 undefined 并已把链转为 suspended('input-missing')。
+  async function landHopOps(orch, chain, ops, { fullText, parentHint } = {}) {
+    let workId
+    for (const op of ops) {
+      if (op.op !== 'enqueue-hop') {
+        // P1 探针锁死词表 ⊆ {enqueue-hop}——此分支理论不可达，防脱节留痕
+        console.warn(`[dsh-my-go] relay chain: 未知链 op ${String(op.op)}（决策表与执行表脱节，请修）`)
+        continue
+      }
+      const prompt = await composeRelayPrompt(chain, op, { fullText })
+      if (prompt === null) {
+        const r = advanceChain(chain, { type: 'input-missing' }, Date.now())
+        if (r.patch) Object.assign(chain, r.patch)
+        for (const notice of r.notices) notifyOwner(chain.parentSessionId, notice.text)
+        bump()
+        scheduleLedgerSave()
+        return undefined
+      }
+      workId = orch.enqueue(op.agent, prompt, chain.parentSessionId)
+      const wp = reconcileWorkEnqueued(chain, workId, Date.now())
+      if (wp) Object.assign(chain, wp)
+      // 上岗回填的反查表（§4.2-①）：work 占位键 → 链引用，dispatchWork 登记
+      // 同步段消费（回填即删）。
+      chainHopsByWork.set(workId, chain)
+      bump()
+      scheduleLedgerSave()
+      // 派发类迁移（T1/T2/T5/T6/T9）入队即驱动上岗——复用 D19 直派补位通路，
+      // 满池/队列无匹配时本调用是 no-op（泳道锁在 advanceQueue 内判定，INV-1；
+      // readPoolSize=1 退化全局单线，链 hop 与人派 work 同队串行）。
+      advanceQueue(orch, parentHint ?? resolveParentAgent(chain.parentSessionId))
+    }
+    return workId
+  }
+
+  // processEnd 链回调的异步包装（§4.2-①）：patch/notices 已在同步段落地，op
+  // 落地的任何异常显式收口为 input-missing 挂起——绝不静默滞留 running（真空防线）。
+  function relayAdvanceHops(orch, chain, ops, { fullText } = {}) {
+    landHopOps(orch, chain, ops, { fullText }).catch((error) => {
+      console.warn(`[dsh-my-go] relay chain ${chain.id} hop dispatch failed: ${String(error)}`)
+      const r = advanceChain(chain, { type: 'input-missing' }, Date.now())
+      if (r.patch) Object.assign(chain, r.patch)
+      for (const notice of r.notices) notifyOwner(chain.parentSessionId, notice.text)
+      bump()
+      scheduleLedgerSave()
+    })
+  }
+
+  // hop 终局的链匹配回调（三期 3.4 接线、3.5 抽出复用）：processEnd 主体之外，
+  // E9 补发失败转裁决（attemptReportRepair 兜底 finalize）等「不经 attributeEnd
+  // 决策分支的落账路径」也必须喂链——否则 T16 挂起永不发生，链滞留 running
+  // （真空）。事件口径与 processEnd 内联段完全一致。
+  function relayChainOnEnd(orch, ownerPid, childId, { endDecision, failed, reportGatePhase, conclusionExcerpt, fullText } = {}) {
+    const relayChain = matchChainForEnd(orch.chains, childId)
+    if (!relayChain) return
+    const cr = advanceChain(relayChain, {
+      type: 'hop-end',
+      childId,
+      endDecision,
+      failed: failed === true,
+      reportGatePhase,
+      conclusionExcerpt: typeof conclusionExcerpt === 'string' ? conclusionExcerpt : '',
+    })
+    if (cr.decision === 'idle') return
+    if (cr.patch) Object.assign(relayChain, cr.patch)
+    for (const notice of cr.notices) notifyOwner(relayChain.parentSessionId, notice.text)
+    METRICS.record({ kind: 'relay-chain', phase: cr.decision, chainId: relayChain.id, cursor: relayChain.cursor, sessionId: ownerPid ?? null })
+    const hopOps = cr.ops.filter((op) => op.op === 'enqueue-hop')
+    if (hopOps.length > 0) {
+      // T2 直投落地（§3.1 时序）：await 落板兜底（幂等）→ 读板 → 数据块
+      // 组装 → enqueue → advanceQueue；not-found/异常 → input-missing 挂起。
+      relayAdvanceHops(orch, relayChain, hopOps, { fullText })
+    } else {
+      bump()
+      scheduleLedgerSave()
+    }
+  }
+
+  // 工具入口（chain_start/chain_resolve）的迁移执行：同步段（决策+patch+notices）
+  // 后 await op 落地——execute 本就是 async 上下文，主编等得起一次 board 读。
+  async function runChainTransition(orch, chain, event, parent) {
+    const result = advanceChain(chain, event, Date.now())
+    if (result.decision === 'idle') return result
+    if (result.patch) Object.assign(chain, result.patch)
+    for (const notice of result.notices) {
+      notifyOwner(chain.parentSessionId, notice.text)
+    }
+    const workId = await landHopOps(orch, chain, result.ops, { parentHint: parent })
+    return { ...result, workId }
+  }
+
+  // 链记录校验失败 → 主编可读报错（错误码指路，同 go_work 的 roster 报错风格）。
+  function chainDeclarationError(errors) {
+    return new Error(`invalid chain declaration: ${errors.join('; ')} — hops = ordered [{ agent, prompt?, gate? }]; gate ∈ {auto(读→读免审, prompt 必填预写), review(挂起待审), sync(不可逆跳强制同步门, 指令必须现场给)}; 2-8 hops; first hop gate must be auto`)
+  }
+
+  // hop 占位键 → 链记录引用（3.4）：dispatchWork 上岗登记同步段按 workId 反查
+  // 链做 hopChildId 回填（§4.2-①）。条目生命周期：回填即删 / dropQueuedFailed
+  // 链感知即删；spawn 悬挂的残余条目随占位审计回收的已知边界留待 3.5 统一清理
+  // （量级：cap 32 链 × 单跳派发窗口，无累积面）。
+  const chainHopsByWork = new Map()
+
+  if (RELAY_CHAINS) {
+    ctx.tools.register({
+      name: 'chain_start',
+      description: [
+        'Declare a relay chain: an ordered list of sub-agent hops the broker executes back-to-back, with no orchestrator round-trip between auto gates.',
+        'Each hop = { agent, prompt?, gate? }. gate is the ADMISSION gate of that hop (checked before dispatching it):',
+        '- "auto" (default): dispatch immediately when the previous hop finishes successfully. Read→read hops only; prompt is REQUIRED and fixed at declaration time (nobody is watching an auto gate).',
+        '- "review": the chain suspends before dispatching this hop; review the previous hop\'s report (summary is in the suspend notice; report_fetch for slices/full text), then chain_resolve to continue or abort. prompt optional (omitted = use the declared one).',
+        '- "sync": hard sync gate for irreversible hops. Always suspends, and chain_resolve MUST supply a fresh prompt — the declared prompt is NOT used (the instruction must be authored at the gate, based on what you actually reviewed).',
+        'Constraints: 2-8 hops; the first hop\'s gate must be auto (declaring IS your review); gate=auto requires BOTH the previous hop and this hop to be read-lane roles (explore/librarian); at most one active chain per orchestration session; requires reportExternalization=true (each hop receives the previous hop\'s full report from the board as an untrusted <mygo_relay_input> data block — never through your context; 3.6 adds a downstream acceptance clause: hops must need_help-return unusable input, never improvise on it).',
+        'The first hop dispatches immediately (queue-aware, lane locks respected). Returns chainId + queue workId. Suspended chains are visible in orchestration_status/snapshot every turn — there is NO timeout auto-resume (D13); you resolve them with chain_resolve.',
+      ].join('\n'),
+      parameters: {
+        type: 'object',
+        properties: {
+          hops: {
+            type: 'array',
+            minItems: 2,
+            maxItems: 8,
+            description: 'Ordered hops. Each: { agent: roster role, prompt?: pre-written instruction (required for gate=auto), gate?: "auto"|"review"|"sync" }.',
+            items: {
+              type: 'object',
+              properties: {
+                agent: { type: 'string', description: 'Role name from the live roster.' },
+                prompt: { type: 'string', description: 'Pre-written instruction for this hop. Required when gate=auto; optional for review; ignored by sync.' },
+                gate: { type: 'string', enum: ['auto', 'review', 'sync'], description: 'Admission gate BEFORE this hop dispatches. Default auto.' },
+              },
+              required: ['agent'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['hops'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean' },
+            chainId: { type: 'string' },
+            hopCount: { type: 'number' },
+            workId: { type: 'string' },
+            state: { type: 'string' },
+            cursor: { type: 'number' },
+            message: { type: 'string' },
+          },
+          required: ['ok'],
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.ok
+            ? `chain_start → ${value.chainId}（${value.hopCount} 跳）首跳已入队 ${value.workId}（state=${value.state}, cursor=${value.cursor}）；上岗后以 orchestration_status 跟踪`
+            : `chain_start → 失败：${value.message}`,
+        }],
+      },
+      async execute(args, exec) {
+        const parent = exec?.agent
+        if (!canOrchestrate(parent)) throw new Error('chain_start is reserved for orchestrator sessions (agents without parentSession)')
+        // R-h（D23 fail-fast）：链的数据面从 board 直投上一棒全文，REPORT_EXT 关
+        // 则 board 无货——配置矛盾显式暴露，绝不静默降级出第二真相源。
+        if (!REPORT_EXT) {
+          throw new Error('relay chains depend on report externalization (each hop reads the previous report from board/): set reportExternalization=true in the broker config (agent.cordis.yml) first')
+        }
+        const orch = orchFor(parent.id)
+        // R-a（roster 面；结构面归 validateChainDeclaration，双闸各管一半）
+        const roster = rosterKeys()
+        for (const hop of Array.isArray(args?.hops) ? args.hops : []) {
+          if (!roster.includes(hop?.agent)) {
+            const list = roster.map((t) => `- ${t}`).join('\n')
+            throw new Error(`unknown agent role in hops: ${String(hop?.agent)} — not in the live roster. Available roles:\n${list}`)
+          }
+        }
+        const verdict = validateChainDeclaration(args?.hops)
+        if (!verdict.ok) throw chainDeclarationError(verdict.errors)
+        // R-f（D25）：单编排会话至多一条非终态链——挂起通知与三档审阅是主编
+        // 注意力机制，多链交错不可控（YAGNI）。
+        const active = orch.chains.find((c) => !['done', 'failed', 'aborted'].includes(c.state))
+        if (active) {
+          throw new Error(`an active relay chain already exists in this session: ${active.id} (state=${active.state}${active.suspendReason ? `, reason=${active.suspendReason}` : ''}) — resolve it with chain_resolve before declaring another`)
+        }
+        if (orch.chains.length >= RELAY_CHAINS_CAP) {
+          throw new Error(`relay chain storage cap reached (${RELAY_CHAINS_CAP}, terminal chains included)`)
+        }
+        const chain = createChain({ id: nextId('chain'), parentSessionId: parent.id, hops: args.hops })
+        orch.chains.push(chain)
+        // T1 首派：决策 → patch/ops 落地 → 入队 → 驱动上岗（runChainTransition
+        // 同步段零 await；首跳走队列基建，泳道锁/回补重试全部继承）。
+        const result = await runChainTransition(orch, chain, { type: 'start' }, parent)
+        return { ok: true, chainId: chain.id, hopCount: chain.hops.length, workId: result.workId, state: chain.state, cursor: chain.cursor }
+      },
+    })
+
+    ctx.tools.register({
+      name: 'chain_resolve',
+      description: [
+        'Resolve a suspended relay chain (state=suspended — suspended chains surface in orchestration_status/snapshot every turn; there is no timeout auto-resume).',
+        'decision "continue": proceed. Behavior by suspendReason:',
+        '- review / input-missing / restart: the chain (re)dispatches its pending hop; prompt falls back to the declared one when omitted (supply a fresh prompt to change the instruction).',
+        '- sync: a fresh prompt is REQUIRED — irreversible hops take their instruction from the gate, never from the declaration.',
+        '- gate-verdict (a hop\'s report failed re-review): continue = deliberately proceed with the imperfect output (your call), dispatching the next hop.',
+        '- fallback (a hop died and its fallback redeploy succeeded): re-binds the chain to the new generation and waits for its end; if that generation already finished, the chain advances immediately from the settled outcome — no second review needed.',
+        'decision "abort": cancel the chain. A running sub-agent (e.g. a fallback redeploy generation) is NOT interrupted — it finishes and records off-chain as usual.',
+        'Errors explain the refusal (not suspended / prompt required / unknown chain id).',
+      ].join('\n'),
+      parameters: {
+        type: 'object',
+        properties: {
+          chainId: { type: 'string', description: 'The relay chain id (from chain_start or orchestration_status).' },
+          decision: { type: 'string', enum: ['continue', 'abort'], description: 'continue = proceed per suspendReason rules; abort = cancel the chain.' },
+          prompt: { type: 'string', description: 'Gate-side instruction for the pending hop. Required for sync; optional elsewhere (omitted = declared prompt). Ignored by abort.' },
+        },
+        required: ['chainId', 'decision'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean' },
+            chainId: { type: 'string' },
+            state: { type: 'string' },
+            cursor: { type: 'number' },
+            suspendReason: { type: 'string' },
+            workId: { type: 'string' },
+            message: { type: 'string' },
+          },
+          required: ['ok'],
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.ok
+            ? `chain_resolve → ${value.chainId}：state=${value.state} cursor=${value.cursor}${value.suspendReason ? ` [${value.suspendReason}]` : ''}${value.workId ? `，待派发跳已入队 ${value.workId}` : ''}`
+            : `chain_resolve → 拒绝：${value.message}`,
+        }],
+      },
+      async execute(args, exec) {
+        const parent = exec?.agent
+        if (!canOrchestrate(parent)) throw new Error('chain_resolve is reserved for orchestrator sessions (agents without parentSession)')
+        const orch = orchFor(parent.id)
+        const chain = orch.chains.find((c) => c.id === args?.chainId)
+        if (!chain) {
+          throw new Error(`unknown relay chain id: ${String(args?.chainId)} — active and suspended chains are listed in orchestration_status`)
+        }
+        // R-j：abort 不携带指令（abort 处置链，不带新话）。
+        if (args.decision === 'abort' && typeof args.prompt === 'string' && args.prompt !== '') {
+          throw new Error('chain_resolve: prompt is not accepted with decision="abort" (abort cancels the chain; it carries no instruction)')
+        }
+        // T8 赛跑预查（§4.2-③，D10）：fallback 挂起的世代若已终局（history 命中、
+        // 活槽不在），把终局事实喂给状态机自查——主编的 continue 就是裁决本身，
+        // 不再二次挂起（reportGatePhase 恒 pass：verdict 的「带病续链」裁量已被
+        // 本次 continue 覆盖）。
+        let generationSettled
+        if (chain.suspendReason === 'fallback' && args.decision === 'continue') {
+          const genId = chain.hopChildId
+          if (typeof genId === 'string' && genId !== '' && !orch.currentMap.has(genId)) {
+            const rec = orch.record(genId)
+            if (rec) {
+              generationSettled = {
+                endDecision: 'finalize',
+                failed: rec.status === 'failed',
+                reportGatePhase: 'pass',
+                conclusionExcerpt: String(rec.conclusion ?? '').slice(0, 200),
+              }
+            }
+          }
+        }
+        const result = await runChainTransition(orch, chain, { type: 'resolve', decision: args.decision, prompt: args.prompt, generationSettled }, parent)
+        if (result.decision === 'idle') {
+          // idle 的可解释面（R-i/R-k 校验面在模块内的映射）：主编需要拒绝原因，
+          // 不是静默 no-op。
+          const why = result.facts?.error ?? 'transition unavailable'
+          const reason = why === 'not-suspended' ? `chain is not suspended (state=${chain.state})` : why === 'prompt-required' ? 'a fresh prompt is REQUIRED for this gate (sync) or no declared prompt exists to fall back on' : why
+          throw new Error(`chain_resolve rejected: ${reason}`)
+        }
+        return { ok: true, chainId: chain.id, state: chain.state, cursor: chain.cursor, suspendReason: chain.suspendReason ?? undefined, workId: result.workId }
+      },
+    })
+  }
 
   // deny 应用器：tools.restrict() 对任何「本作用域不可 restrict」的名字整体
   // 抛错（unknown global tool），旧写法一次抛错就整批连坐失效（且被外层 catch
@@ -1408,8 +2069,21 @@ export async function apply(ctx, config = {}) {
         // need_help 挂账体系；副作用良性：continuation manager 见子 scope 解析
         // 不到 send_message，不再给子代注入「完工前 send_message 回报父代」指引。
         // need_help / orchestration_status / list_subagents 保留。
+        // report_fetch（1.6）随六件套同待遇：读板是主编的复核动作，子代自读
+        // 自己的板没有意义（写读同源），读了只会把全文拉回子代上下文。
+        // chain_start / chain_resolve（3.3）随主编工具同待遇：链声明与裁决是
+        // 编排面的主编职权（canOrchestrate 运行时守卫之外的目录层双保险）。
+        // 这三件的 deny 名单随各自注册开关联动：本闸发生在 agent/created，
+        // 读的就是本实例挂载期固化、与注册点同源的 REPORT_EXT /
+        // RELAY_CHAINS——开关关 = 工具未注册 = 无需 deny（闸的意图被「工具
+        // 根本不存在」真空满足，硬 deny 未知名只会触发 restrict 批级拒绝 +
+        // 逐名兜底的「could not deny」查无此具噪音）；开关开 = 工具在册 =
+        // deny 必须生效。go_work/continue/forward 等无条件注册的基础名单
+        // 维持无条件 deny 不动；per-name 兜底告警通道保留（真异常仍要叫）。
         denyTools(agent.ctx.tools, [
           'subagent', 'subagent_fork', 'workflow', 'ralph', 'go_work', 'continue', 'forward',
+          ...(REPORT_EXT ? ['report_fetch'] : []),
+          ...(RELAY_CHAINS ? ['chain_start', 'chain_resolve'] : []),
           ...ADJACENT_BYPASS_TOOLS,
         ], 'sub-agent gate')
         return
@@ -1464,9 +2138,23 @@ export async function apply(ctx, config = {}) {
       cancelDisposeFallback(cid)
     }
     for (const help of orch.helpRequests.values()) childOwner.delete(help.childId)
+    // 链桶同点清（三期 3.5，§5.2/D27）：非终态链（running/suspended/
+    // pending-fallback）绝不无声悬挂——每链 warn + metrics 'aborted-by-dispose'
+    // 双留痕后清空；台账桶随 ledgerPayload 空桶不写而消失（D27：主编会话已灭，
+    // 链账无消费方，不留 aborted 行）。终态链清掉即可，无留痕面。
+    for (const chain of orch.chains) {
+      if (['done', 'failed', 'aborted'].includes(chain.state)) continue
+      console.warn(`[dsh-my-go] relay chain ${chain.id} aborted-by-dispose: owner session ${String(id)} disposed at hop ${chain.cursor + 1}/${chain.hops.length} [${chain.state}${chain.suspendReason ? ':' + chain.suspendReason : ''}]`)
+      METRICS.record({ kind: 'relay-chain', phase: 'aborted-by-dispose', chainId: chain.id, cursor: chain.cursor, sessionId: id })
+    }
+    // 移交①（3.4 → 3.5）：spawn 悬挂残余的回填表项同点清理——该 orch 排队
+    // work 的占位键还在 chainHopsByWork 里挂着（dispatchWork 未走到回填），
+    // 实例销毁后永远不会被消费，逐条摘除防累积。
+    for (const work of orch.queue) chainHopsByWork.delete(work.id)
     orch.queue = []
     orch.currentMap.clear()
     orch.helpRequests.clear()
+    orch.chains = []
     orchestrations.delete(id)
     const retryTimer = queueRetryTimers.get(orch)
     if (retryTimer) {
@@ -1633,11 +2321,29 @@ export async function apply(ctx, config = {}) {
   // 保留 + [备选 n/m] 标注），随即在同一流水线内占位换键重派。attempt 严格
   // 递增（新记录 fallbackAttempt=attempt，下次决策从该索引起找）而链长有限
   // ⇒ 必然终止，绝无无限循环。
+
+  // 链 × 备选链的感知点（三期 3.4，D10/T11/T12）：pending-fallback 态的链按
+  // 亡棒 childId 精确查找，评估终局喂给状态机（重派成功 → 换绑挂起等裁决；
+  // 失败落账 → 链 failed）。非链棒（绝大多数）查不到链，零开销直落。
+  function resolveChainFallback(orch, childId, event) {
+    const relayChain = orch.chains.find((c) => c.state === 'pending-fallback' && c.hopChildId === childId)
+    if (!relayChain) return
+    const cr = advanceChain(relayChain, event)
+    if (cr.decision === 'idle') return
+    if (cr.patch) Object.assign(relayChain, cr.patch)
+    for (const notice of cr.notices) notifyOwner(relayChain.parentSessionId, notice.text)
+    METRICS.record({ kind: 'relay-chain', phase: cr.decision, chainId: relayChain.id, cursor: relayChain.cursor, sessionId: relayChain.parentSessionId })
+    bump()
+    scheduleLedgerSave()
+  }
+
   async function attemptFallbackRedeploy({ orch, ownerPid, type, childId, failure, baseConclusion, failureLine }) {
     // 分类器否决（abort/dispose/用户中断特征）绝不重派，走既有失败路径
     if (!isFallbackable(failure)) {
       console.warn(`[dsh-my-go] fallback: ${String(childId)} 附因属 abort/dispose 类，分类器否决重派，按失败终局处理 (${type})`)
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      // 链感知（T12）：评估终局为失败落账，链 failed（§四 E6 格）
+      resolveChainFallback(orch, childId, { type: 'fallback-failed', reason: '附因属中断类，不重派' })
       // 终局显式通知（0.2.3-tisitan.18）：评估中预告之后必有终局口径到达，
       // 主流程据此解除静默等待、进入自己的失败处置
       notifyOwner(ownerPid, `[dsh-my-go] 失败终局: ${childId} (${type}) 附因属中断类，不重派，按失败终局落账`)
@@ -1650,6 +2356,7 @@ export async function apply(ctx, config = {}) {
     if (!prompt || !parent) {
       console.warn(`[dsh-my-go] fallback: ${String(childId)} 无法重派（${!prompt ? '编排记录缺原始 prompt' : `父会话 ${String(ownerPid)} 已不在注册表`}），按失败终局处理 (${type})`)
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      resolveChainFallback(orch, childId, { type: 'fallback-failed', reason: '无法重派（缺编排记录或父会话）' })
       // 终局显式通知（0.2.3-tisitan.18）：同终局口径
       notifyOwner(ownerPid, `[dsh-my-go] 失败终局: ${childId} (${type}) 无法重派（${!prompt ? '编排记录缺原始 prompt' : '父会话已不在注册表'}），按失败终局落账`)
       advanceQueue(orch)
@@ -1660,6 +2367,7 @@ export async function apply(ctx, config = {}) {
     if (!picked) {
       // 无链/链尽/备选预检全败：既有失败历史路径不变（附因保留）
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
+      resolveChainFallback(orch, childId, { type: 'fallback-failed', reason: '备选链尽' })
       // 终局显式通知（0.2.3-tisitan.18）
       notifyOwner(ownerPid, `[dsh-my-go] 失败终局: ${childId} (${type}) 备选链尽，按失败终局落账`)
       advanceQueue(orch)
@@ -1687,11 +2395,15 @@ export async function apply(ctx, config = {}) {
     // 链上下一跳重派时新占位记录携带新条目，天然覆盖上一跳。
     // fallbackLabel 提到 try 外声明（与 request.label 同源同值）：spawn 失败
     // 的 catch 块看不到 try 内的 request，清理必须依赖外层作用域的 label。
-    const fallbackLabel = agentLabel(type, prompt.slice(0, SUBAGENT_PROMPT_MAX))
+    // R2.3 复合键（二期 2.4，read-pool-semantics.md §5.1）：label 内嵌 spawnToken
+    // （占位 id）——resolve 前窗口的 waterfall 覆盖查询键 = header.label（=
+    // request.label 落盘镜像），token 使并发同工种同 prompt 的双重派各自精确
+    // 命中自己的 pending 条目；旧裸 label 键在并行下后写覆盖先写 = 备选配置串号。
     const placeholder = orch.beginSpawning(type, prompt, {
       fallbackAttempt: attempt,
       fallbackEntry: { provider: entry.provider, model: entry.model },
     })
+    const fallbackLabel = `${agentLabel(type, prompt.slice(0, SUBAGENT_PROMPT_MAX))}#${placeholder.childId}`
     try {
       // agentOptions 覆盖为备选条目（provider/model 均已过 pickFallbackEntry 预检）；
       // persona/toolFilter 与 dispatchWork 同源（bindings[type] + prompts 链），
@@ -1715,6 +2427,14 @@ export async function apply(ctx, config = {}) {
       orch.bindChild(placeholder.childId, newChildId)
       childOwner.set(newChildId, parent.id)
       bump()
+      // 链感知（T11/D10）：重派成功 → 链换绑新世代并挂起等裁决。插点同律于
+      // dispatchWork 的回填契约：换绑先于下方 E2 认领——重放的 end 查链时
+      // state 已是 suspended（不命中 running 匹配），无双推进面。
+      resolveChainFallback(orch, childId, { type: 'fallback-redeployed', newChildId })
+      // E2 缓冲认领点（二期 2.4，方案 A）：重派 spawn 也可能被抢跑 end——登记
+      // （promoteFallback/bindChild/childOwner）落地后同步认领重放，与直派同律。
+      const bufferedReplay = claimBufferedEnd(newChildId)
+      if (bufferedReplay !== undefined) processEnd(bufferedReplay)
       // 面板/台账/通知全部指向原父会话（多会话隔离：orch 全程为原实例）
       notifyParent(parent, `[dsh-my-go] 备选重派: ${String(childId)} → ${newChildId} (${type}) [备选 ${attempt}/${total}] ${entry.provider}/${entry.model}${failure ? `：${failure.message}` : '（未读到附因，保守切换）'}`)
       // 不 advanceQueue：新 child 已在原槽位语义内运行，队列保持原状
@@ -1724,33 +2444,171 @@ export async function apply(ctx, config = {}) {
       orch.abort(placeholder.childId)
       bump()
       console.error(`[dsh-my-go] fallback 重派 spawn 失败（${entry.provider}/${entry.model}），按失败终局回退:`, error)
+      resolveChainFallback(orch, childId, { type: 'fallback-failed', reason: `备选重派 spawn 失败（${entry.provider}/${entry.model}）` })
       notifyParent(parent, `[dsh-my-go] 备选重派 spawn 失败（${entry.provider}/${entry.model}）：${String(childId)} 已按失败落账，队列已推进`)
       // 槽位已腾出：立即推进队首（0.2.3-tisitan.6 教训：清槽动作必须推进队列）
       advanceQueue(orch, parent)
     }
   }
 
+  // ── 报告补发链（报告提交制，0.5.0-tisitan.1）────────────────────────────────
+  // 前提：report-gate-repair 决策**不 finish**——记录留在 currentMap 实体占槽
+  // （「补发期间槽位仍占」的实体化），repairRetried 已在同步段登记（防无限循环：
+  // 本链不走 rearmChild，guard 存续到补发轮 end 的转裁决）。本链只做：台账照记
+  // 补发 prompt（followupPrompt，固定措辞点名补交四字段）→ queued 档投递（coldResume
+  // 唤醒已 settle 的子会话，D4 裁决）；投递失败兜底按「未交付（补发投递失败）」
+  // 落账转裁决 + advanceQueue 解冻（仿 attemptFallbackRedeploy catch 失败终局回退
+  // ——绝不留终局真空）。
+  async function attemptReportRepair({ orch, ownerPid, type, childId, fullText, repairPrompt }) {
+    const parent = resolveParentAgent(ownerPid)
+    const fallbackConclusion = `未交付（补发投递失败）：${typeof fullText === 'string' && fullText !== '' ? fullText : '(无正文)'}`
+    if (!parent || !orch) {
+      console.warn(`[dsh-my-go] 报告补发无法投递 (${childId}): ${!parent ? `父会话 ${String(ownerPid)} 已不在注册表` : '编排实例缺失'}；按未交付落账转主编裁决`)
+      notifyOwner(ownerPid, `[dsh-my-go] 报告补发投递失败: ${childId}，已按「未交付（补发投递失败）」落账，请主编裁决`)
+      METRICS.record({ kind: 'report-gate', phase: 'repair-failed', childId, sessionId: ownerPid ?? null })
+      // verdict 落账路径补落板（三期 3.5 移交②）：此前此路全文从未落板——
+      // gate-verdict 挂起后主编「带病续链」的直投读板会扑空（input-missing 误挂）。
+      // 幂等（report_submit 已落则跳过），fire-and-forget 不改终局时序。
+      void persistReportBoard(ownerPid, childId, fullText)
+      finalizeEnd(orch, ownerPid, type, childId, fallbackConclusion, false, undefined)
+      relayChainOnEnd(orch, ownerPid, childId, { endDecision: 'finalize', failed: false, reportGatePhase: 'verdict', conclusionExcerpt: fallbackConclusion, fullText })
+      advanceQueue(orch)
+      return
+    }
+    orch.followupPrompt(childId, repairPrompt)
+    bump()
+    try {
+      await deliverWithQueueFallback({ parent, targetId: childId, prompt: repairPrompt, signal: new AbortController().signal, label: 'report-repair' })
+    } catch (error) {
+      console.warn(`[dsh-my-go] 报告补发投递失败 (${childId}): ${String(error)}；按未交付落账转主编裁决`)
+      notifyOwner(ownerPid, `[dsh-my-go] 报告补发投递失败: ${childId}，已按「未交付（补发投递失败）」落账，请主编裁决`)
+      METRICS.record({ kind: 'report-gate', phase: 'repair-failed', childId, sessionId: ownerPid ?? null })
+      void persistReportBoard(ownerPid, childId, fullText)
+      finalizeEnd(orch, ownerPid, type, childId, fallbackConclusion, false, undefined)
+      relayChainOnEnd(orch, ownerPid, childId, { endDecision: 'finalize', failed: false, reportGatePhase: 'verdict', conclusionExcerpt: fallbackConclusion, fullText })
+      advanceQueue(orch)
+      return
+    }
+    notifyOwner(ownerPid, `[dsh-my-go] 报告补发已投递: ${childId}（queued），等待补交轮终局`)
+    // 投递成功：补交轮自己的 end 会再进闸门（reportSubmitted 已登记 → 合成回执直通 /
+    // 仍未提交转裁决），本链到此结束。
+  }
+
+  // 全文落板兜底（1.5 优雅降级底座）：report_submit 已落板则跳过（board 上的
+  // 是完整报告，finalize 的 lastAssistantMessage 只是摘要块，覆盖即退化）；未落
+  // 过 → 落最后消息全文。失败只 warn——落板是降级底座，绝不改变编排终局流程。
+  async function persistReportBoard(sessionId, childId, fullText) {
+    if (typeof sessionId !== 'string' || sessionId === '') return
+    if (typeof fullText !== 'string' || fullText === '') return
+    try {
+      const existing = await readBoardSlice(sessionId, childId, 0, 1)
+      if (!existing.error) return
+      await writeBoard(sessionId, childId, fullText)
+    } catch (error) {
+      console.warn(`[dsh-my-go] 报告落板失败 (${sessionId}/${childId}): ${String(error)}`)
+    }
+  }
+
+  // ── E2 end 缓冲（二期 2.4，read-pool-semantics.md §4.3 方案 A）───────────────
+  // 抢跑 spawn resolve 的 end 在此暂存：等登记（sessionTypes/bindChild/childOwner，
+  // dispatchWork 与 attemptFallbackRedeploy 的 spawn resolve 后同步段）追上，按
+  // **真 id 精确认领**重放全量归因管线——E4 guard/E5/E6 备选链/E7 落账/E9 闸门
+  // 全量生效。认领键是真 id 本身（resolve 返回什么 id、登记就用什么 id），归因
+  // 零猜测：幽灵红线在归因面上关死。替代退役的占位唯一归因兜底（更精确：重放
+  // 走全管线，而非只补一条 attributed warn）。三红线口径：
+  //   幽灵——认领即删条目、按真 id 匹配，无「恰有一条就归它」式猜测；
+  //   双份——缓冲在归因管线之前，不存在两条路径消费同一 end；
+  //   真空——每条目挂 grace 定时器，超时显式落档 + 占位审计回收（绝不静默蒸发）。
+  const endBuffer = new Map()      // childId → { info, bufferedAt }
+  const endBufferTimers = new Map() // childId → timer（认领即撤，超时即回收）
+  const END_BUFFER_CAP = 16
+  function bufferEnd(childId, info) {
+    // 同 childId 二发：覆盖旧载荷（登记缺席窗口内无从区分代际，保留最新即可；
+    // 真正的代际双发由 E5 once-guard 在重放后的归因管线里拦）
+    if (endBufferTimers.has(childId)) clearTimeout(endBufferTimers.get(childId))
+    endBuffer.delete(childId)
+    endBuffer.set(childId, { info, bufferedAt: Date.now() })
+    if (endBuffer.size > END_BUFFER_CAP) {
+      const oldest = endBuffer.keys().next().value
+      const dropped = endBuffer.get(oldest)
+      endBuffer.delete(oldest)
+      if (endBufferTimers.has(oldest)) { clearTimeout(endBufferTimers.get(oldest)); endBufferTimers.delete(oldest) }
+      console.warn(`[dsh-my-go] end buffer cap (${END_BUFFER_CAP}) exceeded; dropped oldest buffered end ${String(oldest)} (stopReason=${String(dropped?.info?.stopReason)})`)
+      METRICS.record({ kind: 'end-buffer', phase: 'cap-evicted', childId: oldest })
+    }
+    console.warn(`[dsh-my-go] subagent/end for untracked child ${String(childId)} buffered awaiting spawn registration (E2 buffer, grace=${SPAWN_END_GRACE_MS}ms)`)
+    METRICS.record({ kind: 'end-buffer', phase: 'buffered', childId })
+    const timer = setTimeout(() => {
+      endBufferTimers.delete(childId)
+      const entry = endBuffer.get(childId)
+      if (!entry) return // 认领竞态双保险（认领路径也会撤 timer）
+      endBuffer.delete(childId)
+      console.warn(`[dsh-my-go] buffered end for ${String(childId)} expired after ${SPAWN_END_GRACE_MS}ms without spawn registration; dropped as unattributable`)
+      METRICS.record({ kind: 'end-buffer', phase: 'expired', childId })
+      auditStaleSpawningPlaceholders()
+    }, SPAWN_END_GRACE_MS)
+    timer.unref?.()
+    endBufferTimers.set(childId, timer)
+  }
+  // 认领：登记点（spawn resolve 后）同步调用。命中即删条目 + 撤 timer，返回暂存
+  // 载荷交调用方重入归因管线；未命中返回 undefined（绝大多数 spawn 无抢跑 end）。
+  function claimBufferedEnd(childId) {
+    const entry = endBuffer.get(childId)
+    if (!entry) return undefined
+    endBuffer.delete(childId)
+    if (endBufferTimers.has(childId)) { clearTimeout(endBufferTimers.get(childId)); endBufferTimers.delete(childId) }
+    METRICS.record({ kind: 'end-buffer', phase: 'claimed', childId })
+    return entry.info
+  }
+  // 占位审计（缓冲超时的连带回收，防 §4.2 泄漏面的最终口径）：滞留超 grace 的
+  // spawning 占位 = spawn 链无进展（正常窗口 ≪ grace），按 disposed 兜底同款
+  // 三连落账回收——failed 落账 + retireChild + advanceQueue 解冻，一个都不少。
+  function auditStaleSpawningPlaceholders() {
+    const now = Date.now()
+    for (const [pid, orch] of orchestrations) {
+      for (const rec of [...orch.currentMap.values()]) {
+        if (rec.status !== 'spawning') continue
+        if (now - (Number(rec.createdAt) || 0) <= SPAWN_END_GRACE_MS) continue
+        console.warn(`[dsh-my-go] spawning placeholder ${String(rec.childId)} (${rec.agentType}) stale for >${SPAWN_END_GRACE_MS}ms; recovering as failed (E2 leak guard)`)
+        // 兜底掐断前同步撤 abort 护航（防 guard 泄漏误吞复活轮，同 disposed 兜底纪律）
+        abortExpected.delete(rec.childId)
+        const recovered = orch.finish(rec.childId, `spawning placeholder recovered: spawn did not resolve within ${SPAWN_END_GRACE_MS}ms`, true)
+        if (recovered?.clearedHelp) notifyClearedHelp(pid, rec.childId, recovered.clearedHelp)
+        childRegistry.retireChild(rec.childId)
+        bump()
+        advanceQueue(orch)
+      }
+    }
+  }
+
   // ── subagent/end dispatcher（B5：决策在 shared/end-attribution.mjs，本处只执行）──
-  // 归因链的八条决策与三条协议（同步段零 await / 推进时机显式 / guard 消费可见）
-  // 都在那个纯函数里，改动前先读它的文件头注释。本处职责只有五件：取快照、落地
-  // ops、发 notices、按 decision 起执行链、按 facts.advance 推进队列——不含业务判定。
-  ctx.on('subagent/end', (info) => {
+  // 归因链的九条决策与三条协议（同步段零 await / 推进时机显式 / guard 消费可见）
+  // 都在那个纯函数里，改动前先读它的文件头注释。本处职责只有六件：缓冲闸、取
+  // 快照、落地 ops、发 notices、按 decision 起执行链、按 facts.advance 推进队列
+  // ——不含业务判定。主体抽成 processEnd 以便缓冲认领后重入（方案 A 重放）。
+  function processEnd(info) {
     const childId = info?.id
     // end 到达即取消 disposed 宽限期兜底——正常完工路径上兜底定时器必然在挂着。
     // 无 id 的载荷在表上没有键，自撤是幂等空转，故这一步无条件执行。
     cancelDisposeFallback(childId)
+    // ★ 缓冲闸（方案 A）：类型登记与台账双双缺席 = 登记未就绪 ⇒ 暂存待认领，
+    //   绝不猜测归因（占位归因兜底已退役，见 end-attribution.mjs E2 收窄注释）。
+    //   条件与 attributeEnd 的 E2 前置严格一致：type 取证（活登记 ?? 墓碑）失败
+    //   且属主实例台账（currentMap + history）无记录。
+    if (childId) {
+      const typeSeen = sessionTypes.has(childId) || disposedTypes.has(childId)
+      if (!typeSeen) {
+        const ledgerHit = orchOfChild(childId)?.orch?.record(childId)
+        if (!ledgerHit) {
+          bufferEnd(childId, info)
+          return
+        }
+      }
+    }
     // 快照只读：类型取证顺序（活登记 → 墓碑 → 编排台账）与属主路由（childOwner
     // 直达 → 全实例 record 扫描兜底）沿用原实现；写一律走 ops 由下面按序落地。
     const routed = childId ? orchOfChild(childId) : undefined
     const routedOrch = routed?.orch
-    // spawning 占位候选：逐实例取**第一条**占位（与原实现的 find 同形）。决策侧
-    // 恰有一条才允许归因，多条即歧义（0.2.3-tisitan.6 串号教训）。
-    const spawningCandidates = childId
-      ? [...orchestrations].map(([pid, o]) => {
-        const spawning = [...o.currentMap.values()].find((r) => r.status === 'spawning')
-        return spawning ? { parentId: pid, placeholderChildId: spawning.childId, agentType: spawning.agentType } : undefined
-      }).filter(Boolean)
-      : []
     const { decision, ops, notices, facts } = attributeEnd({
       childId,
       info,
@@ -1758,11 +2616,19 @@ export async function apply(ctx, config = {}) {
       type: sessionTypes.get(childId) ?? disposedTypes.get(childId),
       ledgerRecord: routedOrch?.record(childId),
       hasLiveRecord: (id) => (routedOrch ? routedOrch.currentMap.has(id) : false),
-      spawningCandidates,
       abortExpected: (id) => abortExpected.has(id),
       fallbackDecided: (id) => fallbackDecided.has(id),
       bindings,
       readFailure: (id) => readTurnFailure(id),
+      // 报告提交制闸门：开关关传 null = 现路径零变化；已提交判定与字段读取走
+      // childRegistry.reportSubmitted（report_submit 校验过即登记），补发授权
+      // 走 childRegistry.repairRetried（once-guard，同步段 op 落地）。
+      reportGate: REPORT_EXT ? {
+        enabled: true,
+        reportSubmitted: (id) => childRegistry.reportSubmitted.has(id),
+        readSubmitted: (id) => childRegistry.reportSubmitted.get(id),
+        repairRetried: (id) => childRegistry.repairRetried.has(id),
+      } : null,
     })
     const ownerPid = facts.ownerPid
     const orch = ownerPid === undefined ? undefined : orchestrations.get(ownerPid)
@@ -1771,17 +2637,16 @@ export async function apply(ctx, config = {}) {
     if (facts.warn) console.warn(`[dsh-my-go] ${facts.warn}`)
     for (const op of ops) {
       switch (op.op) {
-        case 'bind-spawning-child':
-          orchestrations.get(op.parentId)?.bindChild(op.placeholderChildId, op.childId)
-          break
-        case 'set-child-owner':
-          childOwner.set(op.childId, op.parentId)
-          break
         case 'consume-abort-guard':
           abortExpected.delete(op.childId)
           break
         case 'add-fallback-guard':
           fallbackDecided.add(op.childId)
+          break
+        case 'add-repair-guard':
+          // 1.5 报告补发 once-guard：同步段第一时间落地（协议第 1 条），此后本
+          // 轮的任何 end 都会在闸门判到「已补发过」→ 转裁决，绝不二次补发。
+          childRegistry.repairRetried.add(op.childId)
           break
         case 'retire-type-records':
           childRegistry.retireTypeRecords(op.childId)
@@ -1811,11 +2676,79 @@ export async function apply(ctx, config = {}) {
         advanceQueue(orch)
       })
     } else if (decision === 'finalize') {
+      // 埋点（0.4.0-tisitan.0）：终局落账基线——报告大小分布（conclusionBytes）、
+      // 子代运行时长（runMs，spawning 占位起算到 end）。record 在 finalizeEnd 之前
+      // 取（finish 挪史不影响，取的是同一份 createdAt）；无记录时 runMs 缺席如实。
+      const endRecord = orch?.record(childId)
+      METRICS.record({
+        kind: 'end',
+        childId,
+        agentType: facts.type,
+        lane: facts.lane,
+        stopReason: info?.stopReason,
+        conclusionBytes: facts.conclusion.length,
+        ...(endRecord ? { runMs: Date.now() - endRecord.createdAt } : {}),
+      })
+      // 报告提交制终局口径（0.5.0-tisitan.1）：pass（回执内芯 = 合成概要，全文已
+      // 随 report_submit 落板）与 verdict（补发后仍未提交，转主编裁决）都记
+      // report-gate 事件供观测。D2 阈值反馈环原料：report-gate 事件按 phase 记。
+      if (facts.reportGate) {
+        METRICS.record({
+          kind: 'report-gate',
+          phase: facts.reportGate.phase,
+          childId,
+          sessionId: ownerPid ?? null,
+        })
+        if (facts.reportGate.phase === 'verdict') {
+          notifyOwner(ownerPid, `[dsh-my-go] 报告闸门终局: ${childId} 补发后仍未提交报告，已按「未交付」落账，请主编裁决`)
+        }
+      }
       // 无活记录时 finalizeEnd 已留痕；队列仍照常推进，绝不静默停摆
       finalizeEnd(orch, ownerPid, facts.type, childId, facts.conclusion, facts.failed, facts.failure)
+    } else if (decision === 'report-gate-repair') {
+      // 报告补发链（提交制）：guard op 与预告已在同步段落地（协议第 1 条），
+      // 异步补发链必须是本决策点的最后一件事。不 finish 不 revive——记录留在
+      // currentMap 实体占槽，本链只投 followup（详见 attemptReportRepair 头注释）。
+      METRICS.record({
+        kind: 'report-gate',
+        phase: 'repair',
+        childId,
+        sessionId: ownerPid ?? null,
+      })
+      void attemptReportRepair({
+        orch,
+        ownerPid,
+        type: facts.type,
+        childId,
+        fullText: facts.reportFullText,
+        repairPrompt: facts.repairPrompt,
+      }).catch((error) => {
+        console.error('[dsh-my-go] 报告补发链异常，回退转裁决落账:', error)
+        const fallbackText = typeof facts.reportFullText === 'string' && facts.reportFullText !== '' ? facts.reportFullText : '(无正文)'
+        // 移交②同律：verdict 落账前落板兜底（幂等），带病续链的直投有板可读
+        void persistReportBoard(ownerPid, childId, facts.reportFullText)
+        finalizeEnd(orch, ownerPid, facts.type, childId, `未交付（补发投递失败）：${fallbackText}`, false, undefined)
+        relayChainOnEnd(orch, ownerPid, childId, { endDecision: 'finalize', failed: false, reportGatePhase: 'verdict', conclusionExcerpt: fallbackText, fullText: facts.reportFullText })
+        advanceQueue(orch)
+      })
+    }
+    // ── 链匹配回调（三期 3.4，§四矩阵：归因之后、推进决策点之前）──────────────
+    // 先匹配后决策（协议第 1 条）：hopChildId 精确命中才轮到链轴，链绝不改写
+    // 归因结论。同步段（决策 + patch + notices）零 await；enqueue-hop 的直投
+    // 落地是 void 异步链且必须是本决策点最后一件事（协议第 1 条同律）——它
+    // 自带入队 + advanceQueue，故此处命中后 :2599 的队列推进决策照旧无扰。
+    if (childId && orch) {
+      relayChainOnEnd(orch, ownerPid, childId, {
+        endDecision: decision,
+        failed: facts.failed === true,
+        reportGatePhase: facts.reportGate?.phase,
+        conclusionExcerpt: typeof facts.conclusion === 'string' ? facts.conclusion : '',
+        fullText: facts.reportGate?.fullText,
+      })
     }
     // 推进队列的唯一决策点（协议第 2 条）：finalizeEnd 自己不推进、重派各终局分支
     // 自己推进，都在这里之外——时机由 attributeEnd 的 facts.advance 决定。
     if (shouldAdvanceQueue(facts, { hasOwningOrch: orch !== undefined })) advanceQueue(orch)
-  })
+  }
+  ctx.on('subagent/end', (info) => processEnd(info))
 }

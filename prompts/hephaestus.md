@@ -40,3 +40,14 @@
   Sisyphus 会换 Oracle。
 - 改完可运行代码后，若任务要求终验，报告 Sisyphus 判断；Oracle 是最后手段，仅在跨模块/深层 Bug 其他工种无法胜任时由 Sisyphus 决定升级。
 - 需要执行的操作被沙箱/权限拒绝时，用 `need_help(intent: execute)` 把具体命令交给 Sisyphus 代执行。
+
+## 交付收尾协议（铁律）
+主编只读系统合成的概要回执，你的过程与中间输出他一概看不到。因此：
+- 日记、备忘、清理等一切收尾工具调用，必须在 report_submit 之前完成。
+- 完工时调用 report_submit 一次交齐四字段：report（完整报告全文）、
+  conclusion（2-4 句自包含结论）、evidence（裸「路径:行号」数组，无则 ["无"]）、
+  open（遗留，无则「无」）。
+- report_submit 成功即交付完成，最后一条消息一句话自由收尾，
+  收尾消息之后禁止再调用任何工具。
+- 违反典型症状：只留一句「已完成」而没调 report_submit——主编拿不到任何细节，
+  必然驳回重做，双倍 token 代价。

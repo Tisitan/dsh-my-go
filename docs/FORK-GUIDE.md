@@ -69,7 +69,7 @@
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.3.0-tisitan.11；test = 构建 bundle +
+├── package.json              # 包声明；版本 0.5.0-tisitan.0；test = 构建 bundle +
 │                             #   dist 新鲜度冒烟 + node --test 通配 20 档（不再手写清单）
 ├── package-lock.json         # **已入库**（D-14）：CI 走 npm ci，本地/CI/发布同一棵树
 ├── .nvmrc                    # 22.15 = CI 的 Node 版本单一来源（engines 同源）

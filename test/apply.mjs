@@ -20,8 +20,11 @@ check("host exports inject (tools/llm/settings)", Array.isArray(mod.inject) && m
 check("host exports apply function", typeof mod.apply === "function");
 
 // 0.3.0-tisitan.0：lib 半编排面已切除——源码不得残留编排工具注册与编排事件钩子
+// 0.4.0-tisitan.0：观测埋点（metrics）同属 broker 独有面，一并纳入负向断言
+// 0.4.0 线 1.1：board 存储层（shared）不得回流 lib 半
+// 0.4.0 线 1.2：摘要解析器（shared）不得回流 lib 半
 const hostSrc = readFileSync(join(root, "lib", "index.js"), "utf-8");
-check("host source has no orchestration surface", !hostSrc.includes("name: 'go_work'") && !hostSrc.includes("name: 'continue'") && !hostSrc.includes("ctx.on('subagent/end'") && !hostSrc.includes("orchestration-ledger.json"));
+check("host source has no orchestration surface", !hostSrc.includes("name: 'go_work'") && !hostSrc.includes("name: 'continue'") && !hostSrc.includes("ctx.on('subagent/end'") && !hostSrc.includes("orchestration-ledger.json") && !hostSrc.includes("createMetrics(") && !hostSrc.includes("writeBoard(") && !hostSrc.includes("parseSummaryBlock("));
 
 // 2. Client source exists and is syntactically valid ESM.
 const clientSrc = join(root, "src", "client.js");

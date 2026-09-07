@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — persisted turn-failure archive readers (both halves).
+ * dsh-my-go — persisted session-archive readers (both halves).
  *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx —
  * node: builtins are fine.
@@ -204,4 +204,78 @@ export function readArchivedTurnFailure(childId, options = {}) {
   }
   console.warn(`[dsh-my-go] readTurnFailure: 档案 ${logFile} 内无 turn/end error 事件，静默退回无附因`)
   return undefined
+}
+
+// readArchivedUsage: archive main path for the usage aggregator (contract D2,
+// docs/usage-stats-design.md). Same family as readArchivedTurnFailure —
+// root/cwd resolution, findArchivedLogByChildId fallback, per-frame zstd
+// decompression, per-line JSON parse. Returns { events, complete }:
+//   events   — log-order entries with seq >= fromSeq (inclusive lower bound,
+//              matching Session.snapshotEvents semantics, index.d.ts:184)
+//   complete — false marks a partial scan: unreadable archive, frame scan
+//              failure, any frame or line skipped, or a torn append tail
+//              (D2 partial definition covers exactly these). A single bad
+//              frame never fails the whole read (Z6/Z7) — the caller turns
+//              complete=false into child partial, never an error, so this
+//              function never throws.
+export function readArchivedUsage(childId, fromSeq, options = {}) {
+  const noEvents = { events: [], complete: false }
+  const root = options.root ?? join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions')
+  const cwd = options.cwd ?? process.cwd()
+  let logFile = join(root, projectKey(cwd), encodeSegment(childId), 'session.jsonl.zstd')
+  let buffer
+  try {
+    buffer = readFileSync(logFile)
+  } catch (error) {
+    const found = findArchivedLogByChildId(root, childId)
+    if (!found) {
+      console.warn(`[dsh-my-go] readArchivedUsage: 持久化档案不可读 ${logFile}（${String(error?.code ?? error)}），本次扫描按不完整处理`)
+      return noEvents
+    }
+    logFile = found.logFile
+    try {
+      buffer = readFileSync(logFile)
+    } catch (fallbackError) {
+      console.warn(`[dsh-my-go] readArchivedUsage: 兜底命中档案不可读 ${logFile}（${String(fallbackError?.code ?? fallbackError)}），本次扫描按不完整处理`)
+      return noEvents
+    }
+  }
+  let ranges
+  try {
+    ranges = scanZstdFrameRanges(buffer)
+  } catch (error) {
+    console.warn(`[dsh-my-go] readArchivedUsage: 档案帧扫描失败 ${logFile}（${String(error)}），本次扫描按不完整处理`)
+    return noEvents
+  }
+  const floor = typeof fromSeq === 'number' && Number.isFinite(fromSeq) && fromSeq > 0 ? fromSeq : 0
+  const events = []
+  let complete = true
+  for (let i = 0; i < ranges.length; i++) {
+    let text
+    try {
+      text = zstdDecompressSync(buffer.subarray(ranges[i].start, ranges[i].end)).toString('utf-8')
+    } catch (error) {
+      console.warn(`[dsh-my-go] readArchivedUsage: 档案第 ${i} 帧解压失败 ${logFile}（${String(error)}），跳过该帧继续扫`)
+      complete = false
+      continue
+    }
+    for (const line of text.split('\n')) {
+      if (!line) continue
+      let ev
+      try {
+        ev = JSON.parse(line)
+      } catch {
+        console.warn(`[dsh-my-go] readArchivedUsage: 档案第 ${i} 帧存在截断/损坏行，跳过该行继续扫`)
+        complete = false
+        continue
+      }
+      if (typeof ev?.seq === 'number' && Number.isFinite(ev.seq) && ev.seq >= floor) events.push(ev)
+    }
+  }
+  // Torn append tail: scanZstdFrameRanges already cut the incomplete last
+  // frame, so leftover bytes mean the newest frame is still being written —
+  // this snapshot is missing it, hence partial rather than a clean empty scan.
+  const tailEnd = ranges.length > 0 ? ranges[ranges.length - 1].end : 0
+  if (tailEnd < buffer.length) complete = false
+  return { events, complete }
 }

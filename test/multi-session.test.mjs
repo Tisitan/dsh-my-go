@@ -8,7 +8,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as broker from '../preset/tools/broker.mjs'
-import { createMockCtx, withRealSignalContract, execOf, snapshotNow, snapOf, waitFor } from './helpers/mock-ctx.mjs'
+import { createMockCtx, withRealSignalContract, execOf, snapshotNow, snapOf, currentOf, waitFor } from './helpers/mock-ctx.mjs'
 
 // 测试隔离：台账持久化在 apply 时从 DSH_HOME 读回——指向独立临时目录。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-multi-home-'))
@@ -29,7 +29,7 @@ test('A 忙时 B 的 go_work 不排队：两个编排会话各自独立的流水
     agents: agentsMock,
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   const goWork = tools.get('go_work')
 
   const a1 = await goWork.execute({ agent: 'explore', prompt: 'A 的任务1' }, execOf(parentA))
@@ -50,10 +50,10 @@ test('A 忙时 B 的 go_work 不排队：两个编排会话各自独立的流水
   assert.ok(snap.parents && typeof snap.parents === 'object')
   assert.deepEqual(Object.keys(snap.parents).sort(), ['parent-A', 'parent-B'])
   assert.equal(snap.parents['parent-A'].parentSessionId, 'parent-A')
-  assert.equal(snapOf('parent-A').current?.childId, 'sess-1')
+  assert.equal(currentOf('parent-A')?.childId, 'sess-1')
   assert.equal(snapOf('parent-A').queue.length, 1)
   assert.equal(snapOf('parent-A').queue[0].agentType, 'librarian')
-  assert.equal(snapOf('parent-B').current?.childId, 'sess-2')
+  assert.equal(currentOf('parent-B')?.childId, 'sess-2')
   assert.equal(snapOf('parent-B').queue.length, 0, 'B 的队列不受 A 排队影响')
 })
 
@@ -68,7 +68,7 @@ test('childOwner 路由：need_help 落进属主流水线，subagent/end 只推�
       followup: async () => 'msg-1',
     },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   const goWork = tools.get('go_work')
 
   await goWork.execute({ agent: 'explore', prompt: 'A 的任务' }, execOf(parentA)) // sess-1
@@ -85,7 +85,7 @@ test('childOwner 路由：need_help 落进属主流水线，subagent/end 只推�
   assert.equal(r.suspended, true)
   assert.equal(snapOf('parent-B').helpRequests.length, 1)
   assert.equal(snapOf('parent-B').helpRequests[0].childId, 'sess-2')
-  assert.equal(snapOf('parent-B').current?.status, 'waiting')
+  assert.equal(currentOf('parent-B')?.status, 'waiting')
   assert.equal(snapOf('parent-A').helpRequests.length, 0, 'A 不得收到 B 子代理的求助单')
   assert.equal(reports.length, 1)
   assert.equal(reports[0].childId, 'sess-2')
@@ -94,15 +94,15 @@ test('childOwner 路由：need_help 落进属主流水线，subagent/end 只推�
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
   await waitFor(() => snapOf('parent-A')?.history?.length >= 1
     && snapOf('parent-A')?.queue?.length === 0
-    && snapOf('parent-A')?.current?.agentType === 'oracle', { what: 'A 完工落账且队首上岗' })
+    && currentOf('parent-A')?.agentType === 'oracle', { what: 'A 完工落账且队首上岗' })
   const snapA = snapOf('parent-A')
   assert.equal(snapA.history.length, 1)
   assert.equal(snapA.history[0].agentType, 'explore')
   assert.equal(snapA.queue.length, 0, 'A 的排队任务已被推进消化')
-  assert.equal(snapA.current?.agentType, 'oracle')
+  assert.equal(snapA.currentRecords?.[0]?.agentType, 'oracle')
   const snapB = snapOf('parent-B')
-  assert.equal(snapB.current?.childId, 'sess-2')
-  assert.equal(snapB.current?.status, 'waiting', 'B 的 suspended 记录不受 A 完工影响')
+  assert.equal(snapB.currentRecords?.[0]?.childId, 'sess-2')
+  assert.equal(snapB.currentRecords?.[0]?.status, 'waiting', 'B 的 suspended 记录不受 A 完工影响')
   assert.equal(snapB.history.length, 0)
 })
 
@@ -112,7 +112,7 @@ test('session/disposed 销毁该会话的整条流水线，其他会话不受影
     agents: agentsMock,
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   const goWork = tools.get('go_work')
 
   await goWork.execute({ agent: 'explore', prompt: 'A 的任务' }, execOf(parentA)) // sess-1
@@ -123,14 +123,14 @@ test('session/disposed 销毁该会话的整条流水线，其他会话不受影
   dispatch('session/disposed', { id: 'parent-A' })
   const snap = snapshotNow()
   assert.deepEqual(Object.keys(snap.parents), ['parent-B'])
-  assert.equal(snapOf('parent-B').current?.childId, 'sess-2')
+  assert.equal(currentOf('parent-B')?.childId, 'sess-2')
 
   // A 的孤儿子代理迟到的 end：无处落账但不得拖垮 B（留痕忽略）
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'orphan' }] })
   await new Promise((resolve) => setTimeout(resolve, 50))
   const after = snapshotNow()
   assert.deepEqual(Object.keys(after.parents), ['parent-B'])
-  assert.equal(snapOf('parent-B').current?.childId, 'sess-2')
+  assert.equal(currentOf('parent-B')?.childId, 'sess-2')
   assert.equal(snapOf('parent-B').history.length, 0)
 
   // B 完工后正常落账推进
@@ -138,7 +138,7 @@ test('session/disposed 销毁该会话的整条流水线，其他会话不受影
   await waitFor(() => snapOf('parent-B')?.history?.length >= 1, { what: 'B 完工落账' })
   assert.equal(snapOf('parent-B').history.length, 1)
   assert.equal(snapOf('parent-B').history[0].conclusion, 'B done')
-  assert.equal(snapOf('parent-B').current, null)
+  assert.equal(currentOf('parent-B'), null)
 })
 
 test('continue 先查调用方实例再全局扫描：复活已完工子代理并重新登记属主', async () => {
@@ -151,7 +151,7 @@ test('continue 先查调用方实例再全局扫描：复活已完工子代理�
       followup: async (parent, childId, blocks) => { followups.push({ parentId: parent.id, childId }); return 'msg-x' },
     },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   const goWork = tools.get('go_work')
 
   await goWork.execute({ agent: 'explore', prompt: 'A 的任务' }, execOf(parentA)) // sess-1
@@ -164,8 +164,8 @@ test('continue 先查调用方实例再全局扫描：复活已完工子代理�
   assert.equal(res.accepted, true)
   assert.equal(followups.length, 1)
   assert.equal(followups[0].parentId, 'parent-A')
-  assert.equal(snapOf('parent-A').current?.childId, 'sess-1')
-  assert.equal(snapOf('parent-A').current?.status, 'running')
+  assert.equal(currentOf('parent-A')?.childId, 'sess-1')
+  assert.equal(currentOf('parent-A')?.status, 'running')
   assert.equal(snapOf('parent-A').history.length, 0)
 
   // 再次完工：经 childOwner 重登记路由回 A 的流水线正常落账
@@ -173,7 +173,7 @@ test('continue 先查调用方实例再全局扫描：复活已完工子代理�
   const snapA = snapOf('parent-A')
   assert.equal(snapA.history.length, 1)
   assert.equal(snapA.history[0].conclusion, 'A redone')
-  assert.equal(snapA.current, null)
+  assert.equal(snapA.currentRecords?.length ?? 0, 0)
 })
 
 test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作，属主消亡才允许收养（棒2-L2）', async () => {
@@ -188,7 +188,7 @@ test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作�
       followup: async (parent, childId) => { followups.push({ parentId: parent.id, childId }); return 'msg-o' },
     },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: 'A 的任务' }, execOf(parentA)) // sess-1
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'A done' }] })
   assert.equal(snapOf('parent-A').history.length, 1)
@@ -206,7 +206,7 @@ test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作�
     },
   )
   assert.equal(followups.length, 0, '拒绝路径零投递')
-  assert.equal(snapOf('parent-A').current, null, 'A 的记录未被 B 的调用复活')
+  assert.equal(currentOf('parent-A'), null, 'A 的记录未被 B 的调用复活')
 
   // A 会话消亡（从注册表摘除）：记录桶仍在内存台账里 → B 是唯一在场的编排
   // 会话，允许收养（进程重启后 continue 历史记录的正当路径，同 legacy 桶）
@@ -214,6 +214,6 @@ test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作�
   const res = await cont.execute({ id: 'sess-1', prompt: 'B 收养续聊' }, execOf(parentB))
   assert.equal(res.accepted, true, '属主消亡后允许现调用方收养')
   assert.deepEqual(followups, [{ parentId: 'parent-B', childId: 'sess-1' }])
-  assert.equal(snapOf('parent-A').current?.childId, 'sess-1', '收养后记录在属主桶内复活占槽')
-  assert.equal(snapOf('parent-A').current?.status, 'running')
+  assert.equal(currentOf('parent-A')?.childId, 'sess-1', '收养后记录在属主桶内复活占槽')
+  assert.equal(currentOf('parent-A')?.status, 'running')
 })

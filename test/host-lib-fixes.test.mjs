@@ -219,7 +219,7 @@ test('snapshot：每桶 history 裁到末 8 且全形状剔 prompt，helpRequest
       assert.equal(bucket.history[7].childId, 'c-29', `${pid}: 留的是最新那 8 条`)
       assert.ok(bucket.history.every((r) => !('prompt' in r)), `${pid}: history 条目无 prompt`)
       assert.ok(bucket.history.every((r) => r.conclusion.startsWith('结论')), `${pid}: 面板要显示的字段一个不少`)
-      assert.ok(bucket.current === null || !('prompt' in bucket.current), `${pid}: current 无 prompt（null 原样透出）`)
+      assert.ok((!Array.isArray(bucket.currentRecords)) || bucket.currentRecords.every((c) => c === null || !('prompt' in c)), `${pid}: currentRecords 条目无 prompt（非数组原样透出）`)
       assert.ok(bucket.queue.every((w) => !('prompt' in w)), `${pid}: queue 条目无 prompt`)
     }
     assert.deepEqual(res.value.parents['p-1'].helpRequests, [{ id: 'h-1', childId: 'c-30', intent: 'explore', content: '求助正文' }], '求助单原样保留（正文面板要显示）')

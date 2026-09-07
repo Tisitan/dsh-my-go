@@ -19,6 +19,12 @@ export const AGENT_TYPE_PREFIX = 'dsh-my-go:'
 // 不匹配，排查成本远高于写入时报错。
 export const ROLE_KEY_PATTERN = /^[a-z][a-z-]*$/
 
+// "{provider}/{model}" usage-price keys split at the FIRST "/" only: anchoring
+// provider as [^/]+ keeps model-side slashes (OpenRouter-style ids like
+// "openrouter/deepseek/deepseek-chat") unambiguous — a looser pattern would
+// make "a/b/c" rows misattribute at aggregation time.
+export const PRICE_KEY_PATTERN = /^[^/]+\/.+/
+
 // 编排状态兜底闸（0.2.3-tisitan.15）：正常路径自会清理（finish 即删、history 自截断），
 // 下面三枚上限只为异常路径兜底——end 事件永久缺席的滞留记录（CURRENT_MAP_CAP）、
 // 属主会话无限累积（LEDGER_PARENTS_CAP）、单桶 history 无界增长（HISTORY_CAP）。
@@ -36,7 +42,12 @@ export const RUN_CODE_TOOL = 'run_code'
 
 // 本插件注册的编排工具名：schemas() 无参只返回全局层视图（内建 + MCP），
 // preset 层的自产工具不在其中——toolFilter 合法引用它们时不能误杀。
-export const SELF_REGISTERED_TOOLS = ['go_work', 'continue', 'need_help', 'forward', 'orchestration_status', 'list_subagents']
+// 0.4.0 线第一期追加 report_submit / report_fetch（规划 1.3 名单一次登记两个
+// 名字；report_fetch 工具本体随 1.6 注册，名单先行对未注册名无实害——两处
+// 消费点（roles 过滤 / liveToolNames）只是「允许 toolFilter 合法引用」）。
+// 0.4.0 线第三期追加 chain_start / chain_resolve（D11 工具对；本体随 3.3 注册，
+// relayChains 缺省关——名单先行与 report_fetch 同款「无实害」口径）。
+export const SELF_REGISTERED_TOOLS = ['go_work', 'continue', 'need_help', 'forward', 'orchestration_status', 'list_subagents', 'report_submit', 'report_fetch', 'chain_start', 'chain_resolve']
 
 // 上游邻接消息三件套（dsh-tool-subagent-control 注册）：绕过 broker 台账与
 // 单线锁的旁路面，MyGO 会话的 Sisyphus 与子代理两侧都在 agent/created 里

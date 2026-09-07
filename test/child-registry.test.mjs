@@ -125,3 +125,17 @@ test('复活即新世代：rearmChild 清备选 once-guard 与 abort 护航，�
   assert.equal(r.fallbackDecided.has('c-other'), true, '他人条目不受牵连（决策仍只一次）')
   assert.equal(r.abortExpected.has('c-other'), true, '他人护航不受牵连')
 })
+
+// 1.5 方案甲裁决：repairRetried 的清理双点各司其职——retireChild 是防无限循环的
+// 关键（补发链不走 rearmChild，guard 存续到补发轮 end 的转裁决），rearmChild 防
+// 主编复活做新任务被旧 guard 误吞补发资格。两处都只清自己。
+test('repairRetried（报告补发 once-guard）：retireChild 终局清 + rearmChild 复活清，且只清自己', () => {
+  const r = newRegistry()
+  r.repairRetried.add('c1')
+  r.repairRetried.add('c-other')
+  r.retireChild('c1')
+  assert.equal(r.repairRetried.has('c1'), false, '终局翻篇：授权随任何终局落账清零（转裁决后主编复活不误吞新任务）')
+  assert.equal(r.repairRetried.has('c-other'), true, '他人授权不受牵连')
+  r.rearmChild('c-other', { agentType: 'hermes' }, 'parent-1')
+  assert.equal(r.repairRetried.has('c-other'), false, '复活即新世代同点清（规格字面；补发链不走此处，不构成死循环回路）')
+})

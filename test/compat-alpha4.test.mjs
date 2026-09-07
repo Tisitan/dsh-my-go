@@ -305,7 +305,7 @@ test('broker/alpha.4：continue 经特性探测走 sendMessage（无 followup �
       interrupt: () => {},
     },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: '任务' }, execOf(parent))
   const r = await tools.get('continue').execute({ id: 'sess-1', prompt: '驳回重做' }, execOf(parent))
   assert.equal(r.accepted, true)
@@ -326,7 +326,7 @@ test('broker/alpha.4：need_help 经 sendMessage 上报，Sisyphus 收到的注�
       sendMessage: async (sender, targetId, content) => { sent.push({ sender, targetId, text: content[0]?.text }); return 'msg-help' },
     },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: '任务' }, execOf(parent))
   const child = { id: 'sess-1', session: { header: { parentSession: 'parent-A' } } }
   const r = await tools.get('need_help').execute({ intent: 'execute', content: '帮我跑这条命令' }, execOf(child))
@@ -351,7 +351,7 @@ test('broker/alpha.4：need_help 的 sendMessage 被拒 → parent.inject 兜底
       sendMessage: async () => { throw new Error('UNAUTHORIZED: not resident') },
     },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: '任务' }, execOf(parent))
   const child = { id: 'sess-1', session: { header: { parentSession: 'parent-A' } } }
   const r = await tools.get('need_help').execute({ intent: 'replan', content: '超出能力' }, execOf(child))
@@ -373,7 +373,7 @@ test('broker/alpha.4：continue 默认 queued 档经 internal 队列符号投递
       interrupt: () => {},
     },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: '任务' }, execOf(parent))
   const r = await tools.get('continue').execute({ id: 'sess-1', prompt: '驳回重做' }, execOf(parent))
   assert.equal(r.accepted, true)
@@ -400,7 +400,7 @@ test('broker/alpha.4：无队列符号的 runtime 上 queued 档退化为 steer 
         interrupt: () => {},
       },
     })
-    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
     await tools.get('go_work').execute({ agent: 'explore', prompt: '任务' }, execOf(parent))
     const r = await tools.get('continue').execute({ id: 'sess-1', prompt: '补充说明' }, execOf(parent))
     assert.equal(r.accepted, true)
@@ -430,7 +430,7 @@ test('broker/alpha.4：steer 档走门面 sendMessage（不直取 Agent.steer、
       interrupt: () => {},
     },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: '任务' }, execOf(parent))
   const r = await tools.get('continue').execute({ id: 'sess-1', prompt: '中途纠偏', urgency: 'steer' }, execOf(parent))
   assert.equal(r.mode, 'steer')
@@ -459,7 +459,7 @@ test('broker/alpha.4：steer 被门面拒收 → warn 留痕并回落 queued 通
         interrupt: () => {},
       },
     })
-    await broker.apply(ctx, { queueRetryBaseMs: 5 })
+    await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
     await tools.get('go_work').execute({ agent: 'explore', prompt: '任务' }, execOf(parent))
     const r = await tools.get('continue').execute({ id: 'sess-1', prompt: '纠偏', urgency: 'steer' }, execOf(parent))
     assert.equal(r.accepted, true, '门面拒收后仍把话送到')
@@ -483,7 +483,7 @@ test('modelCache：settings/updated 热更后重新拉取 provider 模型清单�
     listModels: async (pid) => { listCalls += 1; assert.equal(pid, 'p1'); return catalog.map((id) => ({ id })) },
   }
   const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindSisyphus: true })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   // C-09：listeners 的值是 fn[] 多播数组——重复注册不再互相覆盖，而是当场数得出来
   const onRequestHandlers = listeners.get('agent/request') ?? []
   assert.equal(onRequestHandlers.length, 1, 'agent/request 只注册一个 handler')
@@ -538,7 +538,7 @@ test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoc
     },
   }
   const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindSisyphus: true })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   const inflight = askWaterfall(dispatch)
   await settle()
   // 窗口内热更：provider 侧换模型 + settings 改绑定 → 缓存整体作废
@@ -564,7 +564,7 @@ test('modelCache：列举成功但绑定的模型不在（含空清单）是结�
     const settings = { get: (ns) => (ns === 'dsh-my-go' ? { sisyphus: { provider: 'p1', model: 'ghost-m' } } : undefined) }
     const llm = { listModels: async () => { listCalls += 1; return [] } }
     const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
-    await broker.apply(ctx, { queueRetryBaseMs: 5, bindSisyphus: true })
+    await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
     const first = await askWaterfall(dispatch)
     assert.equal(first.model, 'seed-model', '校验不过 → 保留种子模型（行为不变）')
     const second = await askWaterfall(dispatch)
@@ -584,7 +584,7 @@ test('modelCache：listModels 抛错 / llm 服务缺席属「不知道」→ 不
     const settings = { get: (ns) => (ns === 'dsh-my-go' ? { sisyphus: { provider: 'p1', model: 'm1' } } : undefined) }
     const llm = { listModels: async () => { listCalls += 1; throw new Error('provider offline') } }
     const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
-    await broker.apply(ctx, { queueRetryBaseMs: 5, bindSisyphus: true })
+    await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
     assert.equal((await askWaterfall(dispatch)).model, 'seed-model')
     assert.equal((await askWaterfall(dispatch)).model, 'seed-model')
     assert.equal(listCalls, 2, '瞬时失败不留负缓存：provider 恢复后下一发即能绑定生效')
@@ -603,7 +603,7 @@ test('effortCache：能力表热更后重新解析，改好的档位即刻生效
     resolveModelInfo: async () => { infoCalls += 1; return { reasoning: { efforts } } },
   }
   const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindSisyphus: true })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   const first = await askWaterfall(dispatch)
   assert.equal(first.reasoningEffort, undefined, 'high 不在能力表内 → 不设档位（既有纪律）')
   await askWaterfall(dispatch)
@@ -625,7 +625,7 @@ test('effortCache：resolveModelInfo 成功但读不到档位表 → null 不缓
     resolveModelInfo: async () => { infoCalls += 1; return {} }, // 无 reasoning 段
   }
   const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindSisyphus: true })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   assert.equal((await askWaterfall(dispatch)).reasoningEffort, undefined)
   assert.equal((await askWaterfall(dispatch)).reasoningEffort, undefined)
   assert.equal(infoCalls, 2, 'null 是未知而非结论：不入缓存，留待下次现读')

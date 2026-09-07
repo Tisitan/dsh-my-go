@@ -33,11 +33,11 @@ function fixture(over = {}) {
   const type = pick('type', 'hermes')
   const ledgerRecord = pick('ledgerRecord', undefined)
   const live = pick('live', true)
-  const spawningCandidates = pick('spawningCandidates', [])
   const abortSet = pick('abortSet', [])
   const decidedSet = pick('decidedSet', [])
   const bindings = pick('bindings', BINDINGS)
   const failure = pick('failure', undefined)
+  const reportGate = pick('reportGate', null)
   const calls = { readFailure: 0 }
   const result = attributeEnd({
     childId,
@@ -46,7 +46,6 @@ function fixture(over = {}) {
     type,
     ledgerRecord,
     hasLiveRecord: (id) => (id === childId ? live : false),
-    spawningCandidates,
     abortExpected: (id) => abortSet.includes(id),
     fallbackDecided: (id) => decidedSet.includes(id),
     bindings,
@@ -54,6 +53,7 @@ function fixture(over = {}) {
       calls.readFailure += 1
       return failure
     },
+    reportGate,
   })
   return { ...result, calls }
 }
@@ -91,19 +91,15 @@ test('E2 不在册、台账无记录、无占位可归因 → unattributable：�
   assert.equal(shouldAdvanceQueue(noOwner.facts, { hasOwningOrch: false }), false, '连属主都不知道，绝不盲推队列')
 })
 
-test('E2b spawning 占位不唯一 → 歧义即放弃归因，一条 op 都不发（0.2.3-tisitan.6 串号教训）', () => {
-  const r = fixture({
-    type: undefined,
-    ledgerRecord: undefined,
-    routing: undefined,
-    spawningCandidates: [
-      { parentId: 'parent-1', placeholderChildId: 'child-a', agentType: 'hermes' },
-      { parentId: 'parent-2', placeholderChildId: 'child-b', agentType: 'explore' },
-    ],
-  })
+test('E2 占位归因兜底已退役（二期 2.4 方案 A）：不再有 bind/set-child-owner op，一律落档不猜', () => {
+  // 退役前的「恰有一条占位即归因」（E2+）与「多条即歧义」（E2b）两分支随方案 A
+  // 移除——end 抢跑场景由 broker 侧 end 缓冲重放接管（test/end-buffer.test.mjs）。
+  // 纯函数层现在对「不在册且无台账」的输入只有一种答案：unattributable 落档。
+  const r = fixture({ type: undefined, ledgerRecord: undefined, routing: undefined, live: false })
   assert.equal(r.decision, 'unattributable')
-  assert.equal(r.facts.ambiguousSpawning, true)
-  assert.deepEqual(r.ops, [], '绑错属主比不绑更坏：绝不猜一个')
+  assert.deepEqual(opsOf(r), [], '绝不猜测归因：bind-spawning-child / set-child-owner 已随退役移除')
+  assert.equal('ambiguousSpawning' in r.facts, false, '歧义信号随占位候选机制一并退役')
+  assert.match(r.facts.warn, /no record to attribute/)
 })
 
 test('E3 工种在册而属主实例已销毁 → no-owning-orchestration：只清类型三表、不推进队列', () => {
@@ -112,44 +108,6 @@ test('E3 工种在册而属主实例已销毁 → no-owning-orchestration：只�
   assert.deepEqual(opsOf(r), ['retire-type-records'])
   assert.equal(r.facts.advance, 'no', '实例都不在了，推谁的队列？')
   assert.match(r.facts.warn, /has no owning orchestration; conclusion dropped/)
-})
-
-// ── E2+：E2/E3 竞态兜底段的占位换键归因（不是终端出口，继续走完整链）────────
-
-test('E2+ end 早于 spawn resolve → 归因到唯一占位：ops 顺序必须 bind 在前、改属主在后', () => {
-  const r = fixture({
-    type: undefined,
-    ledgerRecord: undefined,
-    routing: undefined,
-    live: false,
-    spawningCandidates: [{ parentId: 'parent-1', placeholderChildId: 'child-p1', agentType: 'hermes' }],
-    info: { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done' }] },
-  })
-  assert.equal(r.decision, 'finalize', '归因成功后照常走收尾（E2+ 是链中段而非出口）')
-  assert.deepEqual(opsOf(r), ['bind-spawning-child', 'set-child-owner'])
-  assert.deepEqual(r.ops[0], { op: 'bind-spawning-child', parentId: 'parent-1', placeholderChildId: 'child-p1', childId: 'sess-1' })
-  assert.deepEqual(r.ops[1], { op: 'set-child-owner', childId: 'sess-1', parentId: 'parent-1' })
-  assert.equal(r.facts.ownerPid, 'parent-1', '属主改接为占位记录所在实例')
-  assert.equal(r.facts.type, 'hermes', '工种取自占位记录')
-  assert.equal(r.notices[0].target, 'log', '留痕一条，不发父会话通知')
-  assert.match(r.notices[0].text, /arrived before spawn resolved; attributed to spawning record sess-1/)
-  assert.equal(r.facts.conclusion, 'done')
-})
-
-test('E2+b 归因后活槽判定以改写后为准（不能被 hasLiveRecord 的旧快照误判成迟到 end）', () => {
-  // live=false 是「归因前」的事实：占位换键后记录就在活槽里，若沿用旧值会被
-  // 判成 E1 late-duplicate 或跳过重派评估（error 终局 + 有链时漏重派）。
-  const r = fixture({
-    type: undefined,
-    ledgerRecord: undefined,
-    routing: undefined,
-    live: false,
-    spawningCandidates: [{ parentId: 'parent-1', placeholderChildId: 'child-p1', agentType: 'hermes' }],
-    info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] },
-    failure: { message: 'boom', code: 'SERVER' },
-  })
-  assert.equal(r.decision, 'fallback-evaluation', '归因即入活槽，重派评估照常成立')
-  assert.equal(opsOf(r).includes('add-fallback-guard'), true)
 })
 
 // ── E4 / E5：两张一次性表的出口与换序敏感性 ──────────────────────────────────
@@ -317,8 +275,9 @@ test('每条 DECISIONS 出口都必须登记队列推进时机，且只有 now/i
     'ignore',
     'late-duplicate',
     'no-owning-orchestration',
+    'report-gate-repair',
     'unattributable',
-  ], '八条出口齐备（增删决策要在这里说明理由）')
+  ], '九条出口齐备（1.5 新增 report-gate-repair，advance=no：补发期间槽位仍占；增删决策要在这里说明理由）')
   const seen = new Set()
   const scenarios = [
     { args: { childId: undefined, info: {} } },
@@ -335,7 +294,7 @@ test('每条 DECISIONS 出口都必须登记队列推进时机，且只有 now/i
     seen.add(r.decision)
     assert.ok(['now', 'no', 'if-owned'].includes(r.facts.advance), `${r.decision} 的 advance 口径合法`)
   }
-  assert.equal(seen.size, 8, `八条出口都要被这组场景打到，实际只到 ${[...seen].join(',')}`)
+  assert.equal(seen.size, 8, `无 gate 的基础场景集打到八条出口（report-gate-repair 由下方闸门直测批单独覆盖），实际只到 ${[...seen].join(',')}`)
   assert.equal(shouldAdvanceQueue({ advance: 'now' }), true)
   assert.equal(shouldAdvanceQueue({ advance: 'no' }), false)
   assert.equal(shouldAdvanceQueue({ advance: undefined }), false, '漏登记 = 不推进（宁可冻结也不放行两个并行）')
@@ -345,4 +304,100 @@ test('attributeEnd 对畸形载荷不抛错（表状态缺项/载荷非对象都
   assert.equal(attributeEnd({}).decision, 'ignore')
   assert.equal(attributeEnd({ childId: 'x', info: null, routing: { parentId: 'p' }, type: 'hermes', hasLiveRecord: () => true }).decision, 'finalize')
   assert.equal(attributeEnd({ childId: 'x', info: { stopReason: 'completed', lastAssistantMessage: '不是数组' }, routing: { parentId: 'p' }, type: 'hermes', hasLiveRecord: () => true }).facts.conclusion, '(completed)')
+})
+
+test('facts.lane 事实字段（二期 2.3，D18）：type 已定出口携带 laneOf(type)，E0/E2 缺 type 不猜', () => {
+  // finalize：hermes → write；explore → read
+  const finWrite = attributeEnd({ childId: 'x', info: { stopReason: 'completed' }, routing: { parentId: 'p' }, type: 'hermes', hasLiveRecord: () => true })
+  assert.equal(finWrite.facts.lane, 'write')
+  const finRead = attributeEnd({ childId: 'x', info: { stopReason: 'completed' }, routing: { parentId: 'p' }, type: 'explore', hasLiveRecord: () => true })
+  assert.equal(finRead.facts.lane, 'read')
+  // E0：无 childId，type 未定 → lane 缺席（不猜）
+  assert.equal(attributeEnd({}).facts.lane, undefined)
+  // E2：无从归属，type undefined → lane 缺席
+  const e2 = attributeEnd({ childId: 'x', info: { stopReason: 'error' } })
+  assert.equal(e2.decision, 'unattributable')
+  assert.equal(e2.facts.lane, undefined)
+  // facts.lane 是纯事实记录：不改变 advance 决策口径（D18 global-scan）
+  assert.equal(finWrite.facts.advance, 'now')
+})
+
+// ── E9（报告提交制闸门，0.5.0-tisitan.1）直测批 ──────────────────────────────
+// 闸门判定全部在 attributeEnd 纯函数层（同步段协议），这里「表状态进、决策出」
+// 直测三分支 + 零进入：已提交直通 / 从未提交补发 / 已补发转裁决 / failed 与开关关。
+
+// 成功提交登记的登记值形态（child-registry.reportSubmitted 的 value）
+const SUBMITTED = { conclusion: '结论摘要', evidence: ['src/a.js:12'], open: '无' }
+const summaryOf = (childId) => [
+  '结论摘要',
+  '证据:',
+  '- src/a.js:12',
+  '遗留: 无',
+  `全文落板，report_fetch childId=${childId} 切片取阅`,
+].join('\n')
+
+// 闸门夹具：在标准 fixture 上叠 reportGate（登记命中开关 + 补发授权开关）
+function gateFixture({ submitted = true, repaired = false, gateOver = {} } = {}) {
+  return fixture({
+    reportGate: {
+      enabled: true,
+      reportSubmitted: () => submitted,
+      readSubmitted: () => SUBMITTED,
+      repairRetried: () => repaired,
+      ...gateOver,
+    },
+  })
+}
+
+test('闸门·已提交直通：finalize 但 conclusion = 合成概要（conclusion+evidence+open+取阅指针）', () => {
+  const r = gateFixture()
+  assert.equal(r.decision, 'finalize')
+  assert.equal(r.facts.advance, 'now')
+  assert.equal(r.facts.conclusion, summaryOf('sess-1'), '台账 conclusion = broker 合成回执内芯')
+  assert.equal(r.facts.reportGate.phase, 'pass')
+  assert.deepEqual(opsOf(r).filter((o) => o === 'add-repair-guard'), [])
+  assert.ok(r.facts.conclusion.includes('全文落板，report_fetch childId=sess-1 切片取阅'), '取阅指引随回执')
+})
+
+test('闸门·从未提交首次 → 第九出口：guard op 同步随行、固定措辞补发 prompt、槽位保留', () => {
+  const r = gateFixture({ submitted: false })
+  assert.equal(r.decision, 'report-gate-repair')
+  assert.equal(r.facts.advance, 'no', '补发期间槽位仍占（队列不推进）')
+  assert.deepEqual(r.ops, [{ op: 'add-repair-guard', childId: 'sess-1' }], 'once-guard 随决策返回，dispatcher 第一时间落地')
+  assert.equal(r.facts.reportFullText, '结论正文', '最后消息全文随 facts（补发投递失败时的落账材料）')
+  assert.ok(r.facts.repairPrompt.includes('未调用 report_submit 提交报告，视为未交付'), '补发 prompt 点名未交付')
+  assert.ok(r.facts.repairPrompt.includes('四字段'), '补发 prompt 指路四字段')
+  assert.ok(r.facts.repairPrompt.includes('只补交报告'), '补发 prompt 明示无需重做任务')
+  assert.ok(ownerNotices(r)[0].includes('报告未提交'), '同步预告在 facts 组装期入列')
+  assert.equal('repairErrors' in r.facts, false, '提交制无格式错误清单（判定源是登记表）')
+})
+
+test('闸门·已补发仍未提交 → 转裁决 finalize：「未交付：」前缀 + 正常推进，不再二次补发', () => {
+  const r = gateFixture({ submitted: false, repaired: true })
+  assert.equal(r.decision, 'finalize')
+  assert.equal(r.facts.advance, 'now')
+  assert.ok(r.facts.conclusion.startsWith('未交付：'), '转裁决前缀')
+  assert.ok(r.facts.conclusion.includes('结论正文'), '最后消息全文随结论落账（唯一现场材料）')
+  assert.equal(r.facts.reportGate.phase, 'verdict')
+  assert.deepEqual(opsOf(r).filter((o) => o === 'add-repair-guard'), [], '不再二次补发（once-guard 已在册，决策走转裁决）')
+})
+
+test('闸门·failed 永不过闸：无链 error 终局走失败落账现路径，conclusion 无前缀、无 gate fact', () => {
+  const r = fixture({
+    info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [{ type: 'text', text: '半成品正文' }] },
+    reportGate: { enabled: true, reportSubmitted: () => false, readSubmitted: () => undefined, repairRetried: () => false },
+    bindings: { hermes: { provider: 'p0', model: 'm0' } },
+    failure: { message: 'boom', code: 'HTTP_500' },
+  })
+  assert.equal(r.decision, 'finalize')
+  assert.equal(r.facts.reportGate, undefined, 'failed 结论全文直推主编（沿用今日原则）')
+  assert.ok(!r.facts.conclusion.startsWith('未交付：'))
+  assert.equal(r.facts.advance, 'now')
+})
+
+test('闸门·开关关（reportGate 缺省）：现状零变化，最后消息文本原样进 conclusion', () => {
+  const r = fixture({ info: { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '普通正文' }] } })
+  assert.equal(r.decision, 'finalize')
+  assert.equal(r.facts.conclusion, '普通正文', '全文原样（现状行为）')
+  assert.equal(r.facts.reportGate, undefined)
 })

@@ -29,7 +29,7 @@ const rosterSectionOf = (sections) => sections.find((s) => s?.name === 'dsh-my-g
 
 test('名册简报段注册形态：name/order=10/函数态 text/无 complete（与 persona/orchestration 共存）', async () => {
   const { ctx, sections } = mockCtxFull()
-  await broker.apply(ctx, {})
+  await broker.apply(ctx, { reportExternalization: false })
   const def = rosterSectionOf(sections)
   assert.ok(def, 'dsh-my-go:roster 段已注册')
   assert.equal(def.order, 10, 'order=10（persona(0) 与编排规则(20) 之间空档）')
@@ -41,7 +41,7 @@ test('名册简报段注册形态：name/order=10/函数态 text/无 complete（
 
 test('名册简报段儿童门控：子代理（parentSession 直达 + label 兜底）返回空串，根编排会话返回简报', async () => {
   const { ctx, sections } = mockCtxFull()
-  await broker.apply(ctx, {})
+  await broker.apply(ctx, { reportExternalization: false })
   const def = rosterSectionOf(sections)
   const root = { id: 'root-1', session: { header: {} } }
   assert.ok(def.text({ agent: root }).length > 0, '根编排会话返回简报全文')
@@ -57,7 +57,7 @@ test('名册简报段儿童门控：子代理（parentSession 直达 + label 兜
 
 test('名册简报内容：工种/模型/备选链序列/toolFilter 概要/人设来源 + 协议指路头部', async () => {
   const { ctx, sections } = mockCtxFull()
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     bindings: {
       hermes: {
         provider: 'p0', model: 'm0',
@@ -80,7 +80,7 @@ test('名册简报内容：工种/模型/备选链序列/toolFilter 概要/人�
 
 test('名册简报字节稳定：同 settings 两次渲染逐字节全等（渲染器键排序，键插入序无关）', async () => {
   const { ctx, sections } = mockCtxFull()
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     bindings: {
       'custom-z': { model: 'mz', fallbacks: [{ provider: 'p1', model: 'm1' }] },
       'custom-a': { provider: 'pa' },
@@ -103,7 +103,7 @@ test('名册简报 bindings 取法：沿用 settings/updated 整表重建，函�
     get: () => stored,
   }
   const { ctx, listeners, dispatch, sections } = mockCtxFull({ settings })
-  await broker.apply(ctx, {})
+  await broker.apply(ctx, { reportExternalization: false })
   const def = rosterSectionOf(sections)
   const root = { agent: { id: 'root-1', session: { header: {} } } }
   assert.ok(def.text(root).includes('- hermes → p0·m0'), '初载 settings 合并生效')
@@ -134,7 +134,7 @@ test('预告：有链失败同步 inject「备选评估中」，先于异步重�
     },
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
@@ -166,7 +166,7 @@ test('预告：无链失败同步 inject「无备选链，取证中」，先于�
     },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
   const preview = injected.find((m) => m.content?.[0]?.text?.includes('无备选链，取证中'))
@@ -186,7 +186,7 @@ test('预告：有链但非 error 终局（aborted）→「不进入备选评估
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
@@ -215,7 +215,7 @@ test('终局通知：备选链尽（备选也失败）→「备选链尽，按�
     },
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
@@ -251,7 +251,7 @@ test('终局通知：分类器否决（abort 类附因）→「附因属中断�
     },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })
@@ -271,7 +271,7 @@ test('预告：成功 end 零预告（失败已知悉/失败终局均不出现�
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     bindings: { hermes: { provider: 'p0', model: 'm0', fallbacks: [{ provider: 'p1', model: 'm1' }] } },
   })

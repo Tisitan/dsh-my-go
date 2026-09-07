@@ -147,6 +147,26 @@
 # agent's scope, which an `isolate` realm would hide from the assembly.
 - id: broker
   name: './tools/broker.mjs'
+  config:
+    # 报告外部化部署面总闸（0.4.0 线一期 1.3~1.6）：**显式配置优先于代码默认**
+    # （代码缺省 `?? true`，D5 默认开不动）。基线采集期曾显式 false 保持关——
+    # metrics（config.metrics ?? true）随部署点亮采「外部化开启前」的对照基线，
+    # 外部化不同时点亮。基线关窗后翻回 true，即点亮 report_submit/report_fetch
+    # 与报告闸门（prompt 条款、收尾落板、report-gate 补发链）。同步 preset 会
+    # 覆盖本行，改完记得保留本键。
+    reportExternalization: true
+
+    # 读平面并行池（0.4.0 线二期，D5/D7/D8/D9）：读平面 = explore/librarian，
+    # 写平面（Hermes/Hephaestus/Prometheus/Oracle/Looker/自定义角色）恒单线。
+    # 1 = 关闭 = 全局单线现状；2~3 = 读平面并发上限（>3 钳制 3，非法值回落 1）。
+    # 挂载期读一次，不做运行时切换。缺省（`?? 1`）= 关闭。
+    readPoolSize: 2
+
+    # 接力链总闸（0.4.0 线三期，D21~D29）：开 → chain_start/chain_resolve 注册。
+    # 依赖 reportExternalization=true（D23 fail-fast：总闸关则 chain_start 直接
+    # 报错指路，绝不静默降级）。挂载期读一次，不做运行时切换。
+    # 缺省（`?? false`）= 关。
+    relayChains: true
 
 # ── remaining model-facing rows ─────────────────────────────────────────────
 - id: tool-ask-user

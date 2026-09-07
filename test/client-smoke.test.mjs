@@ -121,7 +121,7 @@ test('client.apply：timer 缺席 → 回落自管 setInterval 并一次性留�
   }
 })
 
-test('client.apply：sessions 缺席 → 一次性留痕且跳转链不点火', async () => {
+test('client.apply：sessions 缺席 → 首次触达留痕一次且跳转链不点火', async () => {
   const slots = fakeSlots()
   const timer = fakeTimer()
   const connection = fakeConnection(() => ({ ok: true, value: { seq: 1, parents: {} } }))
@@ -131,15 +131,85 @@ test('client.apply：sessions 缺席 → 一次性留痕且跳转链不点火', 
     stop = clientHalf.apply(fakeClientCtx({ slots, connection, services: { timer } }))
     assert.equal(
       cap.lines.warn.filter((l) => l.includes('sessions service unavailable')).length,
-      1,
-      '缺席留痕一次（既有 ?. 守卫保留，不抛穿）',
+      0,
+      '惰性解析：装配点不触达 sessions，装配期零留痕',
     )
-    timer.chains[1].fn() // 自动跳转链：sessions 缺席时静默返回
+    timer.chains[1].fn() // 自动跳转链：首次触达 sessions → 留痕一次
+    await tick(2)
+    assert.equal(
+      cap.lines.warn.filter((l) => l.includes('sessions service unavailable')).length,
+      1,
+      '缺席留痕恰好一次（首访时打，不随 tick 刷屏；既有 ?. 守卫保留，不抛穿）',
+    )
+    timer.chains[1].fn() // 再次触达：静默返回，不重复留痕
     await tick(2)
     assert.ok(true, '跳转链在无 sessions 时不抛异常')
+    assert.equal(
+      cap.lines.warn.filter((l) => l.includes('sessions service unavailable')).length,
+      1,
+      '缺席留痕仍只有一次',
+    )
   } finally {
     cap.restore()
     stop()
+  }
+})
+
+test('client.apply：sessions 惰性解析——装配缺席只留痕一次，服务在席后跳转即刻可用', async () => {
+  const slots = fakeSlots()
+  const timer = fakeTimer()
+  // 唯一编排会话 p-1 有 running 子代：命中 auto-jump 跟随与跳回两条路径
+  const parents = {
+    'p-1': {
+      parentSessionId: 'p-1',
+      currentRecords: [{ childId: 'c-1', status: 'running', agentType: 'hermes' }],
+    },
+  }
+  const connection = fakeConnection(() => ({ ok: true, value: { seq: 1, parents } }))
+  const calls = []
+  let services = { timer }
+  const cap = captureConsole()
+  let stop
+  try {
+    // 装配时 sessions 缺席（不进 services）
+    stop = clientHalf.apply({ connection, get: (n) => (n === 'slots' ? slots : services[n]) })
+    timer.chains[1].fn() // 缺席期首次触达：惰性 get 落空 → 留痕一次
+    await tick(2)
+    assert.equal(
+      cap.lines.warn.filter((l) => l.includes('sessions service unavailable')).length,
+      1,
+      '装配缺席留痕恰好一次（不随 auto-jump 每 800ms 刷屏）',
+    )
+    // 服务随后在席：旧实现在装配点一次性 get 落空即永久锁死，惰性解析即刻恢复
+    services = {
+      timer,
+      sessions: {
+        open: (id) => { calls.push(['open', id]) },
+        openSubagent: (addr) => { calls.push(['openSubagent', addr]) },
+        list: { getSnapshot: () => ({ current: 'p-1', phase: 'ready' }) },
+      },
+    }
+    timer.chains[0].fn() // 先让快照进面板闭包（一发 600ms 轮询）
+    await tick(2)
+    timer.chains[1].fn() // auto-jump：myId='p-1' 命中唯一 running → 跟随子代
+    await tick(2)
+    assert.deepEqual(
+      calls[0],
+      ['openSubagent', { parentSessionId: 'p-1', childSessionId: 'c-1', mode: 'continuable' }],
+      '服务在席后自动跟随恢复（openSubagent 经惰性解析可调用）',
+    )
+    parents['p-1'].currentRecords = [] // 子代落定 → 下一轮跳回父会话
+    timer.chains[1].fn()
+    await tick(2)
+    assert.deepEqual(calls[1], ['open', 'p-1'], '结束后跳回父会话同样走惰性解析')
+    assert.equal(
+      cap.lines.warn.filter((l) => l.includes('sessions service unavailable')).length,
+      1,
+      '恢复后不再重复留痕',
+    )
+  } finally {
+    cap.restore()
+    if (stop) stop()
   }
 })
 

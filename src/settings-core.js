@@ -22,6 +22,8 @@ import { builtinSummaryText, withPersonaOverride, personaOverrideSource, resolve
 import { interpretLoadResult, interpretSaveResult, attachBeforeUnloadGuard } from './settings-guard.js'
 import { renderRolesEditor } from './roles-editor.js'
 import { renderToolMaskEditor } from './tool-mask-editor.js'
+import { renderUsagePricesEditor } from './usage-prices-editor.js'
+import { sanitizePriceRow, PRICE_KEY_PATTERN } from './usage-price-rows.js'
 import { AGENT_TYPES, AGENT_LABELS, AGENT_BLURBS, ACCENT_QUEUE, MONO_FONT } from './client-constants.js'
 
 export function SettingsPage({ scope: sp, connection, close }) {
@@ -52,6 +54,8 @@ export function SettingsPage({ scope: sp, connection, close }) {
   const [newRoleKey, setNewRoleKey] = React.useState('')
   const [roleToolDrafts, setRoleToolDrafts] = React.useState({})
   const [importError, setImportError] = React.useState('')
+  // 用量单价表（contract D1）：新建键输入（行内四桶值住 draft.usagePrices 本体）
+  const [newPriceKey, setNewPriceKey] = React.useState('')
   const [openCards, setOpenCards] = React.useState({})
   // 内置卡「载入文件默认」按工种记录红字错误（RPC 失败/文件缺失）
   const [personaFileErr, setPersonaFileErr] = React.useState({})
@@ -194,6 +198,20 @@ export function SettingsPage({ scope: sp, connection, close }) {
         if (row && typeof row === 'object' && !Array.isArray(row)) roles[key] = stripEmptyFallbackRows(row)
       }
       out.roles = roles
+    }
+    // Usage prices (contract D1): edit-loose rows in, sanitized number rows
+    // out — invalid rows (NaN/Infinity/negative/missing required bucket/dirty
+    // key) are dropped here and again host-side, so the atomic mutate never
+    // sees a schema-rejecting value. Keyless draft stays keyless (explicit
+    // carry: nothing touched server-side).
+    if (source.usagePrices !== undefined && source.usagePrices !== null && typeof source.usagePrices === 'object' && !Array.isArray(source.usagePrices)) {
+      const prices = {}
+      for (const [key, row] of Object.entries(source.usagePrices)) {
+        if (typeof key !== 'string' || !PRICE_KEY_PATTERN.test(key)) continue
+        const price = sanitizePriceRow(row)
+        if (price !== null) prices[key] = price
+      }
+      out.usagePrices = prices
     }
     return out
   }
@@ -510,6 +528,20 @@ export function SettingsPage({ scope: sp, connection, close }) {
       setDeny,
       cardOpen,
       toggleCard,
+      styles: { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle },
+    }),
+    // ── 用量单价表（contract D1）：置于工具屏蔽之后；渲染逻辑在 usage-prices-editor.js，
+    // 行操作走 usage-price-rows.js 纯函数，保存边界在 buildPersistDraft 净化
+    renderUsagePricesEditor({
+      draft,
+      setDraft: mutateDraft,
+      newPriceKey,
+      setNewPriceKey,
+      openCards,
+      setOpenCards,
+      makeSelect,
+      makeCombobox,
+      available,
       styles: { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle },
     }),
     React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, flexWrap: 'wrap' } },

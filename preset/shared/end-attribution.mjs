@@ -10,7 +10,7 @@
  *
  * 本模块把决策抽成纯函数：输入是**已经取好的状态快照与只读谓词**，输出是
  * `{ decision, ops, notices, facts }`：
- *   decision  八个出口之一（见 DECISIONS）
+ *   decision  九个出口之一（见 DECISIONS）
  *   ops       要改哪些表（由 dispatcher 按序落地；本模块不持有任何一张表）
  *   notices   要对谁说哪一句话（target: 'owner' 注入属主 / 'log' 留痕）
  *   facts     执行所需事实（归因到的 parentId、工种、结论文本、失败附因、advance）
@@ -33,7 +33,27 @@
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx。
  * 唯一的注入例外是 `readFailure`（失败附因读取）——本模块不认识文件也不认识会话，
  * 但它需要那份事实才能组结论文本，故由调用方给一个只读回调。
+ *
+ * 报告提交制闸门（0.5.0-tisitan.1，第二代替换第一代消息块解析闸）：第九出口
+ * `report-gate-repair`。completed 终局且调用方传 `reportGate.enabled` 时过闸：
+ *   - 本轮（含历史轮）report_submit 已成功（reportGate.reportSubmitted 命中）→
+ *     仍走 'finalize'，facts.conclusion 改存 buildOwnerSummary 合成概要（短）；
+ *     全文已由 report_submit 落板（登记前提），无需落板兜底。
+ *   - 从未成功提交 → 'report-gate-repair'：ops 携带 add-repair-guard（once-guard，
+ *     同步段由 dispatcher 第一时间落地——协议第 1 条），notices 同步预告，facts
+ *     携带固定措辞的 repairPrompt。**不 finish**：记录留在 currentMap 实体占槽
+ *     （advance='no'），补发链不调 rearmChild，guard 存续到补发轮 end 的转裁决
+ *     ——防无限循环（「rearmChild 同点清理 × revive 路径」的规格字面矛盾以此
+ *     消解）。
+ *   - 已补发过（repairRetried 命中）→ 仍走 'finalize'，conclusion 加「未交付：」
+ *     前缀转主编裁决，advance='now' 正常推进，不再二次补发。
+ *   - failed（stopReason!=='completed'）永不过闸；reportGate 缺省/关 = 现路径
+ *     一字不动。双发残余窗口（end#1' 在补发链 tick 前到达 → 走转裁决分支落账）
+ *     为已知边界：结论按未交付落账，不比现状差。
  */
+
+import { buildOwnerSummary } from './report-format.mjs'
+import { laneOf } from './orchestration.mjs'
 
 export const DECISIONS = Object.freeze([
   'ignore', // E0 载荷连 childId 都没有
@@ -43,7 +63,8 @@ export const DECISIONS = Object.freeze([
   'expected-abort', // E4 urgency=abort 掐断的预期终局：吞掉，续轮仍占槽
   'fallback-in-flight', // E5 备选评估在飞窗口内的双发第二发：不矛盾口径、不推进
   'fallback-evaluation', // E6 error 终局 + 有备选链 + 本代际未决策：进异步重派
-  'finalize', // E7 正常收尾（成功落账 / 失败附因落账）
+  'finalize', // E7 正常收尾（成功落账 / 失败附因落账 / 闸门合格或转裁决）
+  'report-gate-repair', // E9（报告提交制）completed 但从未成功提交报告：guard 登记 + queued 补发，槽位保留不落史
 ])
 
 // 每个决策的队列推进时机（协议第 2 条）。刻意写成显式全表：加决策不登记就 undefined。
@@ -56,6 +77,7 @@ const DECISION_ADVANCE = {
   'fallback-in-flight': 'no',
   'fallback-evaluation': 'no',
   'finalize': 'now',
+  'report-gate-repair': 'no', // 补发期间槽位仍占（记录留 currentMap，队列不推进）
 }
 
 /**
@@ -65,11 +87,21 @@ const DECISION_ADVANCE = {
  * @param type          childId 的工种（活登记 ?? 墓碑，取证顺序由调用方决定）；undefined = 不在册
  * @param ledgerRecord  属主实例的台账记录（含 agentType），undefined = 台账也无归属
  * @param hasLiveRecord (childId) => boolean —— 属主实例活槽位是否在册（currentMap.has）
- * @param spawningCandidates [{ parentId, placeholderChildId, agentType }] —— 全实例里
- *                      状态为 spawning 的占位记录；**恰有一条**才允许归因（多条即歧义）
  * @param abortExpected / fallbackDecided (childId) => boolean —— 两张一次性表的成员判定
  * @param bindings      工种 → 角色绑定（读 fallbacks 链长与备选条目）
  * @param readFailure   (childId) => {message, code} | undefined —— 失败附因（惰性调用）
+ * @param reportGate    报告提交制闸门输入，null/缺省 = 关闭（现路径零变化）。启用形态：
+ *                      { enabled: true, reportSubmitted: (id) => boolean,
+ *                        readSubmitted: (id) => { conclusion, evidence, open },
+ *                        repairRetried: (id) => boolean }
+ *                      —— reportSubmitted/readSubmitted 读成功提交登记（report_submit
+ *                      校验通过即登记，child-registry 持有），repairRetried 是
+ *                      补发授权 once-guard 的成员判定谓词
+ *
+ * 二期 2.4（read-pool-semantics.md §4.3 方案 A）：spawningCandidates 参数与占位
+ * 归因兜底（bind-spawning-child / set-child-owner 两 op）**退役**——end 抢跑场景
+ * 改由 broker 侧 end 缓冲重放接管（真 id 精确认领，零猜测）。E2 出口保留但语义
+ * 收窄为「缓冲前最终无从归属」的落档口径。
  */
 export function attributeEnd({
   childId,
@@ -78,11 +110,11 @@ export function attributeEnd({
   type,
   ledgerRecord,
   hasLiveRecord = () => false,
-  spawningCandidates = [],
   abortExpected = () => false,
   fallbackDecided = () => false,
   bindings = {},
   readFailure = () => undefined,
+  reportGate = null,
 } = {}) {
   // E0：不是编排面能处置的东西
   if (!childId) {
@@ -110,31 +142,22 @@ export function attributeEnd({
         }, { warn: `late/duplicate subagent/end for finished child ${String(childId)} (${resolvedType}); ignored` })
       }
     } else {
-      // E2/E3 竞态兜底（最后手段）：快速失败的子会话可能在 startContinuable
-      // resolve 之前就触发 subagent/end（此时 sessionTypes 尚未登记）。
-      const hit = spawningCandidates.length === 1 ? spawningCandidates[0] : undefined
-      if (!hit) {
-        // 无从归属的 end：留痕；已知属主则照常推进其队列，绝不静默吞掉。
-        //
-        // **此处故意不 retire**（B5 补注，棒②点名的无注释脆弱点）：类型侧三张表
-        // 本来就没有这个 childId——正因为它不在册才走到这条分支，retireTypeRecords
-        // 是纯空转。而 childOwner 这一张表**更不能清**：它可能指向一个仍然活着的
-        // 属主实例（本分支的 ownerPid 就是这么来的），清了就把同时段其它儿童的
-        // 回程路由一起拆掉——那些 end 随后会全部掉进 E2，编排看起来「集体失忆」。
-        return done('unattributable', ops, { ownerPid, type: undefined }, {
-          warn: `subagent/end for untracked child ${String(childId)}, no record to attribute; ignored`,
-          ambiguousSpawning: spawningCandidates.length > 1,
-        })
-      }
-      ownerPid = hit.parentId
-      resolvedType = hit.agentType
-      live = true
-      // 占位记录换键 + 属主路由改接：两条 op 由 dispatcher 按序落地
-      ops.push(
-        { op: 'bind-spawning-child', parentId: hit.parentId, placeholderChildId: hit.placeholderChildId, childId },
-        { op: 'set-child-owner', childId, parentId: hit.parentId },
-      )
-      notices.push({ target: 'log', level: 'warn', text: `[dsh-my-go] subagent/end arrived before spawn resolved; attributed to spawning record ${childId}` })
+      // E2（二期 2.4 起语义收窄，read-pool-semantics.md §4.3 方案 A）：end 抢跑
+      // spawn resolve 的场景由 broker 侧 **end 缓冲重放** 接管——暂存后等登记
+      // 追上，按真 id 精确认领重放（认领时登记已落地、type 命中，根本不会进到
+      // 本分支）。原「恰有一条 spawning 占位即归因」的猜测式兜底退役：并行下
+      // 多条占位是常态，find-first 收集会把第二发的 end 静默归给第一条占位
+      // （串号 = 幽灵，0.2.3-tisitan.6 教训的并行放大形态）。能抵达本分支的
+      // 只剩缓冲超时后的最终落档口径。
+      //
+      // **此处故意不 retire**（B5 补注，棒②点名的无注释脆弱点）：类型侧三张表
+      // 本来就没有这个 childId——正因为它不在册才走到这条分支，retireTypeRecords
+      // 是纯空转。而 childOwner 这一张表**更不能清**：它可能指向一个仍然活着的
+      // 属主实例（本分支的 ownerPid 就是这么来的），清了就把同时段其它儿童的
+      // 回程路由一起拆掉——那些 end 随后会全部掉进 E2，编排看起来「集体失忆」。
+      return done('unattributable', ops, { ownerPid, type: undefined }, {
+        warn: `subagent/end for untracked child ${String(childId)}, no record to attribute; ignored`,
+      })
     }
   }
 
@@ -234,6 +257,57 @@ export function attributeEnd({
     }
   }
 
+  // E7'（报告提交制闸门，0.5.0-tisitan.1）：completed 终局且开关开时过闸。
+  // failed 永不过闸（上方 failed 分支照旧）；reportGate 缺省 = 现路径一字不动。
+  // 判定源是成功提交登记，子代最后一条消息不参与任何解析。
+  if (reportGate?.enabled && !failed) {
+    if (reportGate.reportSubmitted(childId)) {
+      // 已交付：回执内芯 = 从已校验字段合成的概要（短），全文已在板上
+      // （report_submit 落板成功是登记前提），无需落板兜底。
+      return done('finalize', ops, {
+        ownerPid,
+        type: resolvedType,
+        failure,
+        conclusion: buildOwnerSummary(reportGate.readSubmitted(childId), childId),
+        failed,
+        fallbackChain: chain,
+        notices,
+        reportGate: { phase: 'pass' },
+      })
+    }
+    if (reportGate.repairRetried(childId)) {
+      // 已补发过（补发轮 end 或双发残余窗口）：转裁决落账，不再二次补发。
+      // 结论前缀「未交付：」+ 最后消息全文（唯一的现场材料，不比现状差）。
+      return done('finalize', ops, {
+        ownerPid,
+        type: resolvedType,
+        failure,
+        conclusion: `未交付：${text || baseConclusion}`,
+        failed,
+        fallbackChain: chain,
+        notices,
+        reportGate: { phase: 'verdict' },
+      })
+    }
+    // 从未成功提交 → 第九出口：guard 随 ops 同步落地（协议第 1 条：dispatcher 落
+    // ops 与发预告之间不得插 await），预告同步发，补发材料进 facts 交 dispatcher
+    // void 异步链。不 finish：记录留在 currentMap 实体占槽（advance='no'），
+    // 补发链不调 rearmChild，guard 存续到补发轮 end 的转裁决（防无限循环）。
+    ops.push({ op: 'add-repair-guard', childId })
+    notices.push({
+      target: 'owner',
+      parentId: ownerPid,
+      text: `[dsh-my-go] 报告未提交: ${childId} (${resolvedType})——queued 补发中，暂缓处置`,
+    })
+    return done('report-gate-repair', ops, {
+      ownerPid,
+      type: resolvedType,
+      notices,
+      reportFullText: text,
+      repairPrompt: buildRepairPrompt(),
+    })
+  }
+
   return done('finalize', ops, {
     ownerPid,
     type: resolvedType,
@@ -247,8 +321,19 @@ export function attributeEnd({
   function done(decision, decisionOps, decisionFacts, extra = {}) {
     const advance = DECISION_ADVANCE[decision]
     if (advance === undefined) throw new Error(`attributeEnd: 决策 ${decision} 未在 DECISION_ADVANCE 登记队列推进时机`)
-    return { decision, ops: decisionOps, notices: decisionFacts.notices ?? [], facts: { ...decisionFacts, ...extra, advance } }
+    // facts.lane（二期 2.3，D18 口径）：纯事实记录——被释放槽位所属泳道，供
+    // metrics 与测试断言，**不参与任何推进决策**（global-scan 下推进决策由
+    // isLaneFree 驱动，见 read-pool-semantics.md §2.5）。type 未定（E0/E2）则
+    // lane 缺席，不猜。
+    const lane = decisionFacts.type === undefined ? undefined : laneOf(decisionFacts.type)
+    return { decision, ops: decisionOps, notices: decisionFacts.notices ?? [], facts: { ...decisionFacts, ...extra, lane, advance } }
   }
+}
+
+// 补发 prompt（报告提交制）：措辞零参数化——未提交的唯一原因就是没调工具，
+// 四字段用法由工具描述与 REPORT_CLAUSE 自教，这里只点名补交什么与「不必重做」。
+function buildRepairPrompt() {
+  return '[dsh-my-go] 你上一轮结束但未调用 report_submit 提交报告，视为未交付。请调用 report_submit 一次交齐四字段（report 完整报告全文 / conclusion 2-4 句结论 / evidence 裸『路径:行号』数组或 ["无"] / open 遗留或「无」）。内容可完全复用你已完成的工作，只补交报告。'
 }
 
 // dispatcher 侧解释 facts.advance（协议第 2 条）。拆成独立导出是为了让「推进时机」

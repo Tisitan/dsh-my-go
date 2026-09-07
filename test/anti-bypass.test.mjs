@@ -51,28 +51,56 @@ const childAgentOf = (restrict) => ({
   ctx: { tools: { restrict } },
 })
 
-test('agent/created：子代理侧 deny 含原生派生工具 + 邻接三件套（星型闸双保险）', async () => {
+test('agent/created：子代理侧 deny 含派生工具 + 邻接三件套；开关关时条件注册三件不入名单', async () => {
   const { ctx, listeners, dispatch } = mockCtx()
   const denied = []
-  await broker.apply(ctx, {})
+  // 双开关全关（reportExternalization: false + relayChains 缺省 false）：与当前
+  // 部署同形——report_fetch/chain_start/chain_resolve 均未注册，deny 名单不得
+  // 再含它们（否则真宿主 restrict 对未知名批级拒绝 + 逐名兜底的查无此具噪音，
+  // tisitan.1 noise fix）。基础名单（无条件注册的派生/编排工具）与邻接三件套
+  // 照旧全量 deny。
+  await broker.apply(ctx, { reportExternalization: false })
   dispatch('agent/created', { agent: childAgentOf((filter) => denied.push(...filter.deny)) })
   for (const name of ['subagent', 'subagent_fork', 'workflow', 'ralph', 'go_work', 'continue', 'forward', ...BYPASS]) {
     assert.ok(denied.includes(name), `子代理 deny 缺少 ${name}`)
   }
+  for (const name of ['report_fetch', 'chain_start', 'chain_resolve']) {
+    assert.ok(!denied.includes(name), `开关关（工具未注册）时不得 deny ${name}（查无此具噪音源）`)
+  }
   assert.ok(!denied.includes('need_help'), 'need_help 必须保留（子代唯一上报通道）')
   assert.ok(!denied.includes('orchestration_status') && !denied.includes('list_subagents'), '只读观测工具保留')
+  assert.ok(!denied.includes('report_submit'), 'report_submit 必须保留（子代面向的上报通道，1.3）')
+})
+
+// 条件注册三件的 deny 随开关联动（tisitan.1 noise fix 的另一半）：开关开 =
+// 工具在册 = 星型闸必须照常摘除（canOrchestrate 运行时守卫之外的目录层双保险）。
+test('agent/created：REPORT_EXT 开 → report_fetch 入子代理 deny；RELAY_CHAINS 开 → 链两件入 deny', async () => {
+  const a = mockCtx()
+  const deniedA = []
+  await broker.apply(a.ctx, {}) // REPORT_EXT 缺省开；relayChains 缺省关
+  a.dispatch('agent/created', { agent: childAgentOf((filter) => deniedA.push(...filter.deny)) })
+  assert.ok(deniedA.includes('report_fetch'), 'REPORT_EXT 开 = report_fetch 在册，deny 必须生效')
+  assert.ok(!deniedA.includes('chain_start') && !deniedA.includes('chain_resolve'), 'relayChains 缺省关 = 链两件不入 deny')
+
+  const b = mockCtx()
+  const deniedB = []
+  await broker.apply(b.ctx, { relayChains: true })
+  b.dispatch('agent/created', { agent: childAgentOf((filter) => deniedB.push(...filter.deny)) })
+  assert.ok(deniedB.includes('chain_start') && deniedB.includes('chain_resolve'), 'RELAY_CHAINS 开 = 链两件在册，deny 必须生效')
+  assert.ok(deniedB.includes('report_fetch'), '两个开关彼此独立：链开关不影响 report_fetch 的 deny')
 })
 
 test('agent/created：Sisyphus 侧 deny 掉 skill 与邻接三件套（R1/R3 顶层收口）', async () => {
   const { ctx, listeners, dispatch } = mockCtx()
   const denied = []
-  await broker.apply(ctx, {})
+  await broker.apply(ctx, { reportExternalization: false })
   dispatch('agent/created', { agent: { id: 'parent-A', session: { header: {} }, ctx: { tools: { restrict: (f) => denied.push(...f.deny) } } } })
   assert.ok(denied.includes('skill'), 'skill 屏蔽（catalog 注入守门）不回潮')
   for (const name of BYPASS) assert.ok(denied.includes(name), `Sisyphus deny 缺少 ${name}`)
   for (const name of ['go_work', 'continue', 'forward', 'orchestration_status', 'list_subagents']) {
     assert.ok(!denied.includes(name), `编排六件套不得被自家闸摘除：${name}`)
   }
+  assert.ok(!denied.includes('report_fetch'), 'report_fetch 不得被主编闸摘除（主编面向的读板通道，1.6）')
 })
 
 test('restrict 批级抛错（某部署缺一个工具行）→ 逐名兜底，其余屏蔽项不连坐', async () => {
@@ -82,7 +110,7 @@ test('restrict 批级抛错（某部署缺一个工具行）→ 逐名兜底，�
   const origWarn = console.warn
   console.warn = (...a) => warns.push(a.join(' '))
   try {
-    await broker.apply(ctx, {})
+    await broker.apply(ctx, { reportExternalization: false })
     // 第一批整体拒绝（模拟 restrict 对 unknown global tool 的抛错），逐名时
     // 只让 list_agents 失败：星型闸必须仍然落下其余名字
     let first = true
@@ -108,7 +136,7 @@ test('agent/created 对无 agent 的载荷与 restrict 全崩场景均不炸挂�
   const origWarn = console.warn
   console.warn = () => {}
   try {
-    await broker.apply(ctx, {})
+    await broker.apply(ctx, { reportExternalization: false })
     assert.doesNotThrow(() => dispatch('agent/created', {}))
     assert.doesNotThrow(() => dispatch('agent/created', { agent: { id: 'x', session: { header: {} } } }))
     assert.doesNotThrow(() => dispatch('agent/created', {
@@ -129,7 +157,7 @@ test('agent/created 闸体抛错：不炸挂载且 console.warn 留痕，每 age
   const origWarn = console.warn
   console.warn = (...a) => { warns.push(a.map(String).join(' ')) }
   try {
-    await broker.apply(ctx, {})
+    await broker.apply(ctx, { reportExternalization: false })
     const exploding = {
       id: 'sess-boom',
       session: { header: { parentSession: 'parent-A' } },

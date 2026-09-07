@@ -178,6 +178,11 @@ export const execOf = (agent) => ({ agent, signal: new AbortController().signal 
 // 快照桥读取（broker.apply 发布）与多会话聚合下的分桶取数
 export const snapshotNow = () => globalThis[Symbol.for('dsh-my-go.snapshot')]()
 export const snapOf = (pid) => snapshotNow()?.parents?.[pid]
+// 二期 2.5（D20）：snapshot.current 单条已由 currentRecords 全量数组取代。
+// currentOf 取首条，仅供「至多一条在飞」的历史断言形态沿用；多条在飞的场景
+// 必须直接断言 currentAll(...)（并行语义下首条不等于「那条唯一的」）。
+export const currentOf = (pid) => snapOf(pid)?.currentRecords?.[0] ?? null
+export const currentAll = (pid) => snapOf(pid)?.currentRecords ?? []
 
 // 定时器类用例的让步（queueRetryBaseMs 已缩到毫秒级）。
 // 只用于「等一会儿看有没有坏事发生」的负向窗口（宽限期/防抖窗未触发类断言）——

@@ -10,6 +10,14 @@
  *   pendingFallbackByLabel label → 备选条目（spawn resolve 前的窗口，棒2-Z2）
  *   abortExpected          urgency=abort 掐断护航（预期 end 一次性消费，复活即清）
  *   fallbackDecided        备选评估 once-guard（同 childId 每代际只决策一次）
+ *   repairRetried          报告补发 once-guard（1.5，语义「补发授权已用掉」：
+ *                          补发链不走 rearmChild，guard 存续到补发轮 end 的转裁决
+ *                          ——防无限循环；终局 retireChild 与复活 rearmChild 双点清）
+ *   reportSubmitted        报告提交成功事实（提交制，0.5.0-tisitan.1）：
+ *                          childId → 已校验的 { conclusion, evidence, open }，
+ *                          report_submit 落板成功即登记，供终局合成回执消费；
+ *                          「含历史轮」口径——只在终局 retireChild 清，
+ *                          复活轮不重交也视为已交付
  *   modelCache             provider → 模型 id 集合（只缓存「列举成功」的清单，含空集）
  *
  * 抽出来的理由：这几张表的生命周期**互相缠绕**——墓碑换出要顺带摘备选覆盖、
@@ -39,6 +47,8 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   const pendingFallbackByLabel = new Map()
   const abortExpected = new Set()
   const fallbackDecided = new Set()
+  const repairRetried = new Set()
+  const reportSubmitted = new Map()
   const modelCache = new Map()
 
   /**
@@ -66,6 +76,12 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     disposedTypes.delete(id)
     activeFallback.delete(id)
     childOwner.delete(id)
+    // repairRetried 的**终局清理点**（1.5 方案甲裁决，防无限循环的关键）：子代
+    // 走到任何终局落账（合格 finalize / 转裁决 finalize / 失败终局）都经此处，
+    // guard 必须随终局翻篇——补发链本身不走 rearmChild，若这里不清，授权状态
+    // 会随 childId 永挂（childId 全局唯一，无别的清理时机）。
+    repairRetried.delete(id)
+    reportSubmitted.delete(id)
   }
 
   /**
@@ -77,6 +93,7 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     sessionTypes.delete(id)
     disposedTypes.delete(id)
     activeFallback.delete(id)
+    reportSubmitted.delete(id)
   }
 
   /**
@@ -118,6 +135,13 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   function rearmChild(childId, record, ownerPid) {
     fallbackDecided.delete(childId)
     abortExpected.delete(childId)
+    // repairRetried 同点清（1.5 方案甲裁决，规格「复活即新世代」字面）：主编复活
+    // 已转裁决的子代做新任务时，旧 guard 不得误吞新任务的补发资格。**补发链本身
+    // 不走 rearmChild**（repair-gate-repair 不 finish，记录留在 currentMap，补发
+    // 只投 followup）——故此处清理不构成死循环回路，两处清理各司其职。
+    repairRetried.delete(childId)
+    // reportSubmitted 刻意**不清**（提交制「含历史轮」口径）：交过就是交过，
+    // 复活轮不重交也视为已交付；条目随终局 retireChild 翻篇，不跨终局残留。
     sessionTypes.set(childId, record.agentType)
     if (typeof record.fallbackEntry?.provider === 'string' && typeof record.fallbackEntry.model === 'string') {
       activeFallback.set(childId, record.fallbackEntry)
@@ -133,6 +157,8 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     pendingFallbackByLabel,
     abortExpected,
     fallbackDecided,
+    repairRetried,
+    reportSubmitted,
     modelCache,
     tombstoneType,
     retireChild,

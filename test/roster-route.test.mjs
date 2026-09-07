@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as broker from '../preset/tools/broker.mjs'
-import { createMockCtx, withRealSignalContract, execOf, drain, snapOf, waitFor } from './helpers/mock-ctx.mjs'
+import { createMockCtx, withRealSignalContract, execOf, drain, snapOf, currentOf, waitFor } from './helpers/mock-ctx.mjs'
 
 const defaultSchemas = () => [{ name: 'read' }, { name: 'write' }, { name: 'glob' }, { name: 'bash' }]
 
@@ -26,7 +26,7 @@ test('go_work 自定义角色：persona/toolFilter 经 spawn 通道注入，prom
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: 'sess-c1' } }),
     toolsRegistry: { schemas: defaultSchemas },
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     bindings: {
       'custom-x': {
@@ -50,7 +50,7 @@ test('go_work 未注册名：结构化报错并列出当前可用角色清单', 
   const { ctx, tools } = mockCtxFull({
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: 's1' } }),
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: { 'custom-x': { persona: 'X 的人设第一行' } } })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: { 'custom-x': { persona: 'X 的人设第一行' } } })
   await assert.rejects(
     () => tools.get('go_work').execute({ agent: 'nope', prompt: 'x' }, execOf(parent)),
     (error) => {
@@ -76,7 +76,7 @@ test('toolFilter 缺名兜底：假名被过滤 + warn，spawn 照常', async ()
       startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: 's1' } }),
       toolsRegistry: { schemas: defaultSchemas },
     })
-    await broker.apply(ctx, {
+    await broker.apply(ctx, { reportExternalization: false,
       queueRetryBaseMs: 5,
       bindings: { hermes: { toolFilter: { allow: ['read', 'ghost-tool', 'need_help'] } } },
     })
@@ -100,7 +100,7 @@ test('toolFilter allow 全部为假名：丢弃 toolFilter（不传字段），�
       startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: 's1' } }),
       toolsRegistry: { schemas: defaultSchemas },
     })
-    await broker.apply(ctx, {
+    await broker.apply(ctx, { reportExternalization: false,
       queueRetryBaseMs: 5,
       bindings: { hermes: { toolFilter: { allow: ['ghost-a', 'ghost-b'] } } },
     })
@@ -118,7 +118,7 @@ test('内置工种：persona 经 spawn 通道注入（prompts 缺档时兜底文
   const { ctx, tools } = mockCtxFull({
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: 's1' } }),
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5 })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'plain task' }, execOf(parent))
   assert.equal(typeof specs[0].request.persona, 'string', '内置工种恒有 persona 字段')
   assert.ok(specs[0].request.persona.includes('hermes sub-agent'), 'prompts 档案缺席时回落兜底文案')
@@ -139,7 +139,7 @@ test('fallback 重派：persona/toolFilter 与首派同源（bindings[type]）',
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
     toolsRegistry: { schemas: defaultSchemas },
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     disposeEndGraceMs: 30,
     bindings: {
@@ -167,7 +167,7 @@ test('orchestration_status：尾部含角色名册区（内置 + 自定义），
   const { ctx, tools } = mockCtxFull({
     startContinuable: withRealSignalContract(async () => ({ childId: 's1' })),
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     bindings: { 'custom-x': { provider: 'p9', model: 'm9', persona: 'X', toolFilter: { deny: ['write'] } } },
   })
@@ -195,7 +195,7 @@ test('forward：target 为自定义角色时走 go_work 派发并携带 persona'
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: 'sess-w' } }),
     subagentsExtra: { reportFrom: async () => 'delivered' },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: { 'custom-x': { persona: 'X 人设' } } })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: { 'custom-x': { persona: 'X 人设' } } })
   await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
   const childExec = { agent: { id: 'sess-w', session: { header: { parentSession: 'parent-1' } } }, signal: new AbortController().signal }
   // need_help 要求 tracked 子代理：先挂求助单，再完工清槽（否则 forward 的
@@ -220,7 +220,7 @@ test('agent/request：cold-resumed 子代理（无活登记、label 在案）恢
     startContinuable: withRealSignalContract(async () => ({ childId: 's1' })),
     llm: { listModels: async () => [{ id: 'bound-m' }, { id: 'seed-m' }] },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: { hermes: { provider: 'bound-p', model: 'bound-m' } } })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: { hermes: { provider: 'bound-p', model: 'bound-m' } } })
   const seed = { provider: 'seed-p', model: 'seed-m' }
   const out = await dispatch('agent/request', 
     { agent: { id: 'cold-1', session: { header: { label: 'dsh-my-go:hermes: 快速执行 Hermes' } } } },
@@ -243,7 +243,7 @@ test('agent/request：活登记优先于畸形 label（回退优先级正确）'
     toolsRegistry: { schemas: defaultSchemas },
     llm: { listModels: async () => [{ id: 'custom-m' }, { id: 'seed-m' }] },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: { 'custom-x': { provider: 'p9', model: 'custom-m' } } })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: { 'custom-x': { provider: 'p9', model: 'custom-m' } } })
   await tools.get('go_work').execute({ agent: 'custom-x', prompt: 'work' }, execOf(parent))
   assert.equal(specs.length, 1)
   const seed = { provider: 'seed-p', model: 'seed-m' }
@@ -266,7 +266,7 @@ test('system-prompt/assemble：DSV4P0813 工种识别走 typeOfAgent（label 兜
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: 'sess-h' } }),
     toolsRegistry: { schemas: defaultSchemas },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: { hermes: { dsv4p0813: true } } })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: { hermes: { dsv4p0813: true } } })
   // C-09：listeners 的值是 fn[] 多播数组。取首 handler 并钉「该事件只注册一次」
   //（旧替身单槽后写覆盖前写，重复注册完全看不见）
   const assemble = (listeners.get('system-prompt/assemble') ?? [])[0]
@@ -305,7 +305,7 @@ test('DSV4P0813 promotion 行为面：tool/call 事件直判 / turn-end 翻转 /
     startContinuable: withRealSignalContract(async () => ({ childId: 's-dsv' })),
     toolsRegistry: { schemas: defaultSchemas },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: { hermes: { dsv4p0813: true } } })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: { hermes: { dsv4p0813: true } } })
   // C-09：listeners 的值是 fn[] 多播数组。取首 handler 并钉「该事件只注册一次」
   //（旧替身单槽后写覆盖前写，重复注册完全看不见）
   const assemble = (listeners.get('system-prompt/assemble') ?? [])[0]
@@ -406,12 +406,12 @@ const waterfallOf = (dispatch, id, label) =>
 
 test('重派儿童：agent/request waterfall 保持备选 provider/model 不回跳，工种 effort 保留；常规派发不受影响', async () => {
   const { parent, specs, ctx, listeners, dispatch, tools } = mockRedeployCtx()
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'build it' }, execOf(parent))
   // 链首 429 → disposed + error end → 自动切备选重派
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  await waitFor(() => snapOf('parent-1')?.current?.childId === 'sess-2', { what: '链首失败后重派并 resolve sess-2' })
+  await waitFor(() => currentOf('parent-1')?.childId === 'sess-2', { what: '链首失败后重派并 resolve sess-2' })
   assert.equal(specs.length, 2, '链首失败后重派 sess-2')
   assert.deepEqual(specs[1].request.agentOptions, { provider: 'p1', model: 'm1' }, 'spawn 首帧仍是备选（既有行为不变）')
   // 决定性断言：重派儿童运行期每个请求经 waterfall 后仍是备选，不回跳 p0/m0
@@ -431,11 +431,11 @@ test('重派儿童：agent/request waterfall 保持备选 provider/model 不回�
 
 test('重派儿童生命周期清理：disposed/end 后覆盖消失，waterfall 回到 bindings[type]', async () => {
   const { parent, specs, ctx, listeners, dispatch, tools } = mockRedeployCtx()
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'build it' }, execOf(parent))
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  await waitFor(() => snapOf('parent-1')?.current?.childId === 'sess-2', { what: '重派儿童已占槽（清理前覆盖在飞）' })
+  await waitFor(() => currentOf('parent-1')?.childId === 'sess-2', { what: '重派儿童已占槽（清理前覆盖在飞）' })
   assert.equal(specs.length, 2)
   const before = await waterfallOf(dispatch, 'sess-2', 'dsh-my-go:hermes: build it')
   assert.equal(before.model, 'm1', '清理前覆盖生效')
@@ -484,7 +484,7 @@ test('spawn 解析前窗口：重派儿童的请求先于 resolve 到达 waterfa
   const { parent, specs, holdRelease, ctx, listeners, dispatch, tools } = mockPendingWindowCtx({
     spawnSecond: (_spec, hold) => new Promise((resolve) => { hold.release = resolve }),
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'build it' }, execOf(parent))
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
@@ -503,9 +503,9 @@ test('spawn 解析前窗口：重派儿童的请求先于 resolve 到达 waterfa
   assert.deepEqual(stranger, { provider: 'seed-p', model: 'seed-m' }, '陌生会话不受 pending 影响')
   // resolve 后转正：activeFallback 接管，waterfall 继续保持备选
   holdRelease.release({ childId: 'sess-2' })
-  await waitFor(() => globalThis[Symbol.for('dsh-my-go.snapshot')]()?.parents?.['parent-1']?.current?.childId === 'sess-2', { what: '重派 spawn resolve 后占槽' })
+  await waitFor(() => globalThis[Symbol.for('dsh-my-go.snapshot')]()?.parents?.['parent-1']?.currentRecords?.[0]?.childId === 'sess-2', { what: '重派 spawn resolve 后占槽' })
   const snapOf = (pid) => globalThis[Symbol.for('dsh-my-go.snapshot')]()?.parents?.[pid]
-  assert.equal(snapOf('parent-1').current?.childId, 'sess-2', 'spawn resolve 后占槽运行')
+  assert.equal(currentOf('parent-1')?.childId, 'sess-2', 'spawn resolve 后占槽运行')
   const promoted = await waterfallOf(dispatch, 'sess-2', pendingLabel)
   assert.equal(promoted.provider, 'p1', 'resolve 后 waterfall 保持备选（转正表接管）')
   assert.equal(promoted.model, 'm1')
@@ -515,7 +515,7 @@ test('spawn 失败：pending 备选登记同步清理，不留悬空覆盖（棒
   const { parent, specs, ctx, listeners, dispatch, tools } = mockPendingWindowCtx({
     spawnSecond: () => { throw new Error('spawn exploded') },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'build it' }, execOf(parent))
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
@@ -534,11 +534,11 @@ test('continue 复活已完工备选儿童：activeFallback 按 record.fallbackE
   const { parent, specs, ctx, listeners, dispatch, tools } = mockRedeployCtx({
     subagentsExtra: { followup: async () => 'msg-r1' },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'build it' }, execOf(parent))
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  await waitFor(() => snapOf('parent-1')?.current?.childId === 'sess-2', { what: '链首失败后重派并 resolve sess-2' })
+  await waitFor(() => currentOf('parent-1')?.childId === 'sess-2', { what: '链首失败后重派并 resolve sess-2' })
   assert.equal(specs.length, 2, '链首失败后重派 sess-2')
   // 备选儿童完工：finalizeEnd 清覆盖（16a 清理语义不变），waterfall 回主模型
   dispatch('subagent/end', { id: 'sess-2', stopReason: 'completed', lastAssistantMessage: [] })
@@ -575,7 +575,7 @@ test('链上第二跳覆盖第一跳：fallbackEntry 随重派换新，历史保
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
     toolsRegistry: { schemas: defaultSchemas },
   })
-  await broker.apply(ctx, {
+  await broker.apply(ctx, { reportExternalization: false,
     queueRetryBaseMs: 5,
     bindings: { hermes: { provider: 'p0', model: 'm0', reasoningEffort: 'high', fallbacks: [{ provider: 'p1', model: 'm1' }, { provider: 'p2', model: 'm2' }] } },
   })
@@ -584,15 +584,15 @@ test('链上第二跳覆盖第一跳：fallbackEntry 随重派换新，历史保
   // 第一跳：链首 429 → fallbacks[0]（p1/m1）
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  await waitFor(() => snapOf('parent-1')?.current?.childId === 'sess-2' && snapOf('parent-1')?.current?.fallbackEntry?.model === 'm1', { what: '第一跳 resolve 占槽且备选条目入账' })
-  assert.deepEqual(snapOf('parent-1')?.current?.fallbackEntry, { provider: 'p1', model: 'm1' }, '第一跳条目入账')
+  await waitFor(() => currentOf('parent-1')?.childId === 'sess-2' && currentOf('parent-1')?.fallbackEntry?.model === 'm1', { what: '第一跳 resolve 占槽且备选条目入账' })
+  assert.deepEqual(currentOf('parent-1')?.fallbackEntry, { provider: 'p1', model: 'm1' }, '第一跳条目入账')
   // 第二跳：备选也 500 → fallbacks[1]（p2/m2）
   dispatch('agent/disposed', { agent: { id: 'sess-2' } })
   dispatch('subagent/end', { id: 'sess-2', stopReason: 'error', lastAssistantMessage: [] })
-  await waitFor(() => snapOf('parent-1')?.current?.childId === 'sess-3', { what: '第二跳重派并 resolve sess-3' })
+  await waitFor(() => currentOf('parent-1')?.childId === 'sess-3', { what: '第二跳重派并 resolve sess-3' })
   assert.equal(specs.length, 3, '第二跳重派 sess-3')
   assert.deepEqual(specs[2].request.agentOptions, { provider: 'p2', model: 'm2' }, '第二跳 spawn 用链上下一条')
-  const cur = snapOf('parent-1')?.current
+  const cur = currentOf('parent-1')
   assert.equal(cur?.childId, 'sess-3')
   assert.deepEqual(cur?.fallbackEntry, { provider: 'p2', model: 'm2' }, '新占位记录携带新条目，天然覆盖第一跳')
   assert.equal(cur?.fallbackAttempt, 2, 'attempt 索引同步递增')
@@ -617,12 +617,12 @@ test('continue 复活曾进备选评估的链首儿童：完工 end 不被 once-
   const { parent, specs, ctx, listeners, dispatch, tools } = mockRedeployCtx({
     subagentsExtra: { followup: async () => 'msg-n5' },
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: REDEPLOY_BINDINGS })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'build it' }, execOf(parent))
   // 链首 429 终局：sess-1 进过备选评估（fallbackDecided 已登记）→ 重派 sess-2
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  await waitFor(() => snapOf('parent-1')?.current?.childId === 'sess-2', { what: '备选重派已 resolve 占槽' })
+  await waitFor(() => currentOf('parent-1')?.childId === 'sess-2', { what: '备选重派已 resolve 占槽' })
   assert.equal(specs.length, 2, '备选重派已发生')
   const failedRow = (snapOf('parent-1')?.history ?? []).find((x) => x.childId === 'sess-1')
   assert.equal(failedRow?.status, 'failed', '链首失败记录已在账（复活前）')
@@ -631,12 +631,12 @@ test('continue 复活曾进备选评估的链首儿童：完工 end 不被 once-
   // 复活被污染者本身（不是 sess-2）
   const r = await tools.get('continue').execute({ id: 'sess-1', prompt: '驳回，按新方向重做' }, execOf(parent))
   assert.equal(r.accepted, true)
-  assert.equal(snapOf('parent-1')?.current?.childId, 'sess-1', '复活后重新占槽（失败记录被搬回槽位）')
+  assert.equal(currentOf('parent-1')?.childId, 'sess-1', '复活后重新占槽（失败记录被搬回槽位）')
   // 复活轮正常完工
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '复活轮结论' }] })
-  await waitFor(() => snapOf('parent-1')?.current === null, { what: '复活轮收尾释放槽位' })
+  await waitFor(() => currentOf('parent-1') === null, { what: '复活轮收尾释放槽位' })
   const after = snapOf('parent-1')
-  assert.equal(after?.current, null, '槽位释放（修复前记录永挂 running）')
+  assert.equal(after?.currentRecords?.length ?? 0, 0, '槽位释放（修复前记录永挂 running）')
   const rows = (after?.history ?? []).filter((x) => x.childId === 'sess-1')
   assert.equal(rows.length, 1, '复活轮收尾重新落账一条（旧失败记录已被 revive 搬走）')
   assert.equal(rows[0].status, 'done', '复活轮按 completed 正常落账')
@@ -661,7 +661,7 @@ test('prompt 档案首读失败不入缓存：档案补齐后下一派即正确�
   const { ctx, listeners, dispatch, tools } = mockCtxFull({
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
   })
-  await broker.apply(ctx, { queueRetryBaseMs: 5, bindings: { [probeType]: {} } })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: { [probeType]: {} } })
   try {
     await tools.get('go_work').execute({ agent: probeType, prompt: 'first' }, execOf(parent))
     assert.equal('persona' in specs[0].request, false, '档案缺席：自定义角色不注入 persona（走无 persona 形态）')

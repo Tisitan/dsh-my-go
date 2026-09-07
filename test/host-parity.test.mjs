@@ -97,6 +97,11 @@ const ORCHESTRATION_IDENTITY = [
   // 也不该出现对它 import 的可能性——真主只在天上的 broker 一处。
   'shared/end-attribution.mjs',
   'attributeEnd(',
+  // report_submit（0.4.0 线 1.3）同属编排面工具：子代面向的上报通道，注册块
+  // 与 deny 闸名单都是 broker 独有，lib 半出现即为回归。
+  "name: 'report_submit'",
+  // report_fetch（0.4.0 线 1.6）同上：主编面向的读板通道 + 子代 deny 闸名单。
+  "name: 'report_fetch'",
 ]
 
 // ── ① 反向 parity 主断言：lib 零编排面 + broker 独有面保留 ────────────────
@@ -129,7 +134,7 @@ test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有
   // lib 半：settings 注册面 + RPC 单通道全端点
   assert.equal(countOf(hostSrc, 'settings.register('), 1, 'lib 半注册 settings 命名空间')
   assert.equal(countOf(hostSrc, "rpc.handle('/dsh-my-go'"), 1, 'lib 半 RPC 单通道')
-  for (const endpoint of ['snapshot', 'listModels', 'listTools', 'getBuiltinPersona', 'loadSettings', 'saveSettings']) {
+  for (const endpoint of ['snapshot', 'listModels', 'listTools', 'getBuiltinPersona', 'loadSettings', 'saveSettings', 'getUsage']) {
     assert.equal(countOf(hostSrc, `endpoint === '${endpoint}'`), 1, `lib 半保留端点: ${endpoint}`)
   }
   assert.ok(countOf(hostSrc, "Symbol.for('dsh-my-go.snapshot')") >= 1, 'lib 半消费快照桥')
@@ -251,7 +256,10 @@ test('0.3.0-tisitan.9 设置页加固在册（源码断言）：dirty 汇聚 / r
   // ── E6/A-03 dirty 汇聚：一处置位，角色区也不例外
   assert.equal(countOf(coreSrc, 'const mutateDraft ='), 1, 'dirty 只有唯一汇聚口（定义唯一归属）')
   assert.equal(countOf(coreSrc, '      setDraft,'), 0, 'roles-editor 不得再吃裸 setDraft（漏一处就是偏心 dirty，比没有更坏）')
-  assert.equal(countOf(coreSrc, 'setDraft: mutateDraft,'), 1, '角色区写口并入 dirty（dep 名不变，换实现）')
+  // >=1 而非精确计数（C-10 P3 口径）：每个编辑区（roles / usagePrices …）各有一处
+  // 合法复用，把「恰好一处」当不变量会让下一个编辑区假红；偏心 dirty 由上一行的
+  // 裸 setDraft 禁令与 mutateDraft 唯一归属拦住。
+  assert.ok(countOf(coreSrc, 'setDraft: mutateDraft,') >= 1, '编辑区写口并入 dirty（dep 名不变，换实现）')
   assert.ok(countOf(coreSrc, 'setDirty(false)') >= 1, '复位通路在册（加载/保存成功/主动重载各几处不是不变量）')
   // hook 必须排在 !sp 早退之前，否则 sp 有无会改变 hook 数量（React 硬约束）
   assert.ok(
@@ -360,6 +368,88 @@ test('shared 单一源：两半 import 行指向存在的文件，且逐条落�
   assert.ok(countOf(brokerSrc, 'normalizeTurnFailure(') >= 1, 'broker 半有附因归一通路')
   const sharedArchiveSrc = await readFile(new URL('../preset/shared/archive.mjs', import.meta.url), 'utf-8')
   assert.ok(sharedArchiveSrc.split('const failure = normalizeTurnFailure(ev.data.reason.error)').length - 1 >= 1, 'shared archive.mjs 内提取通路在册')
+})
+
+// ── 观测面分界（0.4.0-tisitan.0 步骤 0.1）：metrics 模块为 broker 独有 ───────
+// preset/tools/metrics.mjs 刻意不进 shared（只有 broker 半消费，避免无谓扩大
+// 单源守卫面），但「broker 本地」不等于「无守卫」：回潮形态是观测面被抄进 lib
+// 半，或 broker 侧接线被整体搬走。按 C-10 口径降级为在册弱标记（>=1，计数不是
+// 不变量——埋点随观测面扩张合法增长）；接线的行为档由 test/metrics.test.mjs 兜。
+test('metrics 观测面为 broker 独有（源码断言）：模块与接线不入 lib 半', async () => {
+  const [brokerSrc, hostSrc] = await readBothHalves()
+  for (const marker of ["from './metrics.mjs'", 'createMetrics(', 'METRICS.record(']) {
+    assert.equal(countOf(hostSrc, marker), 0, `lib 半零残留: ${marker}`)
+    assert.ok(countOf(brokerSrc, marker) >= 1, `broker 半在册: ${marker}`)
+  }
+})
+
+// ── board 存储层（0.4.0 线步骤 1.1）：定义唯一归属 shared/board.mjs ──────────
+// 「唯一登记处」断言不要求消费方在场（child-registry 先例）。1.3 report_submit
+// 接线后 broker 消费在册已兑现（import + writeBoard 调用）；1.6 report_fetch
+// 接线后 read 侧 readBoardSlice 调用在册同步兑现（下方第三枚 >=1 标记）。
+test('board 存储层定义唯一归属（源码断言）：本体单点、两半零残留', async () => {
+  const boardSrc = await readFile(new URL('../preset/shared/board.mjs', import.meta.url), 'utf-8')
+  const [brokerSrc, hostSrc] = await readBothHalves()
+  for (const marker of ['function writeBoard', 'function readBoardSlice', 'function boardRoot']) {
+    assert.equal(countOf(boardSrc, marker), 1, `board.mjs 唯一登记处: ${marker}`)
+    assert.equal(countOf(hostSrc, marker), 0, `lib 半零残留: ${marker}`)
+    assert.equal(countOf(brokerSrc, marker), 0, `broker 半无本地定义（唯一归属 shared）: ${marker}`)
+  }
+  // 1.3 兑现：broker 消费在册（import 行 + 调用点各 >=1，计数不是不变量）
+  assert.ok(countOf(brokerSrc, "from '../shared/board.mjs'") >= 1, 'broker 消费在册: board import')
+  assert.ok(countOf(brokerSrc, 'writeBoard(') >= 1, 'broker 消费在册: writeBoard 调用（report_submit execute）')
+  // 1.6 兑现：read 侧消费在册（report_fetch execute 的切片读）
+  assert.ok(countOf(brokerSrc, 'readBoardSlice(') >= 2, 'broker 消费在册: readBoardSlice 调用 >=2（report_fetch execute + 落板兜底探测）')
+  // 存储层必须走 shared/archive.mjs 的既有段编码（复用而非手抄第二份转义算法）
+  assert.ok(countOf(boardSrc, "from './archive.mjs'") >= 1, '段编码复用 archive.mjs 既有实现（唯一出处）')
+})
+
+// ── 报告提交制单源（0.5.0 线）：定义唯一归属 shared/report-format.mjs ────────
+// 同 board 条形态：定义唯一归属 + 两半无本地定义；提交制接线后 broker 消费在册
+// （REPORT_CLAUSE 注入 spawnChild + validateReportArgs 校验 report_submit 四字段）。
+test('报告提交制单源定义唯一归属（源码断言）：本体单点、两半零残留', async () => {
+  const formatSrc = await readFile(new URL('../preset/shared/report-format.mjs', import.meta.url), 'utf-8')
+  const [brokerSrc, hostSrc] = await readBothHalves()
+  for (const marker of ['function validateReportArgs', 'function buildOwnerSummary', 'const REPORT_CLAUSE']) {
+    assert.equal(countOf(formatSrc, marker), 1, `report-format.mjs 唯一登记处: ${marker}`)
+    assert.equal(countOf(hostSrc, marker), 0, `lib 半零残留: ${marker}`)
+    assert.equal(countOf(brokerSrc, marker), 0, `broker 半无本地定义（唯一归属 shared）: ${marker}`)
+  }
+  // 条款注入与四字段校验消费在册（>=1 非计数）
+  assert.ok(countOf(brokerSrc, "from '../shared/report-format.mjs'") >= 1, 'broker 消费在册: report-format import')
+  assert.ok(countOf(brokerSrc, 'REPORT_CLAUSE') >= 1, 'broker 消费在册: REPORT_CLAUSE 注入（spawnChild）')
+  assert.ok(countOf(brokerSrc, 'validateReportArgs(') >= 1, 'broker 消费在册: report_submit 四字段校验')
+  // 3.6 兑现：RELAY_CLAUSE 消费在册（链 hop prompt 的下游验收条款注入）
+  assert.ok(countOf(brokerSrc, 'RELAY_CLAUSE') >= 1, 'broker 消费在册: RELAY_CLAUSE 注入（composeRelayPrompt）')
+})
+
+// ── 接力链状态机（0.4.0 线步骤 3.2/3.3）：定义唯一归属 shared/relay-chain.mjs ──
+// 同 board 条形态。3.2 交付纯模块（无消费方）时只锁本体单点；3.3 链声明入口
+// 接线后 broker 消费在册（import + advanceChain/createChain 调用）一并兑现——
+// 下方三枚 >=1 标记即 3.2 留下的在册承诺。链的「决策在纯函数、dispatcher 在
+// broker」分界由该文件头调用方协议注释与行为档（relay-chain.test.mjs +
+// relay-chain-tools.test.mjs）持有，此处只锁归属。
+test('接力链状态机定义唯一归属（源码断言）：本体单点、两半零残留、broker 消费在册', async () => {
+  const chainSrc = await readFile(new URL('../preset/shared/relay-chain.mjs', import.meta.url), 'utf-8')
+  const [brokerSrc, hostSrc] = await readBothHalves()
+  for (const marker of ['function advanceChain', 'function createChain', 'function matchChainForEnd', 'function normalizeRestoredChain', 'function validateChainDeclaration']) {
+    assert.equal(countOf(chainSrc, marker), 1, `relay-chain.mjs 唯一登记处: ${marker}`)
+    assert.equal(countOf(hostSrc, marker), 0, `lib 半零残留: ${marker}`)
+    assert.equal(countOf(brokerSrc, marker), 0, `broker 半无本地定义（唯一归属 shared）: ${marker}`)
+  }
+  // 3.3 兑现：broker 消费在册（import 行 + 决策/建链/回填调用点各 >=1，计数不是不变量）
+  assert.ok(countOf(brokerSrc, "from '../shared/relay-chain.mjs'") >= 1, 'broker 消费在册: relay-chain import')
+  assert.ok(countOf(brokerSrc, 'advanceChain(') >= 1, 'broker 消费在册: advanceChain 决策调用（runChainTransition）')
+  // 3.4 兑现：reconcileHopDispatch 升级为调用点断言——回填调用必须出现在
+  // dispatchWork 登记同步段、且物理位于 claimBufferedEnd 之前（§4.2-① 时序
+  // 契约；行为面由 relay-chain-relay.test.mjs 的 R11 挪位探针实测咬住）。
+  assert.ok(countOf(brokerSrc, 'reconcileHopDispatch(') >= 1, 'broker 消费在册: reconcileHopDispatch 调用点（dispatchWork 登记同步段）')
+  const backfillAt = brokerSrc.indexOf('reconcileHopDispatch(hopChain')
+  const claimAt = brokerSrc.indexOf('const buffered = claimBufferedEnd(childId)')
+  assert.ok(backfillAt > -1 && claimAt > -1 && backfillAt < claimAt, '回填先于 E2 认领（dispatchWork 内物理顺序 = 时序契约本体）')
+  // 泳道判定复用（设计文档 §八预埋）：链模块 import orchestration 的 laneOf，
+  // 不手抄第二份 read/write 判定表
+  assert.ok(countOf(chainSrc, "from './orchestration.mjs'") >= 1, 'laneOf 复用 orchestration.mjs 判定表（唯一出处）')
 })
 
 // ── ①b 降级形态语义：snapshot 桥缺席 = preset 未装配 → 空态 + 花名册常驻 ──

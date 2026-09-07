@@ -3,19 +3,22 @@
  *
  * Owns the polling/panel state machine that used to live at the top of
  * client.js: the 600ms snapshot poll, the overlay TreePanel (current /
- * queue / help / history / roster sections) and the auto-jump follow logic.
- * Everything is closed over by `createOrchestrationPanel` — no module-level
+ * queue / help / history / roster / usage sections) and the auto-jump follow
+ * logic. Everything is closed over by `createOrchestrationPanel` — no module-level
  * mutable singletons, the caller's `apply` creates exactly one instance.
  *
  * Consumes the snapshot RPC value: { seq, parents: { [id]: { parentSessionId,
  * current, queue, helpRequests, history } }, roster, rosterLines }. `roster`
  * is the structured roster (tisitan.9 A-05) the panel lays out itself;
  * `rosterLines` is its deprecated text mirror, only kept as a fallback for an
- * older host half.
+ * older host half. The usage section (contract step 6/7) rides the same poll
+ * beat with a getUsage call — see pollUsage below.
  */
 
 import * as React from 'react'
 import { shortId, oneLine, formatRelativeTime, extractFallbackNote } from './panel-format.js'
+import { UsageSection } from './usage-panel.js'
+import { usageSessionTarget, sessionsListPhase } from './usage-views.js'
 import {
   AGENT_LABELS,
   AGENT_COLORS,
@@ -94,6 +97,9 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
         if (next) { snapshot = next; snapshotLoaded = true }
         notePollSuccess()
         if (changed || firstFrame) emit()
+        // Snapshot pipe healthy → ride the beat with a getUsage call for the
+        // currently open session (no-op while the section is not visible).
+        void pollUsage()
       } else if (res && res.error && res.error.code === 'internal') {
         // host 端桥函数抛错（lib snapshot 端点自带 try 后的结构化失败信封）：
         // 与「桥未注册」分开提示，前者说明装配完成但状态读挂了
@@ -106,6 +112,65 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
       notePollFailure('absent', String(error))
     } finally {
       pollInFlight = false
+    }
+  }
+
+  // ── usage statistics feed (contract step 6/7, D4) ───────────────────────
+  // Rides the single 600ms poll beat above (one pollInFlight window, one
+  // backoff ladder — never a second timer), gated on the section actually
+  // being visible: a closed panel or a collapsed section costs zero getUsage
+  // traffic (same work-only-while-visible philosophy as the roster 30s tick).
+  // currentSessionId() is re-read every round (the overlay is mounted
+  // globally and does not rebuild on session switches, panel-tree.js:429
+  // precedent), and switching to a session whose report is not the one on
+  // screen flips to its loading state at request time — the view follows the
+  // parent-session switch, empty state included, without waiting for the RPC
+  // round trip. When no id is identifiable, usageSessionTarget falls back to
+  // the snapshot's single real parent (a panel parked on an untracked view
+  // still shows the one orchestration there is), and the sessions list's
+  // pending phase splits the empty state into session-pending vs no-session —
+  // a list that is still loading is not an identification failure. Z17: a
+  // failed getUsage joins the existing backoff ladder but
+  // never touches the snapshot bridge banner; each endpoint owns its failure
+  // surface. `report.parentSessionId` is the server's input echo (D3), so it
+  // doubles as the on-screen report's session attribution.
+  let usageVisible = false
+  let usageInFlight = false
+  let usage = { state: 'idle', report: null, detail: '' }
+  async function pollUsage() {
+    if (!usageVisible || usageInFlight) return
+    if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') return
+    usageInFlight = true
+    try {
+      const pid = usageSessionTarget(currentSessionId(), snapshot.parents)
+      if (pid === null) {
+        // 归属缺失分两态：会话列表还在首拉（phase=pending）时如实说加载中，
+        // 真识别失败才落 no-session——两态共用一句文案时，启动窗口会被误读
+        // 成永久故障。单 parent 回落判定在 usageSessionTarget（usage-views.js）。
+        usage = { state: sessionsListPhase(sessions) === 'pending' ? 'session-pending' : 'no-session', report: null, detail: '' }
+        emit()
+        return
+      }
+      if (usage.state !== 'ok' || usage.report?.parentSessionId !== pid) {
+        usage = { state: 'loading', report: null, detail: '' }
+        emit()
+      }
+      const res = await connection.rpc.call('/dsh-my-go', 'getUsage', { parentSessionId: pid })
+      if (res && res.ok) {
+        usage = { state: 'ok', report: res.value, detail: '' }
+      } else {
+        usage = { state: 'error', report: null, detail: String(res?.error?.message ?? '') }
+        pollBackoffStep = Math.min(pollBackoffStep + 1, POLL_BACKOFF_MS.length - 1)
+        nextPollAt = Date.now() + POLL_BACKOFF_MS[pollBackoffStep]
+      }
+      emit()
+    } catch (error) {
+      usage = { state: 'error', report: null, detail: String(error) }
+      pollBackoffStep = Math.min(pollBackoffStep + 1, POLL_BACKOFF_MS.length - 1)
+      nextPollAt = Date.now() + POLL_BACKOFF_MS[pollBackoffStep]
+      emit()
+    } finally {
+      usageInFlight = false
     }
   }
 
@@ -129,6 +194,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
   function TreePanel(_props) {
     const [, force] = React.useState(0)
     const [rosterOpen, setRosterOpen] = React.useState(false)
+    const [usageOpen, setUsageOpen] = React.useState(true)
 
     React.useEffect(() => {
       const rerender = () => force((c) => c + 1)
@@ -140,6 +206,11 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
       return () => { listeners.delete(rerender); clearInterval(tick) }
     }, [])
 
+    // Usage-poll visibility gate synced at render time: the flag lives in the
+    // closure (same style as panelOpen), and every render — panel open or
+    // closed — refreshes it, so collapsing the section stops the getUsage
+    // traffic within one poll beat.
+    usageVisible = panelOpen && usageOpen
     if (!panelOpen) return null
     const s = snapshot
     const parents = s.parents && typeof s.parents === 'object' ? s.parents : {}
@@ -221,7 +292,9 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
       }
     }
 
-    const currents = parentList.filter((p) => p && p.current)
+    // 二期 2.5（D20）：current 单条 → currentRecords 全量数组，flatMap 列表化
+    // （与 queues/helps/histories 同形）；并行下读平面多条在飞逐行渲染。
+    const currents = parentList.flatMap((p) => (Array.isArray(p?.currentRecords) ? p.currentRecords.map((c) => ({ ...c, parentSessionId: p.parentSessionId })) : []))
     const queues = parentList.flatMap((p) => (Array.isArray(p?.queue) ? p.queue.map((w) => ({ ...w, parentSessionId: p.parentSessionId })) : []))
     const helps = parentList.flatMap((p) => (Array.isArray(p?.helpRequests) ? p.helpRequests.map((h) => ({ ...h, parentSessionId: p.parentSessionId })) : []))
     const histories = parentList
@@ -270,19 +343,18 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
       React.createElement('div', { style: { marginBottom: 10 } },
         sectionHeader('运行中', currents.length),
         currents.length > 0
-          ? currents.map((p) => {
-              const c = p.current
+          ? currents.map((c) => {
               const waiting = c.status === 'waiting'
               return row({
-                key: `cur-${p.parentSessionId}-${c.childId ?? ''}`,
+                key: `cur-${c.parentSessionId}-${c.childId ?? ''}`,
                 glyph: statusGlyph(c.status),
                 glyphColor: waiting ? ACCENT_HELP : ACCENT_RUNNING,
                 accent: waiting ? ACCENT_HELP : ACCENT_RUNNING,
-                onClick: c.childId ? () => jump(c.childId, p.parentSessionId) : undefined,
+                onClick: c.childId ? () => jump(c.childId, c.parentSessionId) : undefined,
                 title: c.childId ? `${typeLabel(c.agentType)}\n${c.childId}` : typeLabel(c.agentType),
               },
                 typeChip(c.agentType),
-                suffixChip(p.parentSessionId),
+                suffixChip(c.parentSessionId),
                 c.childId ? chip(shortId(c.childId), c.childId) : null,
               )
             })
@@ -351,6 +423,18 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
             }),
           )
         : null,
+
+      // 用量统计区（契约步骤 6/7）：纯展示组件，自身不发 RPC——数据来自上方
+      // 共享轮询的 usage 快照；从折叠展开时立即补一发，省掉最多 600ms 空窗。
+      React.createElement(UsageSection, {
+        usage,
+        open: usageOpen,
+        onToggle: () => {
+          const next = !usageOpen
+          setUsageOpen(next)
+          if (next) { emit(); void pollUsage() }
+        },
+      }),
 
       // 花名册常驻区（tisitan.15；tisitan.9 A-05 起吃结构化 roster）：渲染依据
       // 是 snapshot.roster 数组——表头文案、计数、行排版全部客户端自持。旧写法
@@ -442,11 +526,13 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
     ? timer.interval(() => {
         if (!sessions) return
         const parents = snapshot.parents && typeof snapshot.parents === 'object' ? snapshot.parents : {}
-        const running = Object.values(parents).filter((p) => p?.current?.childId && p.current.status === 'running')
+        // 二期 2.5（D20）：遍历各 parent 的 currentRecords（并行在飞可能多条 running，
+        // 自动跟随为 best-effort——取第一条 running）
+        const running = Object.values(parents).flatMap((p) => (Array.isArray(p?.currentRecords) ? p.currentRecords.filter((c) => c.childId && c.status === 'running').map((c) => ({ ...c, parentSessionId: p.parentSessionId })) : []))
         const myId = currentSessionId()
         if (lastJumped) {
           const owner = parents[lastJumped.parentSessionId]
-          const stillRunning = owner?.current?.childId === lastJumped.childId && owner.current.status === 'running'
+          const stillRunning = Array.isArray(owner?.currentRecords) && owner.currentRecords.some((c) => c.childId === lastJumped.childId && c.status === 'running')
           if (stillRunning) return
           // 子智能体结束：跳回 Sisyphus 父会话（ARCHITECTURE.md §3 的闭环）。
           // 门禁通过条件：当前停在父会话，或停在刚刚跟随的那个子会话上；
@@ -467,11 +553,11 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
           target = running[0]
         }
         if (!target) return
-        lastJumped = { childId: target.current.childId, parentSessionId: target.parentSessionId }
+        lastJumped = { childId: target.childId, parentSessionId: target.parentSessionId }
         try {
           sessions.openSubagent({
             parentSessionId: target.parentSessionId,
-            childSessionId: target.current.childId,
+            childSessionId: target.childId,
             mode: 'continuable',
           })
         } catch { /* fallback: just open the child session directly */ }

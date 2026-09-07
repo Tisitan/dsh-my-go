@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.3.0-tisitan.10",
+  "version": "0.5.0-tisitan.0",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -37,6 +37,7 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 - **步骤级调度**：Prometheus 把需求拆成步骤序列，Sisyphus 逐步骤选择最省 token 的工种——**按任务难度分配（不按需求难度）**：指令明确、步骤具体的执行活优先派 Hermes，需要设计/推理的才升级 Hephaestus，仅疑难/极端复杂才到 Oracle；同工种上下文连续则 `continue` 复用。
 - **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
 - **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关 / 备选链，均可在 DSH 设置页配置；tisitan.13 起含工具屏蔽（Tool Mask）双列表编辑器，tisitan.14 起含「自定义角色」CRUD 卡片区，tisitan.15 起全卡片手风琴折叠，tisitan.19 起主选与备选链合并为单一「模型优先级列表」（#1 主选带徽章，备选 ↑ 到顶一键扶正），0.3.0-tisitan.9 起渠道与模型两栏是**可手填输入框**（input+datalist：清单在场点选、清单拉不到时直接键入，兑现页面一直许诺的「也可以直接输入自定义值」），且某渠道清单读取失败会行内标出原因（不再与「该渠道真的没模型」同形）。
+- **用量统计（0.4.0 usage-stats 契约线，D6 起含父会话自身用量）**：设置页可按 `{provider}/{model}` 自填四桶单价（USD / 1M tokens，写入口双重净化，未定价只记 token、不计成本）；面板新增「用量统计」区——以当前打开的主会话为口径（会话 id 不可识别时回落唯一在飞编排会话，多编排不猜归属；会话列表首拉期显示「加载中」而非误报故障），按模型 / 按子代 / 合计三视图共用同一份 `getUsage` 响应（服务端预归并 byModel，渲染层乘价、单一计费点），**主编排会话自身的消耗同样入账**（isSelf 合成行排子代之前，合计=完整开销；自身无 assistant 消息时不出零值行），running 子代数字随 600ms 面板轮询实时增长；缺桶显示「—」不补 0，整列无单价时隐藏成本列，partial 数值带 `≥` 下界标记（含未上报分桶/未定价桶），切换主会话视图即时跟随（含清空态），RPC 失败显示横幅并随既有退避自愈。
 - **DSH 适配**：权限请求、问题询问由主智能体执行。
 - **节省主会话上下文**：Sisyphus 主会话不加载 Skill 工具（子智能体仍保留），跳过 Skill catalog 注入以压缩主会话上下文。
 - **防旁路加固（0.3.0-tisitan.4 起）**：上游邻接消息三件套（`send_message` / `list_agents` / `interrupt_agent`）对 Sisyphus 与全部子代理双侧 deny——绕过台账与单线锁的旁路在工具目录层就不存在，子代理唯一的上报通道是 `need_help`；`continue` 的 `queued` 档走真 FIFO 队列（alpha.4 的 `sendMessage` 只有 steer，排队通路经 internal 符号队列适配器复活），`steer`/`abort` 也一律经 `subagents` 门面投递。原生派生工具（`subagent` / `subagent_fork` / `workflow` / `ralph`）仅在 Sisyphus 顶层保留为逃生舱，子代理侧照旧摘除。
@@ -91,10 +92,10 @@ _真正实现 “按量付费”_
 
 ```bash
 # 1) clone 到【永久稳定路径】——见下方红字警告，这路径以后不能挪、不能删
-git clone --depth 1 https://github.com/Tisitan/dsh-my-go.git "D:/dsh-plugins/dsh-my-go"
+git clone --depth 1 https://github.com/Tisitan/dsh-my-go.git "<your-dsh-plugins>/dsh-my-go"
 
 # 2) 装进 web profile（路径写绝对路径最稳；相对路径 dsh 会按你当前目录解析）
-dsh plugin --profile web add "D:/dsh-plugins/dsh-my-go"
+dsh plugin --profile web add "<your-dsh-plugins>/dsh-my-go"
 
 # 3) 重启 Web GUI
 dsh web
@@ -145,7 +146,7 @@ host 插件（`lib/index.js`：settings 存储 + 面板 RPC + preset 同步器�
 ### 升级
 
 ```bash
-cd "D:/dsh-plugins/dsh-my-go"   # 你的 clone 目录
+cd "<your-dsh-plugins>/dsh-my-go"   # 你的 clone 目录
 git pull
 dsh web                          # 重启即生效
 ```
@@ -171,7 +172,7 @@ dsh web
 |---|---|---|
 | profile / home 路径 | `%USERPROFILE%\.dsh\profiles\web`、preset 落 `%USERPROFILE%\.dsh\.agent-presets\` | `~/.dsh/profiles/web`、`~/.dsh/.agent-presets/` |
 | 链接形态 | **junction**（`mklink /J`，普通权限即可创建） | **symlink**（`ln -s`，无需特权） |
-| 命令差异 | `dsh plugin --profile web add "D:/dsh-plugins/dsh-my-go"` 写法与 POSIX 一致，路径分隔符 `/` `\` 都收 | 同左 |
+| 命令差异 | `dsh plugin --profile web add "<your-dsh-plugins>/dsh-my-go"` 写法与 POSIX 一致，路径分隔符 `/` `\` 都收 | 同左 |
 
 行为完全一致，只有路径与链接类型两种叫法之差——上面「junction 不是拷贝、路径必须
 永久稳定」这条在两边同样成立。
@@ -343,6 +344,29 @@ dsh-my-go:
 下拉按所选渠道过滤，与 YAML 手工编辑等价（保存时拆解 #1→provider/
 model、#2..N→fallbacks，存储形状零变更）。
 
+### 接力链（relay chains，tisitan.7 起默认关）
+
+`relayChains=true` 时主编可声明**接力链**：一串按序执行的子代理跳
+（2~8 跳），上一跳的完工报告全文经 board 直投为下一跳的输入数据块
+（`<mygo_relay_input trusted="false">`），读→读跳之间免审自动接力，
+主编上下文零全文过路。两枚工具：
+
+- **`chain_start`**：声明链并派发首跳。`hops = [{ agent, prompt?, gate? }]`，
+  gate ∈ `auto`（缺省；读→读免审自动接力，prompt 必填预写）/
+  `review`（挂起待主编审阅后放行）/
+  `sync`（不可逆跳强制同步门，指令必须现场给）。
+- **`chain_resolve`**：处置挂起的链——`continue` 放行/续命（review
+  可带新 prompt 覆盖预写，sync 必带现场 prompt）、`abort` 弃链。
+
+挂起的链**永不超时放行**（D13）：每次回合的
+`orchestration_status`/快照都有 `⛓ relay-chain` 状态行，主编不裁决链
+不动。报告不合格的跳会先走一期报告补发，补发后仍不合格则挂起
+`gate-verdict` 等主编裁量「带病续链 or 弃链」；跳子代 error 终局时自
+动走备选重派，重派成功换绑新世代再等裁决。下一跳输入缺失（board
+不可读）时链自动挂起 `input-missing`，绝不发空输入 prompt。子代若
+发现输入语义不可用（空壳/无关/上游声明失败），按 prompt 尾部的验收
+条款用 `need_help` 打回主编——禁止带病施工。
+
 ### 工具屏蔽（tool-mask）
 
 把指定工具从 MyGO 会话目录里藏起（对 Sisyphus 与全部子代理同时生效），
@@ -411,6 +435,11 @@ dsh-my-go:
 | `statusConclusionMax`   | 400    | `orchestration_status` 单条结论截断长度（**failed 记录不截断**）      |
 | `helpContentMax`        | 240    | `orchestration_status` 单条求助内容截断长度                           |
 | `subagentPromptMax`     | 200    | `list_subagents` prompt 摘要及会话 label 的 prompt 摘要截断长度       |
+| `metrics`               | true   | 观测埋点（0.4.0-tisitan.0）：编排动作追加写 `<DSH_HOME>/dsh-my-go/metrics/events.jsonl`（JSONL，10 万行 cap 超限截头）；`false` 零写盘 |
+| `reportExternalization` | true   | 报告外部化总闸（0.4.0 线一期）：关 → `report_submit`/`report_fetch` 不注册、报告格式条款不注入、完工收尾不落板不闸门，编排退回 0.3.x 现状。**显式配置优先于代码默认**：当前装机 yml 显式 `true`（外部化实战期——2026-09-07 基线关窗后点亮，对照基线采集关窗期已结束；防回潮哨兵 test/report-clause.test.mjs 的 pin 已换向站岗，误关回 `false` 即红）；删除该行回落代码默认（同为 `true`，但失去显式哨兵锚点） |
+| `readPoolSize`          | 1      | 读平面并行池（0.4.0 线二期，D5/D7/D8/D9）：读平面 = explore/librarian，写平面（Hermes/Hephaestus/Prometheus/Oracle/Looker/自定义角色）恒单线。`1` = 关闭 = 全局单线现状（逐字节等价改造前）；`2~3` = 读平面并发上限（写平面不受影响，读任务 lane-aware 上岗——队首读任务满池时写任务可越过上岗，lane 内仍 FIFO）。`>3` 钳制 3，非法值回落 1。挂载期读一次，不做运行时切换。当前装机 yml 显式 `2`（保守起步，上限 3） |
+| `spawnEndGraceMs`       | 2000   | E2 end 缓冲宽限（0.4.0 线二期，D16）：`subagent/end` 抢在 spawn resolve 登记之前到达时暂存缓冲，等待登记追上后按真 id 精确认领重放全量归因管线；超此宽限未认领则按「无从归属」落档，并对滞留超时的 spawning 占位做 failed 落账回收（防 lane 槽泄漏）。等的是 spawn 网络窗口，慢网络部署可调大 |
+| `relayChains`           | false  | 接力链总闸（0.4.0 线三期，D21~D29）：关 → `chain_start`/`chain_resolve` 不注册，编排退回无链现状；开 → **依赖 `reportExternalization=true`**（D23 fail-fast：链的数据面从 board 直投上一棒全文，总闸关则 `chain_start` 直接报错指路，绝不静默降级）。挂载期读一次，不做运行时切换。当前装机 yml 显式 `true`（与总闸同批点亮，依赖满足） |
 
 编排台账（history，每桶 `HISTORY_CAP` = 200 条，桶数上限
 `LEDGER_PARENTS_CAP` = 200）持久化在
@@ -445,7 +474,7 @@ dsh-my-go/
 ├── cordis.patch.yml       # bundle patch（dsh plugin add 后自动挂载 host 插件）
 ├── lib/index.js           # npm 包 host 半（632 行：settings 存储 + revision 围栏 + 面板 RPC（快照裁剪/结构化名册/端点自带 try）+ preset 同步器（版本+内容摘要 marker）；tisitan.21 起零编排面）
 ├── src/                   # client 半源码（tisitan.15 起装配层 + 模块化）
-│   ├── client.js          #   装配层（82 行）：接线五模块 + 注册 DSH slots + 宿主服务缺席时真降级
+│   ├── client.js          #   装配层（104 行）：接线五模块 + 注册 DSH slots + 宿主服务缺席时真降级（sessions 惰性解析）
 │   ├── client-constants.js#   共享常量（色板/标签/intent 文案，零 React）
 │   ├── panel-tree.js      #   树状图面板 + 轮询（in-flight 门 / 失败退避 / 迁移留痕）+ 自动跳转（结构化花名册）
 │   ├── settings-core.js   #   设置页主组件（手风琴卡 / persona 覆盖 / 可手填组合框 / dirty + revision 围栏）
@@ -455,7 +484,11 @@ dsh-my-go/
 │   ├── chain-rows.js      #   模型优先级列表编辑器纯函数（node --test 与 bundle 内联同源）
 │   ├── tool-mask-rows.js  #   工具屏蔽纯函数（同上）
 │   ├── roster-rows.js     #   自定义角色纯函数（同上，含卡摘要/导入导出/persona 覆盖）
-│   └── panel-format.js    #   面板格式化纯函数（同上）
+│   ├── panel-format.js    #   面板格式化纯函数（同上）
+│   ├── usage-price-rows.js#   单价表编辑纯函数（桶净化/行校验/CRUD，同上）
+│   ├── usage-prices-editor.js # 设置页单价表编辑卡（USD / 1M tokens，行级校验提示）
+│   ├── usage-views.js     #   用量面板三视图派生纯函数（价格索引/成本/紧凑格式化/空态）
+│   └── usage-panel.js     #   面板「用量统计」区（三视图 tab，纯展示不发 RPC）
 ├── scripts/build-client.mjs  # esbuild 打包 client → dist/client.js
 ├── scripts/dump-session.mjs  # 会话档案取证 CLI（tisitan.16，npm run dump:session）
 ├── test/                  # 冒烟 + node --test 全档（21 个 *.test.mjs + test/helpers/
@@ -564,7 +597,7 @@ script，忘了就静默不跑），改由 node 自己展开通配 `test/*.test.
    {
      "dependencies": {
        // Windows 实测形态用正斜杠 + 盘符，POSIX 用绝对路径，pnpm 两边都认
-       "dsh-my-go": "link:D:/dsh-plugins/dsh-my-go"
+       "dsh-my-go": "link:C:/path/to/dsh-plugins/dsh-my-go"
      },
      "dsh": {
        "profile": {

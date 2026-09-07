@@ -44,6 +44,28 @@ function createSelfManagedTimer() {
   }
 }
 
+// sessions 服务惰性解析：Proxy 每次属性访问都重新 client.get('sessions')，
+// 消除「apply 装配时 sessions 未就绪 → 一次性 get 永远落空」的时序脆弱点。
+// 缺席时该次访问视为不可用并留痕一次（不随 auto-jump 每 800ms 刷屏）；
+// 服务一旦在席立即恢复，无需重建面板。
+function createLazySessions(client) {
+  let warned = false
+  return new Proxy({}, {
+    get(_target, prop) {
+      const svc = client.get('sessions')
+      if (!svc) {
+        if (!warned) {
+          warned = true
+          console.warn('[dsh-my-go] client: sessions service unavailable; panel click-to-jump and auto-jump degrade until the service appears (snapshot polling unaffected)')
+        }
+        return undefined
+      }
+      const value = svc[prop]
+      return typeof value === 'function' ? value.bind(svc) : value
+    },
+  })
+}
+
 export function apply(ctx) {
   const client = ctx
 
@@ -54,10 +76,10 @@ export function apply(ctx) {
   // sessions / timer 有意**不**进 inject（客户端半的既有形态）：拿不到就得
   // 降级，而不是挂载失败。但降级不能是静默的（tisitan.8 E2/A-01）——此前
   // timer 缺席时 `timer && timer.interval` 直接短路，面板永不刷新、也永不
-  // 说明原因；现在补一次性留痕 + 真自管的回落定时器。
-  const sessions = client.get('sessions')
+  // 说明原因；现在补一次性留痕 + 真自管的回落定时器。sessions 则走惰性
+  // 解析（createLazySessions）：装配时序不再决定面板能否拿到服务。
+  const sessions = createLazySessions(client)
   const timer = client.get('timer')
-  if (!sessions) console.warn('[dsh-my-go] client: sessions service unavailable; panel click-to-jump and auto-jump disabled (snapshot polling unaffected)')
   const panelTimer = timer && typeof timer.interval === 'function'
     ? timer
     : createSelfManagedTimer()
