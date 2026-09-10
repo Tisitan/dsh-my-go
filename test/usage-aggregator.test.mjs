@@ -12,7 +12,7 @@ import { zstdCompressSync } from 'node:zlib'
 import { projectKey, readArchivedUsage } from '../preset/shared/archive.mjs'
 import { createUsageAggregator } from '../lib/usage-aggregator.mjs'
 import { apply as hostApply } from '../lib/index.js'
-import { removeHomeWithRetry } from './helpers/mock-ctx.mjs'
+import { removeHomeWithRetry, createPanelRpcTransport } from './helpers/mock-ctx.mjs'
 
 const ALL_NULL_BUCKETS = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null }
 
@@ -245,16 +245,21 @@ test('复活解冻：冻结后同 childId 复活，live 增量续扫新代际，
 // ── getUsage 端点（lib 半接线，D3）───────────────────────────────────────────
 
 function mockHostCtx({ settings } = {}) {
-  const rpcHandlers = new Map()
+  const panel = createPanelRpcTransport()
   const ctx = {
-    get: (name) => (name === 'settings' ? settings : undefined),
+    get: (name) => {
+      if (name === 'settings') return settings
+      if (name === 'connection') return panel.connection
+      if (name === 'webServer') return panel.webServer
+      return undefined
+    },
     on: () => {},
-    inject: (_deps, cb) => { cb({ connection: { rpc: { handle: (channel, fn) => { rpcHandlers.set(channel, fn) } } } }) },
+    inject: panel.inject,
     effect: () => {},
     systemPrompt: { section: () => {} },
     tools: { register: () => {} },
   }
-  return { ctx, rpc: async (channel, endpoint, payload) => rpcHandlers.get(channel)(endpoint, payload) }
+  return { ctx, rpc: panel.rpc }
 }
 
 test('getUsage 端点：台账/档案默认路径聚合 + 价格实时 join（R6）+ Z8 空结构不抛错', async () => {

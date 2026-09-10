@@ -191,6 +191,12 @@ export class Orchestration {
     if (!record) return undefined
     this.helpRequests.set(help.id, help)
     const next = { ...record, status: 'waiting', updatedAt: Date.now() }
+    // stallNotified（broker 侧「本次停摆已向主编报过」的 episode 标记）随挂起复位：
+    // episode 的边界是「这一轮挂起」而不是「这个子代」，新一轮挂起就该重新可见一次。
+    // 复位点选在挂起本身而非恢复之后：同轮连挂两张求助单时第二次挂起同样复位，而
+    // 「报不报」由 broker 的队列积压判定把关（无积压 = 无停摆 = 不报），此处只负责
+    // 忘记上一轮。
+    delete next.stallNotified
     this.currentMap.set(childId, next)
     this.emit()
     return next
@@ -206,6 +212,7 @@ export class Orchestration {
     const record = this.currentMap.get(childId)
     if (!record || record.status !== 'waiting') return record
     const next = { ...record, status: 'running', updatedAt: Date.now() }
+    delete next.stallNotified // 复籍即停摆 episode 结束（见 suspend 的复位注释）
     this.currentMap.set(childId, next)
     this.emit()
     return next
@@ -222,6 +229,10 @@ export class Orchestration {
       conclusionId,
       updatedAt: Date.now(),
     }
+    // stallNotified 不随记录入史/入档（本批选定的持久化取舍：episode 标记只活在
+    // currentMap 的占槽记录上）——入史即 episode 终结，留着只会让台账里的死记录
+    // 带一个永不复位的标记，复活后反而哑掉下一次通报。
+    delete done.stallNotified
     this.currentMap.delete(childId)
     const clearedHelp = this.clearHelpFor(childId)
     this.history = [...this.history, done]

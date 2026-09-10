@@ -43,7 +43,7 @@ test('evidence 非数组：单条类型错误即返（不进逐项校验）', ()
   for (const evidence of [undefined, 'src/a.js:12', 42, {}]) {
     const r = validateReportArgs(argsOf({ evidence }))
     assert.equal(r.ok, false)
-    assert.deepEqual(r.errors, ['evidence: 缺失或不是字符串数组——每项一条裸「路径:行号」，无文件证据传 ["无"]'])
+    assert.deepEqual(r.errors, ['evidence: 检测到缺失或不是字符串数组——请改用每项一条裸「路径:行号」的数组重调（无文件证据传 ["无"]）'])
   }
 })
 
@@ -51,8 +51,8 @@ test('evidence 索引级错误：非法项逐条带索引，合法项不误伤',
   const r = validateReportArgs(argsOf({ evidence: ['src/a.js:12', '这不是合法证据项', 'b.ts:3', '带后缀描述 c.js:7'] }))
   assert.equal(r.ok, false)
   assert.deepEqual(r.errors, [
-    'evidence[1]: 非法证据项「这不是合法证据项」——期望裸「路径:行号」或「无」，禁止任何前后缀描述',
-    'evidence[3]: 非法证据项「带后缀描述 c.js:7」——期望裸「路径:行号」或「无」，禁止任何前后缀描述',
+    'evidence[1]: 检测到非法证据项「这不是合法证据项」——请改用裸「路径:行号」或「无」重调，禁止任何前后缀描述',
+    'evidence[3]: 检测到非法证据项「带后缀描述 c.js:7」——请改用裸「路径:行号」或「无」重调，禁止任何前后缀描述',
   ])
 })
 

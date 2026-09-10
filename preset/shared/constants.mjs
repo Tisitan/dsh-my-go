@@ -60,3 +60,18 @@ export const SELF_REGISTERED_TOOLS = ['go_work', 'continue', 'need_help', 'forwa
 // （仅用户显式要求直派时使用），只在子代理侧 deny——星型拓扑要禁的是叶子派生，
 // 不是主编排会话的原生入口。
 export const ADJACENT_BYPASS_TOOLS = ['send_message', 'list_agents', 'interrupt_agent']
+
+// Agent Teams 实验面（宿主侧注册，实验开关开了才有）：spawn_teammate 让子代自拉
+// 队友、wait_agent 自等、team_task_* 自建任务板——四件合起来是一条完整的新旁路面：
+// 叶子自己派生孙代并自管任务，完全绕开 go_work / need_help 的星型收口与台账。
+//
+// 与上面邻接三件套的两点关键差异：
+//   1. **只摘子代理侧**。Agent Teams 是主会话的实验玩法，收口只到叶子派生——与
+//      原生派生工具（subagent / subagent_fork / workflow / ralph）同款口径：编排
+//      面保留原生入口，叶子不得自我派生。故 broker 的 agent/created 闸只把它并入
+//      「sub-agent gate」的名单，主会话那一支（orchestrator scope）不碰。
+//   2. **名单随宿主在册状态联动**（broker 侧 AGENT_TEAMS_TOOLS.filter(在册)）。
+//      这三件是宿主注册的，不由本插件开关掌握；未注册时硬 deny 只会换来
+//      restrict 批级拒绝 + 逐名兜底的「could not deny」查无此具噪音——与
+//      report_fetch / 链两件同款口径（闸的意图被「工具根本不存在」真空满足）。
+export const AGENT_TEAMS_TOOLS = ['spawn_teammate', 'wait_agent', 'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update']

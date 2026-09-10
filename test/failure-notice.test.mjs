@@ -25,6 +25,14 @@ const drain = (ms = 25) => new Promise((r) => setTimeout(r, ms))
 
 const rosterSectionOf = (sections) => sections.find((s) => s?.name === 'dsh-my-go:roster')
 
+// persona 段名按宿主代分支：0.1.5 上游把内建 persona 拆成 deployment:persona-prefix
+// (order 0) + deployment:persona-suffix (order 10200)，旧宿主仍是单段
+// deployment:persona。断言只认宿主实际那一代——写死名字等于换一代宿主就假红。
+// 表值刻意取非上游真值（3 / 10203）：用来钉「order 从宿主表取，不是硬编码 0」。
+const NEW_HOST_SECTION_ORDERS = { DEPLOYMENT_PERSONA_PREFIX: 3, DEPLOYMENT_PERSONA_SUFFIX: 10203 }
+const isNewHostPersonaShape = (ctx) => ctx.systemPrompt?.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') !== undefined
+const personaNameOf = (ctx) => (isNewHostPersonaShape(ctx) ? 'deployment:persona-prefix' : 'deployment:persona')
+
 // ── ① 名册简报系统提示段 ─────────────────────────────────────────────────
 
 test('名册简报段注册形态：name/order=10/函数态 text/无 complete（与 persona/orchestration 共存）', async () => {
@@ -35,9 +43,52 @@ test('名册简报段注册形态：name/order=10/函数态 text/无 complete（
   assert.equal(def.order, 10, 'order=10（persona(0) 与编排规则(20) 之间空档）')
   assert.equal(typeof def.text, 'function', '函数态 text（每次 assemble 现调）')
   assert.notEqual(def.complete, true, '不得携带 complete:true')
-  assert.ok(sections.some((s) => s?.name === 'deployment:persona'), 'persona 段共存')
+  assert.ok(sections.some((s) => s?.name === personaNameOf(ctx)), `persona 段共存（${personaNameOf(ctx)}）`)
   assert.ok(sections.some((s) => s?.name === 'dsh-my-go:orchestration'), 'orchestration 段共存')
 })
+
+// ── persona 段双代注册（0.1.5 上游把内建 persona 拆成 prefix + suffix 两段）────
+// broker 的探针是 getSectionOrder('DEPLOYMENT_PERSONA_PREFIX') 的**键存在性**：
+// 新宿主认新名并顺手遮蔽 suffix 槽位（防部署人设泄进子代），旧宿主维持旧名单段。
+// 两代名字并注是禁止形态（旧宿主上 prefix 是自由名 = 第二份人设），故两侧都断言
+// 「另一代的名字绝不出现」。
+
+test('persona 注册·新宿主形态：新名 prefix 取表 order + suffix 注册为空串遮蔽，旧名绝不并注', async () => {
+  const { ctx, sections } = mockCtxFull({ sectionOrders: NEW_HOST_SECTION_ORDERS })
+  await broker.apply(ctx, { reportExternalization: false })
+  const prefix = sections.find((s) => s?.name === 'deployment:persona-prefix')
+  const suffix = sections.find((s) => s?.name === 'deployment:persona-suffix')
+  assert.ok(prefix, 'deployment:persona-prefix 已注册')
+  assert.equal(prefix.order, NEW_HOST_SECTION_ORDERS.DEPLOYMENT_PERSONA_PREFIX, 'order 从宿主表取，不硬编码 0')
+  assert.equal(typeof prefix.text, 'function', '段体沿用 isSubAgentContext 门（函数态）')
+  assert.equal(prefix.text({ agent: { id: 'root-1', session: { header: {} } } }).length > 0, true, '根编排会话拿到人设正文（档案已载则全文，未载则兜底句）')
+  assert.equal(prefix.text({ agent: { id: 'c-1', session: { header: { parentSession: 'root-1' } } } }), '', '子代门控照旧返回空串')
+  assert.ok(suffix, 'deployment:persona-suffix 已注册（占槽遮蔽）')
+  assert.equal(suffix.order, NEW_HOST_SECTION_ORDERS.DEPLOYMENT_PERSONA_SUFFIX, 'suffix order 同样取表')
+  assert.equal(suffix.text, '', 'suffix 恒空：部署 personaSuffix 不得泄进子代')
+  assert.equal(sections.some((s) => s?.name === 'deployment:persona'), false, '新宿主上旧名绝不并注')
+  assert.equal(isNewHostPersonaShape(ctx), true)
+})
+
+test('persona 注册·旧宿主形态（方法缺席）：维持 deployment:persona(order 0) 单段，不碰新名', async () => {
+  const { ctx, sections } = mockCtxFull()
+  await broker.apply(ctx, { reportExternalization: false })
+  const legacy = sections.find((s) => s?.name === 'deployment:persona')
+  assert.ok(legacy, 'deployment:persona 已注册')
+  assert.equal(legacy.order, 0)
+  assert.equal(typeof legacy.text, 'function')
+  assert.equal(sections.some((s) => s?.name === 'deployment:persona-prefix'), false, '旧宿主上 prefix 是自由名：并注等于塞第二份人设')
+  assert.equal(sections.some((s) => s?.name === 'deployment:persona-suffix'), false)
+  assert.equal(isNewHostPersonaShape(ctx), false)
+})
+
+test('persona 注册·旧宿主形态（方法在但表无 PREFIX 键）：探针按键存在性判假，仍走旧名', async () => {
+  const { ctx, sections } = mockCtxFull({ sectionOrders: { HARNESS_IDENTITY: 1 } })
+  await broker.apply(ctx, { reportExternalization: false })
+  assert.ok(sections.some((s) => s?.name === 'deployment:persona'), '旧名单段')
+  assert.equal(sections.some((s) => s?.name?.startsWith('deployment:persona-')), false, '未知键返回 undefined 不抛，探针自然判假')
+})
+
 
 test('名册简报段儿童门控：子代理（parentSession 直达 + label 兜底）返回空串，根编排会话返回简报', async () => {
   const { ctx, sections } = mockCtxFull()

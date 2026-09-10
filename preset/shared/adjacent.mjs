@@ -37,7 +37,15 @@ const NEVER_ABORTED = new AbortController().signal
 // 裸名 '@deepseek-ai/dsh-subagent/internal' 解析必炸（已实测 MODULE_NOT_FOUND），
 // 故按同款注册符号直取，与上游适配器逐参数同形（position: parent, childId,
 // content, source, signal）。
+//
+// 上游 0.1.3-alpha.1（commit 040d73871b）把这枚符号改名并加宽为 6 参：
+// Symbol.for('dsh.subagent.deliverPrompt')，第 6 参 delivery，传字符串 'queue'
+// 即得原 FIFO 语义。两版通吃是硬要求（旧宿主只有 queuePrompt、新宿主只有
+// deliverPrompt，两者都会在本 fork 的存活期出现）：新符号在就走 6 参，不在则
+// 回退旧符号 5 参，两者都不在才允许塌到 steer。
+// 旧常量名 QUEUE_PROMPT 原样保留——它同时是 broker 侧既有语义的锚点。
 const QUEUE_PROMPT = Symbol.for('dsh.subagent.queuePrompt')
+const DELIVER_PROMPT = Symbol.for('dsh.subagent.deliverPrompt')
 
 // 宿主排队投递的持久署名：alpha.4 的 MessageSource 只剩 user/plugin/model/tool
 // 四元，旧 coordinator 形态不可用；plugin 成员 + form 'relay'（「另一 Agent
@@ -59,6 +67,22 @@ export function sessionEvents(session) {
   return Array.isArray(session.events) ? session.events : []
 }
 
+// 排队原语的 arity 适配器（断裂①）：两代上游符号在此收敛成一个 invoke 形状，
+// 新符号（deliverPrompt，6 参，末位 delivery='queue'）优先，旧符号
+// （queuePrompt，5 参）回退，两者皆缺席返回 null。route 判定与投递动作仍只有
+// planAdjacentDelivery 一张表——canQueueAdjacent 是其薄壳，双符号并查由构造保证。
+function planQueueInvoker(subagents) {
+  if (typeof subagents[DELIVER_PROMPT] === 'function') {
+    return (fromAgent, targetId, content, signal) =>
+      subagents[DELIVER_PROMPT](fromAgent, targetId, content, HOST_QUEUE_SOURCE, signal, 'queue')
+  }
+  if (typeof subagents[QUEUE_PROMPT] === 'function') {
+    return (fromAgent, targetId, content, signal) =>
+      subagents[QUEUE_PROMPT](fromAgent, targetId, content, HOST_QUEUE_SOURCE, signal)
+  }
+  return null
+}
+
 // 投递计划（N15，0.3.0-tisitan.12）：**路由判定与投递动作合一**。
 // 旧写法是 canQueueAdjacent 与 deliverToAdjacent 各写一遍分支顺序，靠一句
 // 「判定顺序必须与投递一致」的注释维持同构——上游再改一次 API 形状时要同时改对
@@ -66,18 +90,20 @@ export function sessionEvents(session) {
 // 因为两条路都返回 messageId）。现在两处都从本函数取同一个 plan，同构由构造保证。
 //
 // route 语义：
-//   'queue'    真 FIFO 排队（alpha.4 的 internal 符号队列 queueHostSubagentPrompt）
+//   'queue'    真 FIFO 排队（上游 internal 符号队列：deliverPrompt 6 参优先，
+//              queuePrompt 5 参回退，见 planQueueInvoker）
 //   'steer'    next-step 边界插话（alpha.4 的 sendMessage，**不是排队**）
 //   'legacy'   alpha.2/3 的 followup（原语本身即 FIFO；steer 档在旧门面没有对应
 //              入口，同一条路——当前轮 drain 后可见，且只有这支消费 options.source）
 //   'unavailable' 该 runtime 给不出任何邻接投递通路（invoke 为 null，调用方必须报错）
 export function planAdjacentDelivery(subagents, delivery = 'queued') {
   if (typeof subagents?.sendMessage === 'function') {
-    if (delivery === 'queued' && typeof subagents[QUEUE_PROMPT] === 'function') {
+    const queue = delivery === 'queued' ? planQueueInvoker(subagents) : null
+    if (queue) {
       return {
         route: 'queue',
         invoke: (fromAgent, targetId, content, { signal } = {}) =>
-          subagents[QUEUE_PROMPT](fromAgent, targetId, content, HOST_QUEUE_SOURCE, signal ?? NEVER_ABORTED),
+          queue(fromAgent, targetId, content, signal ?? NEVER_ABORTED),
       }
     }
     return {

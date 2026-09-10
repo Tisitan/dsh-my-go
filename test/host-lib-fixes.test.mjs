@@ -4,7 +4,7 @@
 //   E7/B-05  saveSettings 脏键整批毒杀 → ROLE_KEY_PATTERN 过滤
 //   E10/B-03 snapshot 端点无 try → 桥抛错回结构化 internal
 //   E5/A-02  snapshot 出口裁剪（history 末 8 / 剔 prompt）
-//   E9/B-07  rpc.handle arity 探测（2 参旧形态 / 3 参 rc.8）
+//   E9/B-07  面板通道注册壳（原 rpc.handle arity 探测 → F1 换 webServer 直注册）
 //   E8/B-08  marker 内容摘要逃生口（同版本内容漂移仍重拷）
 //   E3/B-01  安装器参数化 + config.installPreset 真短路
 //   B-09     prompts 镜像清孤儿 / 未变更文件不重写
@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as host from '../lib/index.js'
+import { createPanelRpcTransport, callWebRouteHandler } from './helpers/mock-ctx.mjs'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-lib8-'))
 
@@ -22,30 +23,22 @@ process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-lib8-'))
 // 「碰巧」短路——后台拷贝与断言抢同一批文件是旧测试的隐性竞态。
 const NO_INSTALL = { installPreset: false }
 
-function mockHostCtx({ llm, settings, toolsRegistry, handleArity = 2 } = {}) {
+function mockHostCtx({ llm, settings, toolsRegistry, rejection } = {}) {
   const listeners = new Map()
-  const rpcHandlers = new Map()
-  const handleArgs = []
+  const panel = createPanelRpcTransport({ rejection })
   const ctx = {
     get: (name) => {
       if (name === 'llm') return llm
       if (name === 'settings') return settings
       if (name === 'tools') return toolsRegistry
+      if (name === 'connection') return panel.connection
+      if (name === 'webServer') return panel.webServer
       return undefined
     },
     on: (event, fn) => { listeners.set(event, fn) },
-    inject: (_deps, cb) => {
-      const handle = handleArity === 3
-        ? (channel, fn, options) => { rpcHandlers.set(channel, fn); rpcHandlers.set(`${channel}:options`, options) }
-        : (channel, fn) => { rpcHandlers.set(channel, fn) }
-      handleArgs.push(handle.length)
-      try {
-        cb({ connection: { rpc: { handle } } })
-      } catch { /* no connection in this deployment shape */ }
-    },
+    inject: panel.inject,
   }
-  const rpc = (channel, endpoint, payload) => rpcHandlers.get(channel)(endpoint, payload)
-  return { ctx, listeners, rpc, registeredOptions: () => rpcHandlers.get('/dsh-my-go:options'), handleArgs }
+  return { ctx, listeners, panel, rpc: panel.rpc }
 }
 
 function captureConsole() {
@@ -253,17 +246,165 @@ test('snapshot：桥缺席仍是降级空态（裁剪对空形状零副作用）
 
 // ── E9/B-07：rpc.handle arity 探测 ────────────────────────────────────────
 
-test('rpc.handle arity：旧两参形态不多传，rc.8 三参形态带 authority=loopback', async () => {
-  const legacy = mockHostCtx({ handleArity: 2 })
-  await host.apply(legacy.ctx, NO_INSTALL)
-  assert.equal(legacy.registeredOptions(), undefined, '两参 handle 的宿主不塞第三参（多余参数会撞旧版校验）')
-  assert.deepEqual(legacy.handleArgs, [2], '探测读到的确实是形参个数 2')
+// ── E9/B-07 → F1：面板通道注册壳（webServer 直注册 + 手工信封）───────────────
+// 0.1.5-alpha.1 的 connection.rpc.handle 在注册时读 owner.webServer 必抛（owner 被
+// 钉死在 client-connection 自己的 apply fiber），通道从未挂上、面板 RPC 全量吃 405。
+// 本半改为直接 webServer.register(prefix route)，并在 handler 内补回 rpc.handle 代做
+// 的两件事。以下逐条钉的就是这两件事——替身走真 node:http 形状（req/res），鉴权直出、
+// 信封封装、endpoint 解析都在壳里真跑，不再比宿主宽容。
 
-  const modern = mockHostCtx({ handleArity: 3 })
-  await host.apply(modern.ctx, NO_INSTALL)
-  assert.deepEqual(modern.registeredOptions(), { authority: 'loopback' }, '三参 handle 的宿主必须拿到 authority')
-  const res = await modern.rpc('/dsh-my-go', 'listTools', {})
-  assert.equal(res.ok, true, '带 options 注册后通道照常工作')
+test('F1 注册形态：connection + webServer 齐备时挂 prefix 路由，端点经完整 HTTP 壳往返', async () => {
+  const { ctx, panel } = mockHostCtx({ toolsRegistry: { schemas: () => [{ name: 'read' }] } })
+  await host.apply(ctx, NO_INSTALL)
+  const route = panel.routes.get('prefix /dsh-my-go')
+  assert.ok(route, 'webServer 上挂出一条 prefix /dsh-my-go 路由')
+  assert.equal(route.kind, 'prefix')
+  assert.equal(typeof route.handler, 'function')
+  const { status, frame, result } = await panel.request({ endpoint: 'listTools', rpcId: 'abc-123', payload: {} })
+  assert.equal(status, 200, '已认证请求走业务分发而非鉴权直出')
+  assert.equal(frame.type, 'server-response', '响应是合法 server-response 帧')
+  assert.equal(frame.rpcId, 'abc-123', 'rpcId 原样回显（浏览器侧 rpcId 不符即抛）')
+  assert.deepEqual(result, { ok: true, value: ['read'] })
+})
+
+test('F1 鉴权直出：requestRejection 给 401/403 时绝不进业务分发（未认证不再 405）', async () => {
+  for (const [rejection, body] of [[401, 'unauthorized'], [403, 'forbidden']]) {
+    const { ctx, panel } = mockHostCtx({ rejection })
+    await host.apply(ctx, NO_INSTALL)
+    const res = await panel.request({ endpoint: 'loadSettings', payload: {} })
+    assert.equal(res.status, rejection, `未认证请求直出 ${rejection}`)
+    assert.equal(res.body, body)
+    assert.equal(res.frame, undefined, '鉴权失败不回业务信封')
+  }
+})
+
+test('F1 传输面：GET / 无 endpoint / 非 JSON content-type 各回 404 / 404 / 415', async () => {
+  const { ctx, panel } = mockHostCtx({})
+  await host.apply(ctx, NO_INSTALL)
+  assert.equal((await panel.request({ httpMethod: 'GET', endpoint: 'snapshot' })).status, 404)
+  assert.equal((await panel.request({ url: '/dsh-my-go', endpoint: 'snapshot' })).status, 404, '裸通道路径不认领任何端点')
+  assert.equal((await panel.request({ url: '/dsh-my-go/../etc', endpoint: 'snapshot' })).status, 404, '穿越形态的 pathname 解析不出 endpoint')
+  const wrongType = await panel.request({ endpoint: 'snapshot', headers: { 'content-type': 'text/plain' } })
+  assert.equal(wrongType.status, 415)
+  assert.equal(wrongType.body, 'content type must be application/json')
+})
+
+test('F1 信封面：坏 JSON 400；缺字段/错 method 回 gateway/bad-request 合法帧；未知端点回 bad-request', async () => {
+  const { ctx, panel } = mockHostCtx({})
+  await host.apply(ctx, NO_INSTALL)
+  assert.equal((await panel.request({ endpoint: 'snapshot', body: 'not json' })).status, 400)
+  const noId = await panel.request({ endpoint: 'snapshot', body: { type: 'client-request', method: 'snapshot' } })
+  assert.equal(noId.status, 200, '信封不合法仍是 2xx + server-response（与宿主 rpcFetchHandler 同形）')
+  assert.equal(noId.frame.type, 'server-response')
+  assert.equal(noId.frame.rpcId, 'invalid-request', '读不到 rpcId 时用哨兵位')
+  assert.equal(noId.frame.result.error.code, 'gateway/bad-request')
+  assert.deepEqual(noId.frame.result.error.details, { issues: [] })
+  const mismatch = await panel.request({ endpoint: 'snapshot', payload: {}, method: 'listTools' })
+  assert.equal(mismatch.result.error.code, 'gateway/bad-request')
+  assert.match(mismatch.result.error.message, /does not match endpoint/)
+  const unknown = await panel.rpc('/dsh-my-go', 'nope', {})
+  assert.equal(unknown.ok, false)
+  assert.equal(unknown.error.code, 'bad-request', '未知端点由分发行兜住（本半原有语义不变）')
+})
+
+test('F1 分发抛穿：createPanelRpcHandler 把异常收口成 gateway/internal 合法帧而非裸 500', async () => {
+  const warned = []
+  const origWarn = console.warn
+  console.warn = (...a) => { warned.push(a.map(String).join(' ')) }
+  try {
+    const handler = host.createPanelRpcHandler({
+      connection: { requestRejection: () => undefined },
+      dispatch: async () => { throw new Error('dispatch exploded') },
+    })
+    const res = await callWebRouteHandler(handler, {
+      url: '/dsh-my-go/boom',
+      body: JSON.stringify({ type: 'client-request', rpcId: 'r-9', method: 'boom', payload: {} }),
+    })
+    assert.equal(res.status, 200, '宿主 rpcFetchHandler 在这里回裸 500（面板只能显示传输错），本壳回合法帧')
+    assert.equal(res.frame.type, 'server-response')
+    assert.equal(res.frame.rpcId, 'r-9')
+    assert.equal(res.result.ok, false)
+    assert.equal(res.result.error.code, 'gateway/internal')
+    assert.match(res.result.error.message, /dispatch exploded/)
+    assert.deepEqual(res.result.error.details, {}, '错误信封三字段齐备（浏览器 parseConnectionResponse 硬校验）')
+    assert.ok(warned.some((l) => /panel endpoint boom threw.*dispatch exploded/.test(l)), '抛穿有 warn 留痕')
+  } finally {
+    console.warn = origWarn
+  }
+})
+
+test('F1 体积闸：content-length 预检与流式超限都出 413 并断开请求', async () => {
+  const handler = host.createPanelRpcHandler({
+    connection: { requestRejection: () => undefined },
+    dispatch: async () => ({ ok: true, value: 1 }),
+    maxBodyBytes: 64,
+  })
+  const declared = await callWebRouteHandler(handler, {
+    url: '/dsh-my-go/listTools',
+    headers: { 'content-length': '9999' },
+    body: '{}',
+  })
+  assert.equal(declared.status, 413)
+  assert.equal(declared.headers.connection, 'close')
+  assert.equal(declared.req.destroyed, true, '超限请求被主动断开（不给它继续喂体的机会）')
+  const streamed = await callWebRouteHandler(handler, {
+    url: '/dsh-my-go/listTools',
+    body: 'x'.repeat(200),
+  })
+  assert.equal(streamed.status, 413, '没声明 content-length 时靠流式计量兜住')
+})
+
+test('F1 降级形态：无 webServer 服务时 warn 留痕并跳过注册，存储面照常挂载', async () => {
+  const warned = []
+  const origWarn = console.warn
+  console.warn = (...a) => { warned.push(a.map(String).join(' ')) }
+  try {
+    const panel = createPanelRpcTransport()
+    const settings = { register: () => ({}), get: () => undefined, mutate: async () => {} }
+    const ctx = {
+      get: (name) => {
+        if (name === 'settings') return settings
+        if (name === 'connection') return panel.connection
+        return undefined // headless / CLI profile：webServer 服务不存在
+      },
+      on: () => {},
+      inject: (_deps, cb) => cb({ effect: (fn) => fn() }),
+    }
+    await host.apply(ctx, NO_INSTALL)
+    assert.equal(panel.routes.size, 0, '零注册（不是抛错，也不是半挂）')
+    assert.ok(warned.some((l) => /webServer service unavailable/.test(l)), '跳过必须留痕')
+  } finally {
+    console.warn = origWarn
+  }
+})
+
+test('F1 断开兜底：请求体迭代抛穿（客户端中途断开）不得逃逸成 unhandledRejection', async () => {
+  const warned = []
+  const origWarn = console.warn
+  console.warn = (...a) => { warned.push(a.map(String).join(' ')) }
+  try {
+    const handler = host.createPanelRpcHandler({
+      connection: { requestRejection: () => undefined },
+      dispatch: async () => { throw new Error('分发绝不该被走到') },
+    })
+    const res = await callWebRouteHandler(handler, {
+      url: '/dsh-my-go/snapshot',
+      streamError: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+    })
+    assert.equal(res.status, 400, '断开请求收口成 400，而不是让 promise 逃逸')
+    assert.ok(warned.some((l) => /panel channel request aborted.*read ECONNRESET/.test(l)), '断开留痕一行（带原始异常正文）')
+    assert.ok(!warned.some((l) => /panel endpoint/.test(l)), '体都没读完，分发绝不启动')
+  } finally {
+    console.warn = origWarn
+  }
+})
+
+test('F1 回归闸：宿主缺陷面 connection.rpc.handle 仍会抛，本半不得退回它', async () => {
+  const panel = createPanelRpcTransport()
+  assert.throws(() => panel.connection.rpc.handle('/dsh-my-go', () => {}), /without inject/)
+  const { ctx, rpc } = mockHostCtx({})
+  await host.apply(ctx, NO_INSTALL)
+  assert.equal((await rpc('/dsh-my-go', 'listTools', {})).ok, true, '通道靠 webServer 直注册存活')
 })
 
 // ── E3/B-01 + E8/B-08 + B-09：安装器（参数化 / 摘要 marker / 镜像语义）────

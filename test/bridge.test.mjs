@@ -1473,15 +1473,33 @@ test('0.3.0-tisitan.3: 完工连带清理求助单发可见通知；无求助单
     const { ctx, listeners, dispatch, tools } = mockCtxFull({
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
-      subagentsExtra: { reportFrom: async () => 'delivered' },
+      subagentsExtra: { reportFrom: async () => 'delivered', followup: async () => 'msg-cleanup' },
     })
     await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
     const goWork = tools.get('go_work')
     await goWork.execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
-    // sess-1 挂起一张求助单后直接完工：连带清理必须 warn + 通知父会话各一次
+    // 同一轮连挂两张求助单（现实形态：模型一轮里发两次 need_help），此后 forward 只
+    // 销被转发那张，剩一张未处置——这才是本用例要的「完工时名下仍有活单」形态
     const childExec = { agent: { id: 'sess-1', session: { header: { parentSession: 'parent-1' } } }, signal: new AbortController().signal }
-    await tools.get('need_help').execute({ intent: 'explore', content: '帮我读个文件' }, childExec)
-    assert.equal(snapOf('parent-1').helpRequests.length, 1)
+    const h1 = await tools.get('need_help').execute({ intent: 'explore', content: '帮我读个文件' }, childExec)
+    await tools.get('need_help').execute({ intent: 'read_doc', content: '再借个文档' }, childExec)
+    assert.equal(snapOf('parent-1').helpRequests.length, 2)
+    // ── 口径变更（裁定 2026-09-09；触发事项：主人报修事项3「挂起回合被当成完工」）──
+    // 旧口径：need_help 挂起后那一轮的 completed end 就是完工 → finish 连带清理求助
+    // 单 + 通知。新口径：那条 end 是一次求助的中场哨，走 E8（suspended-help-hold）
+    // 静默出口——不落史、不清求助单、不过报告闸门、不腾槽（挂起子代续占单线槽位，
+    // 等主编 forward/continue）。因此「完工连带清理」改由**非挂起路径**驱动：先
+    // forward 处置掉一张（记录复籍 running、只销被转发那张），真完工 end 才连带清理。
+    dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '挂起轮的收尾一句' }] })
+    assert.equal(warnings.filter((l) => l.includes('suspended turn settling')).length, 1, '挂起轮 end 走 E8 静默出口并留痕')
+    assert.equal(warnings.filter((l) => l.includes('pending help request(s) cleared')).length, 0, '挂起轮不清理求助单')
+    assert.equal(snapOf('parent-1').helpRequests.length, 2, '两张单都留在册上等主编处置')
+    assert.equal(snapOf('parent-1')?.history?.length ?? 0, 0, '不落史：挂起轮不是完工')
+    assert.equal(currentOf('parent-1')?.status, 'waiting', '记录留在 waiting 原位（占槽等处置）')
+    const fw = await tools.get('forward').execute({ from: h1.helpRequestId, target: 'sess-1' }, execOf(parent))
+    assert.equal(fw.kind, 'continue', 'forward target=childId 即 continue 等效（复籍）')
+    assert.equal(currentOf('parent-1')?.status, 'running', '复籍后脱离挂起态')
+    assert.equal(snapOf('parent-1').helpRequests.length, 1, '只销被转发那张，剩那张仍未处置')
     dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done anyway' }] })
     assert.equal(warnings.filter((l) => l.includes('pending help request(s) cleared')).length, 1, 'warn 恰一次')
     const notices = injected.filter((m) => m.content?.[0]?.text?.includes('未处置求助单已连带清理'))

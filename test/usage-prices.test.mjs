@@ -10,6 +10,7 @@ import {
   PRICE_KEY_PATTERN,
   apply as hostApply,
 } from '../lib/index.js'
+import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-usage-prices-home-'))
 
@@ -23,22 +24,22 @@ const USAGE_PRICES = {
 
 function mockHostCtx({ settings } = {}) {
   const listeners = new Map()
-  const rpcHandlers = new Map()
+  const panel = createPanelRpcTransport()
   const ctx = {
     get: (name) => {
       if (name === 'settings') return settings
+      if (name === 'connection') return panel.connection
+      if (name === 'webServer') return panel.webServer
       return undefined
     },
     on: (event, fn) => { listeners.set(event, fn) },
-    inject: (_deps, cb) => {
-      try { cb({ connection: { rpc: { handle: (channel, fn) => { rpcHandlers.set(channel, fn) } } } }) } catch { /* no connection */ }
-    },
+    inject: panel.inject,
     effect: (fn) => { try { fn() } catch { /* section mocks */ } },
     systemPrompt: { section: () => {} },
     tools: { register: () => {} },
     subagents: {},
   }
-  return { ctx, listeners, rpc: async (channel, endpoint, payload) => rpcHandlers.get(channel)(endpoint, payload) }
+  return { ctx, listeners, rpc: panel.rpc }
 }
 
 async function captureSchema() {

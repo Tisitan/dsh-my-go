@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
 import * as broker from '../preset/tools/broker.mjs'
-import { REPORT_CLAUSE } from '../preset/shared/report-format.mjs'
+import { REDISPATCH_RESUME_PREFIX, REPORT_CLAUSE } from '../preset/shared/report-format.mjs'
 import { createMockCtx, withRealSignalContract, execOf, snapOf, currentOf, waitFor, removeHomeWithRetry } from './helpers/mock-ctx.mjs'
 
 const parentOf = (id) => ({ id, session: { header: {} } })
@@ -99,8 +99,11 @@ test('备选重派路径同样注入条款（attemptFallbackRedeploy → spawnCh
     assert.equal(specs.length, 2, '链首失败 → 自动切 fallbacks[0] 重派')
     const prompt = specs[1].request.prompt
     assert.equal(prompt.length, 2, '重派同走 spawnChild：任务原文 + 条款尾块')
-    assert.ok(prompt[0].text.includes('build it'), '同 prompt 重派')
+    assert.ok(prompt[0].text.startsWith(REDISPATCH_RESUME_PREFIX), '重派首项携带恢复前缀（A1，单源 import）')
+    assert.ok(prompt[0].text.includes('build it'), '同 prompt 重派（前缀之后任务原文仍在）')
     assert.equal(prompt[1].text, REPORT_CLAUSE, '备选重派同样携带条款（一处改动两路同覆盖）')
+    // A1 边界：首发路径（specs[0]，go_work 直派）一个字都不加
+    assert.ok(!specs[0].request.prompt[0].text.includes(REDISPATCH_RESUME_PREFIX), '首发路径零注入恢复前缀')
   } finally {
     await cleanup()
   }

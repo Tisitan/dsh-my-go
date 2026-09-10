@@ -1,7 +1,7 @@
 // dsh-my-go — board 存储层直测（第一期步骤 1.1，shared 纯模块脱离 mock-ctx）。
 //
 // 覆盖（规划 1.1 验收 + D1 已裁决语义）：
-//   原子写（tmp 残骸清理、覆盖写、失败 rethrow）/ 行切片边界矩阵（offset=0、
+//   原子写（tmp 残骸清理、覆盖写 + .prev.md 留痕、失败 rethrow）/ 行切片边界矩阵（offset=0、
 //   超尾、limit 超总长、limit=0、负数、NaN/缺省、空文件、无尾换行）/
 //   段名注入探针（'../x'、'a/b'、'..'、Windows 盘符——变异探针约定：去掉
 //   boardPath 的 encodeSegment，相对穿越探针用例必红，已实测后恢复）。
@@ -10,10 +10,10 @@
 // 换入独立临时目录；node --test 文件间进程隔离、文件内串行，env 还原在 finally。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
-import { boardRoot, writeBoard, readBoardSlice } from '../preset/shared/board.mjs'
+import { boardRoot, writeBoard, readBoardSlice, hasBoardEntry } from '../preset/shared/board.mjs'
 import { encodeSegment } from '../preset/shared/archive.mjs'
 import { removeHomeWithRetry } from './helpers/mock-ctx.mjs'
 
@@ -81,6 +81,33 @@ test('writeBoard 覆盖写：同 (sessionId, childId) 重写即替换', async ()
     assert.equal(reread.text, 'new report\nline2', '覆盖写后读回新内容')
     assert.equal(reread.totalLines, 2)
     assert.equal(bytes, Buffer.byteLength('new report\nline2', 'utf-8'))
+  })
+})
+
+// 报告板覆盖卫生（顺手项A）：覆盖不再让上一版无声蒸发（取证现场：一次落板把
+// 4993B 原文压成 777B 摘要，无从对照）。留痕只保最近一版，且刻意对读侧隐形——
+// hasBoardEntry 也只认正板，否则 .prev 会让闸门永久放行、把「板为准」变成「板
+// 上任何历史痕迹为准」。
+test('writeBoard 覆盖留痕：旧板改名 <childId>.prev.md，只保最近一版，且不进任何读路径', async () => {
+  await withBoardHome(async () => {
+    const dir = join(boardRoot(), 'sess-pv')
+    await writeBoard('sess-pv', 'child-pv', '第一版原文')
+    await writeBoard('sess-pv', 'child-pv', '第二版原文')
+    assert.equal((await readBoardSlice('sess-pv', 'child-pv')).text, '第二版原文', '正板恒为最新一版')
+    assert.equal(readFileSync(join(dir, 'child-pv.prev.md'), 'utf-8'), '第一版原文', '被顶掉的旧板让位到 .prev.md')
+    await writeBoard('sess-pv', 'child-pv', '第三版原文')
+    assert.equal(readFileSync(join(dir, 'child-pv.prev.md'), 'utf-8'), '第二版原文', '同名 .prev 直接覆盖：只留最近一版')
+    assert.deepEqual(
+      readdirSync(dir).filter((f) => !f.startsWith('child-pv')).sort(),
+      [],
+      '目录里不产生第三种留痕形态',
+    )
+    assert.equal(readdirSync(dir).sort().join(','), 'child-pv.md,child-pv.prev.md')
+    assert.equal(hasBoardEntry('sess-pv', 'child-pv'), true, '正板在 → 有货')
+    assert.equal(hasBoardEntry('sess-pv', 'child-pv.md'), false, '段名不同形即不同键（.prev 不被误认成正板）')
+    rmSync(join(dir, 'child-pv.md'), { force: true })
+    assert.equal(hasBoardEntry('sess-pv', 'child-pv'), false, '正板摘除后只剩 .prev：判无货（留痕不参与闸门兜底）')
+    assert.equal(hasBoardEntry('sess-pv', 'child-absent'), false, '缺席即 false，不抛出')
   })
 })
 

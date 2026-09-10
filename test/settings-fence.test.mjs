@@ -12,33 +12,28 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as host from '../lib/index.js'
 import { rosterEntries, formatRosterRow, renderRosterBriefing } from '../preset/shared/roles.mjs'
+import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-fence9-'))
 
 const NO_INSTALL = { installPreset: false }
 const bridgeKey = Symbol.for('dsh-my-go.snapshot')
 
-function mockHostCtx({ llm, settings, handleArity = 2 } = {}) {
+function mockHostCtx({ llm, settings } = {}) {
   const listeners = new Map()
-  const rpcHandlers = new Map()
+  const panel = createPanelRpcTransport()
   const ctx = {
     get: (name) => {
       if (name === 'llm') return llm
       if (name === 'settings') return settings
+      if (name === 'connection') return panel.connection
+      if (name === 'webServer') return panel.webServer
       return undefined
     },
     on: (event, fn) => { listeners.set(event, fn) },
-    inject: (_deps, cb) => {
-      const handle = handleArity === 3
-        ? (channel, fn, options) => { rpcHandlers.set(channel, fn); rpcHandlers.set(`${channel}:options`, options) }
-        : (channel, fn) => { rpcHandlers.set(channel, fn) }
-      try {
-        cb({ connection: { rpc: { handle } } })
-      } catch { /* no connection in this deployment shape */ }
-    },
+    inject: panel.inject,
   }
-  const rpc = (channel, endpoint, payload) => rpcHandlers.get(channel)(endpoint, payload)
-  return { ctx, listeners, rpc }
+  return { ctx, listeners, rpc: panel.rpc }
 }
 
 // settings 替身：revision 由 describe 供真源（对齐宿主 SettingsDescriptor），

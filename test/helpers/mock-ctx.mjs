@@ -54,6 +54,13 @@ const deepFreeze = (value) => {
  * @param options.captureEffects  捕获 effect 作用域返回的清理函数（卸载路径
  *                                 断言用，如台账防抖窗 flush）：真实 cordis 要
  *                                 等 scope Dispose 才调它，替身默认丢弃
+ * @param options.sectionOrders   宿主代开关：传入 SECTION_ORDERS 表（如
+ *                                 { DEPLOYMENT_PERSONA_PREFIX: 0,
+ *                                   DEPLOYMENT_PERSONA_SUFFIX: 10200 }）即 0.1.5+
+ *                                 新宿主形态，替身带上 getSectionOrder（与真宿主
+ *                                 同为纯查表：未知键返回 undefined、不抛）；不传
+ *                                 保持旧宿主形态（方法缺席），persona 双代分支
+ *                                 两代都能覆盖
  * @returns ctx + { listeners: Map<event, fn[]>, dispatch(event, ...args),
  *           registeredHandlers(): {event: n} 每事件注册数, ... }
  */
@@ -70,6 +77,7 @@ export function createMockCtx({
   captureSections = false,
   captureRestrict = false,
   captureEffects = false,
+  sectionOrders,
 } = {}) {
   if (!keepHome) process.env.DSH_HOME = mkdtempSync(join(tmpdir(), homePrefix))
   const listeners = new Map()
@@ -150,6 +158,12 @@ export function createMockCtx({
         sectionNames.add(name)
         if (captureSections) sections.push(def)
       },
+      // 宿主代开关（见 options.sectionOrders）：真宿主的 getSectionOrder 就是
+      // SECTION_ORDERS 纯查表——未知键返回 undefined、绝不抛，替身同形，
+      // 否则「旧宿主键缺席」这一代根本测不出来。
+      ...(sectionOrders === undefined
+        ? {}
+        : { getSectionOrder: (name) => sectionOrders[name] }),
     },
     tools: {
       register: (tool) => {
@@ -224,3 +238,105 @@ export const removeHomeWithRetry = async (path, { attempts = 8, delayMs = 25 } =
 
 // 最小 live Agent 形状（broker 的星型闸与 sender 校验只认这三档字段）
 export const agentOf = (id, header = {}) => ({ id, session: { header } })
+
+// ── 面板 RPC 通道替身（F1：lib 半改为 webServer 直注册后的唯一驱动入口）──────────
+// 真实形态逐件对齐：connection 只暴露 requestRejection 公开面（并保留一枚会抛的
+// rpc.handle，把 0.1.5-alpha.1 的宿主缺陷原样搬进替身——谁退回 rpc.handle 谁当场
+// 红），webServer.register 收 prefix route，驱动侧走 node:http 的 req/res。于是
+// 鉴权直出、信封封装、endpoint 解析全部在替身里真跑一遍，用例拿到的 result 与
+// 浏览器 connection.rpc.call 解析后的东西同形。
+
+const fakeRequest = ({ method = 'POST', url, headers = {}, body = '', streamError }) => ({
+  method,
+  url,
+  headers: { 'content-type': 'application/json', ...headers },
+  destroyed: false,
+  destroy() { this.destroyed = true },
+  [Symbol.asyncIterator]: async function* () {
+    if (body !== '') yield Buffer.from(body)
+    // 客户端中途断开：node:http 的请求流在迭代中抛穿（AbortError / ECONNRESET）
+    if (streamError) throw streamError
+  },
+})
+
+const fakeResponse = () => ({
+  statusCode: 0,
+  headers: {},
+  body: '',
+  ended: false,
+  writeHead(status, headers) {
+    this.statusCode = status
+    if (headers) Object.assign(this.headers, headers)
+  },
+  end(chunk) {
+    this.body = chunk === undefined ? '' : String(chunk)
+    this.ended = true
+  },
+})
+
+/**
+ * 直接驱动一枚 node:http route handler：造 req（异步可迭代 + destroy）与 res（记录
+ * 状态/头/正文），回 HTTP 现场 + 解出的信封。通道壳自身的抛穿支路也走这里，不必
+ * 先注册一条路由。
+ */
+export async function callWebRouteHandler(handler, spec = {}) {
+  const req = fakeRequest({
+    method: spec.httpMethod ?? 'POST',
+    url: spec.url ?? '/',
+    headers: spec.headers ?? {},
+    body: spec.body ?? '',
+    streamError: spec.streamError,
+  })
+  const res = fakeResponse()
+  await handler(req, res)
+  let frame
+  try {
+    frame = JSON.parse(res.body)
+  } catch { /* 非 JSON 响应（404/415/400 一类纯文本）本就没有信封 */ }
+  return { status: res.statusCode, headers: res.headers, body: res.body, req, frame, result: frame?.result }
+}
+
+export function createPanelRpcTransport({ rejection, channel = '/dsh-my-go' } = {}) {
+  const routes = new Map()
+  const webServer = {
+    register: (route) => {
+      const key = `${route.kind} ${route.path}`
+      if (routes.has(key)) throw new Error(`duplicate webServer route: ${key}`)
+      routes.set(key, route)
+      return () => routes.delete(key)
+    },
+  }
+  const connection = {
+    requestRejection: () => rejection,
+    rpc: {
+      handle: () => { throw new Error('cannot get property "webServer" without inject') },
+      call: () => { throw new Error('connection.rpc is a host-side registry, not a caller') },
+    },
+  }
+  const childCtx = { effect: (fn) => fn() }
+  const inject = (_deps, cb) => cb(childCtx)
+  /** 低层驱动：自定义 method / url / headers / 原始 body，回 HTTP 现场 + 解出的信封。 */
+  const request = async (spec = {}) => {
+    const ch = spec.channel ?? channel
+    const route = routes.get(`prefix ${ch}`)
+    if (!route) throw new Error(`no webServer route registered for prefix ${ch}`)
+    const body = spec.body !== undefined
+      ? (typeof spec.body === 'string' ? spec.body : JSON.stringify(spec.body))
+      : JSON.stringify({
+        type: 'client-request',
+        rpcId: spec.rpcId ?? 'rpc-test',
+        method: spec.method ?? spec.endpoint,
+        payload: spec.payload,
+      })
+    return callWebRouteHandler(route.handler, {
+      httpMethod: spec.httpMethod,
+      url: spec.url ?? `${ch}/${spec.endpoint}`,
+      headers: spec.headers,
+      body,
+    })
+  }
+  /** 高层驱动：等价浏览器 rpc.call(channel, endpoint, payload)，回 result 信封。 */
+  const rpc = async (ch, endpoint, payload) => (await request({ channel: ch, endpoint, payload })).result
+  return { connection, webServer, routes, inject, request, rpc }
+}
+

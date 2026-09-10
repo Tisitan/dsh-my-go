@@ -73,6 +73,29 @@ test('suspend marks waiting; resume flips back to running', () => {
   assert.equal(o.helpRequests.size, 0)
 })
 
+test('stallNotified（挂起停摆的 episode 标记）随挂起/复籍/落账复位，且不随记录入史', () => {
+  const o = new Orchestration()
+  const rec = o.beginSpawning('hermes', 'task')
+  o.bindChild(rec.childId, 'sess-1')
+  o.suspend('sess-1', { id: 'help-1', childId: 'sess-1', intent: 'execute', content: 'cmd' })
+  // broker 报完停摆就是这么打的标（复制换槽，与本类迁移同形）
+  o.currentMap.set('sess-1', { ...o.currentMap.get('sess-1'), stallNotified: true })
+  assert.equal(o.currentMap.get('sess-1').stallNotified, true, '标在占槽记录上')
+  o.resolveHelp('help-1')
+  const back = o.resume('sess-1')
+  assert.equal('stallNotified' in back, false, '复籍即 episode 结束：不清下一次挂起就永久哑火')
+  // 异常路径（标还在册时又挂起）：suspend 同点复位，标记不可能跨挂起存活
+  o.currentMap.set('sess-1', { ...o.currentMap.get('sess-1'), stallNotified: true })
+  const again = o.suspend('sess-1', { id: 'help-2', childId: 'sess-1', intent: 'execute', content: 'cmd2' })
+  assert.equal('stallNotified' in again, false, '再次挂起 = 新 episode')
+  // 落账：标记不入 history（history 即台账持久化的桶），复活回来的记录因此恒干净
+  o.currentMap.set('sess-1', { ...o.currentMap.get('sess-1'), stallNotified: true })
+  const done = o.finish('sess-1', 'conclusion')
+  assert.equal('stallNotified' in done, false, 'finish 剥除标记（返回副本）')
+  assert.equal('stallNotified' in o.history[0], false, 'history/台账记录不携带该瞬态字段')
+  assert.equal('stallNotified' in o.revive('sess-1'), false, '复活记录天然干净')
+})
+
 test('revive moves a finished record from history back into currentMap', () => {
   const o = new Orchestration()
   const rec = o.beginSpawning('hephaestus', 'task')

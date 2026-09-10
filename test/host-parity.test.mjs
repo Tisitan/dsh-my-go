@@ -24,6 +24,7 @@ import * as sharedFailure from '../preset/shared/failure.mjs'
 import * as sharedArchive from '../preset/shared/archive.mjs'
 import * as sharedRoles from '../preset/shared/roles.mjs'
 import * as sharedMisc from '../preset/shared/misc.mjs'
+import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
 
 // 测试隔离：DSH_HOME 指向独立临时目录（getBuiltinPersona 读盘用），并且全部
 // lib.apply 都带 NO_INSTALL —— 一次性安装同步由 config 闸**真**短路（0.3.0-tisitan.8
@@ -35,24 +36,22 @@ const NO_INSTALL = { installPreset: false }
 
 function mockHostCtx({ llm, settings, toolsRegistry } = {}) {
   const listeners = new Map()
-  const rpcHandlers = new Map()
+  const panel = createPanelRpcTransport()
   const ctx = {
     get: (name) => {
       if (name === 'llm') return llm
       if (name === 'settings') return settings
       if (name === 'tools') return toolsRegistry
+      if (name === 'connection') return panel.connection
+      if (name === 'webServer') return panel.webServer
       return undefined
     },
     on: (event, fn) => { listeners.set(event, fn) },
-    // connection.rpc 通道捕获：saveSettings/loadSettings 端点经此注册，
-    // 测试用返回的 rpc() 直呼端点（真实 DSH 由 WebUI 走同一入口）。
-    inject: (_deps, cb) => {
-      try {
-        cb({ connection: { rpc: { handle: (channel, fn) => { rpcHandlers.set(channel, fn) } } } })
-      } catch { /* no connection in this deployment shape */ }
-    },
+    // 面板通道替身（F1）：lib 半在 inject(['connection','webServer']) 里直注册
+    // webServer prefix route，测试经 panel.rpc 打完整 HTTP 壳（鉴权 + 信封真跑）。
+    inject: panel.inject,
   }
-  return { ctx, listeners, rpc: (channel, endpoint, payload) => rpcHandlers.get(channel)(endpoint, payload) }
+  return { ctx, listeners, panel, rpc: panel.rpc }
 }
 
 const readBothHalves = () => Promise.all([
@@ -133,7 +132,8 @@ test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有
   const [brokerSrc, hostSrc] = await readBothHalves()
   // lib 半：settings 注册面 + RPC 单通道全端点
   assert.equal(countOf(hostSrc, 'settings.register('), 1, 'lib 半注册 settings 命名空间')
-  assert.equal(countOf(hostSrc, "rpc.handle('/dsh-my-go'"), 1, 'lib 半 RPC 单通道')
+  assert.equal(countOf(hostSrc, 'path: PANEL_CHANNEL'), 1, 'lib 半面板通道经 webServer 直注册（唯一注册点）')
+  assert.equal(countOf(hostSrc, "rpc.handle('/dsh-my-go'"), 0, '宿主缺陷面 connection.rpc.handle 不得复活（0.1.5-alpha.1 下通道静默失踪）')
   for (const endpoint of ['snapshot', 'listModels', 'listTools', 'getBuiltinPersona', 'loadSettings', 'saveSettings', 'getUsage']) {
     assert.equal(countOf(hostSrc, `endpoint === '${endpoint}'`), 1, `lib 半保留端点: ${endpoint}`)
   }
@@ -141,6 +141,7 @@ test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有
   // broker 半：只读 settings、零 RPC，快照桥唯一发布者
   assert.equal(countOf(brokerSrc, 'settings.register('), 0, 'broker 半不重复注册 settings（只读）')
   assert.equal(countOf(brokerSrc, 'rpc.handle('), 0, 'broker 半零 RPC 端点')
+  assert.equal(countOf(brokerSrc, 'webServer.register('), 0, 'broker 半零 webServer 路由注册（通道唯一归属 lib 半）')
   assert.ok(countOf(brokerSrc, "globalThis[Symbol.for('dsh-my-go.snapshot')]") >= 1, 'broker 半发布快照桥')
 })
 
@@ -205,8 +206,10 @@ test('lib 半本批修复在册（源码断言）：留痕/失败隔离/参数�
   // B-10：安装根单一来源，DSH_HOME/.agent-presets 不得再被手抄
   assert.equal(countOf(hostSrc, "'.agent-presets'"), 1, 'B-10 预设根唯一出处（presetInstallRoot）')
   assert.equal(countOf(hostSrc, 'function presetInstallRoot('), 1, 'B-10 安装根函数单点')
-  // E9/B-07：rpc.handle arity 探测在册（通道注册只有一处由上方 P2 钉，此处不重复计数）
-  assert.ok(countOf(hostSrc, 'rpc.handle.length >= 3') >= 1, 'E9 arity 探测在册')
+  // E9/B-07 → F1 换壳：rpc.handle 的 arity 探测随宿主缺陷面一起退役（现在连
+  // rpc.handle 都不再调），注册点的唯一性由上方 P2 钉，此处只钉新壳在册。
+  assert.ok(countOf(hostSrc, 'createPanelRpcHandler(') >= 1, 'F1 通道壳（鉴权直出 + 信封封装）在册')
+  assert.equal(countOf(hostSrc, 'rpcHandleExtras'), 0, 'rpc.handle arity 探测随缺陷面退役')
   // B-06 半面：错误信封合规——每个 error 分支都带 details。
   // needle 自 0.3.0-tisitan.9 起从 `details: {}` 放宽为 `details:`：E6 的 conflict 分支
   // details 要携带 {expected, actual}，只认空对象会把「写了有效 details」误判成

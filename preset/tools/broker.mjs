@@ -46,7 +46,7 @@ import { homedir } from 'node:os'
 // broker 以 preset 内相对路径 import（../shared/），lib 以包内路径 import
 // （../preset/shared/）——两种部署形态下路径均成立（preset/ 由
 // ensurePresetInstalled 整拷，shared/ 随拷且安装后有存在性校验）。
-import { AGENT_TYPES, SELF_REGISTERED_TOOLS, ADJACENT_BYPASS_TOOLS, HISTORY_CAP, RUN_CODE_TOOL } from '../shared/constants.mjs'
+import { AGENT_TYPES, SELF_REGISTERED_TOOLS, ADJACENT_BYPASS_TOOLS, AGENT_TEAMS_TOOLS, HISTORY_CAP, RUN_CODE_TOOL } from '../shared/constants.mjs'
 import { normalizeTurnFailure, isFallbackable } from '../shared/failure.mjs'
 import { readArchivedTurnFailure } from '../shared/archive.mjs'
 import { mergeRoleBindings, rosterKeys as sharedRosterKeys, rolePersona as sharedRolePersona, resolveRoleToolFilter as sharedResolveRoleToolFilter, renderRosterBriefing as sharedRenderRosterBriefing, rosterEntries as sharedRosterEntries, formatRosterRow as sharedFormatRosterRow } from '../shared/roles.mjs'
@@ -64,12 +64,12 @@ import { createMetrics } from './metrics.mjs'
 // board 存储层（第一期 1.1）：report_submit（1.3）落板唯一出口，读侧切片
 // 归 report_fetch（1.6）与 1.5 的「已落板」探测。段名编码与根焊死都在
 // shared/board.mjs 单点。
-import { writeBoard, readBoardSlice } from '../shared/board.mjs'
+import { writeBoard, readBoardSlice, hasBoardEntry } from '../shared/board.mjs'
 // 摘要格式条款（第一期 1.2 单源，1.4 注入 spawnChild）：条款措辞与解析器同形
 // 由 test/report-format.test.mjs 锁定——此处 import 复用，不另抄第二份文本。
 // RELAY_CLAUSE（三期 3.6）：接力链 hop 的下游验收条款，composeRelayPrompt 在
 // 数据块在场时注入，同样单源复用。
-import { RELAY_CLAUSE, REPORT_CLAUSE, validateReportArgs } from '../shared/report-format.mjs'
+import { REDISPATCH_RESUME_PREFIX, RELAY_CLAUSE, REPORT_CLAUSE, validateReportArgs } from '../shared/report-format.mjs'
 // 泳道原语（二期 2.2/2.3，read-pool-semantics.md §一/§二）：laneOf 判定表 +
 // 容量钳制。laneOf 同时是 dispatchWork/复活闸/advanceQueue 的上岗判定输入
 // （Orchestration 本体已在上方 import，此处不重复声明）。
@@ -402,6 +402,10 @@ export async function apply(ctx, config = {}) {
   // 覆回去——异步链的 .then 在清理函数之后才跑）。
   let ledgerClosed = false
   function ledgerPayload() {
+    // 占槽记录（currentMap：spawning/running/waiting）从来不入档，本档只有 history
+    // 与 chains 两桶，挂起停摆的 episode 标记 stallNotified 因此天然不持久化
+    // （finish 挪史时状态机同点剥除，见 shared/orchestration.mjs）——重启后
+    // episode 归零，同一桩挂起最坏重报一次，比「带着死标记永久哑火」好。
     const parents = {}
     const chains = {}
     for (const [pid, orch] of orchestrations) {
@@ -537,6 +541,45 @@ export async function apply(ctx, config = {}) {
     console.warn(`[dsh-my-go] subagent ${String(childId)} finished: ${count} pending help request(s) cleared along with it`)
     notifyOwner(ownerPid, `[dsh-my-go] 子代理 ${String(childId)} 完工，其名下 ${count} 张未处置求助单已连带清理`)
   }
+  // ── 挂起停摆可观测性（本批）───────────────────────────────────────────────
+  // E8（suspended-help-hold）把挂起轮那条 end 静默吞掉，代价是「槽位被一个不会
+  // 自己醒的子代占着、后面的任务永无推进事件」这件事主编看不见。补两个触发点，
+  // 同一份文案、同一枚守卫：
+  //   T1 end 归因落到 E8 的那一刻（挂起瞬间）——队列里有货才报（没货就没有停摆，
+  //      主编手里那张求助单已经足够）。
+  //   T2 go_work 入队时槽主是 waiting——新任务派进了一条不会自己推进的流水线。
+  // 防刷屏：每次停摆 episode 只报一次，标记打在占槽记录上（stallNotified），
+  // T1/T2 共用以「谁先撞上谁报」为准；记录复籍（resume）/再次挂起（suspend）/
+  // 落账（finish）时由状态机清除（见 shared/orchestration.mjs），故新 episode
+  // 可再报。标记不入台账：episode 的生命周期与进程同寿，落档只会留下永不复位的
+  // 死标记，让重启后的同一轮挂起哑掉通报。
+  function buildStallNotice(orch, holder) {
+    if (!orch || !holder || holder.status !== 'waiting') return undefined
+    const queueLen = orch.queue.length
+    if (queueLen <= 0) return undefined
+    if (holder.stallNotified) return undefined
+    const helps = [...orch.helpRequests.values()].filter((h) => h.childId === holder.childId)
+    const help = helps.length > 0 ? helps.reduce((a, b) => ((Number(a.createdAt) || 0) >= (Number(b.createdAt) || 0) ? a : b)) : undefined
+    const helpPart = help
+      ? `求助单 ${help.id}（${help.intent}）: ${(help.content ?? '').replace(/\s+/g, ' ').slice(0, HELP_CONTENT_MAX)}`
+      : '求助单: 名下已无在册单据'
+    // 打标走「新对象换槽」而非原地改：占槽记录在别处（快照/求助单读路径）是共享
+    // 引用，状态机的每一次迁移都是复制换键，本处守同一条规矩。只 bump 不 emit：
+    // 标记刻意不落台账（episode 与进程同寿），不该为它触发一次无意义的档案写。
+    orch.currentMap.set(holder.childId, { ...holder, stallNotified: true })
+    bump()
+    return `[dsh-my-go] 流水线停摆: ${holder.childId} (${holder.agentType}) 挂起占槽，队列压着 ${queueLen} 个任务无人推进；${helpPart}。处置: forward/continue 处置求助单后流水线自动恢复`
+  }
+  // T2 的槽主挑选：报的是「挡住这条新任务的那位」。读池开启（容量 ≥2）时只有同
+  // 泳道的挂起记录才挡得住本任务，跨泳道去报等于把停摆记错了人头上；而默认的
+  // 全局单线（readPoolSize=1，isLaneFree 退化为 size===0）下任何挂起记录都挡全场，
+  // 同泳道挑不到就取任意一条挂起者。
+  function stallHolder(orch, agentType) {
+    const waiting = [...orch.currentMap.values()].filter((r) => r.status === 'waiting')
+    if (waiting.length === 0) return undefined
+    const lane = laneOf(agentType)
+    return waiting.find((r) => (r.lane ?? laneOf(r.agentType)) === lane) ?? waiting[0]
+  }
   // 失败附因兜底：subagent/end 的通知层载荷只有 stopReason 的 kind，
   // error.message 完整存在于子会话档案的 turn/end reason.error。
   // 0.2.3-tisitan.9：continuable 销毁顺序使 subagent/end 发射晚于 live store 摘除，
@@ -586,21 +629,46 @@ export async function apply(ctx, config = {}) {
   }
 
   // Use loaded sisyphus.md for persona section
-  ctx.effect(() => ctx.systemPrompt.section({
-    name: 'deployment:persona',
-    order: 0,
-    text: (context) => {
-      if (isSubAgentContext(context)) return ''
-      const file = promptCache.get('sisyphus')
-      // sisyphus.md contains both persona and orchestration;
-      // extract just the persona (everything before ## 编排规则)
-      if (file) {
-        const cutPoint = file.indexOf('## 编排规则')
-        return cutPoint > 0 ? file.slice(0, cutPoint).trim() : file.trim()
-      }
-      return SISYPHUS_PERSONA_FALLBACK
-    },
-  }), 'dsh-my-go-broker.persona()')
+  // 段体只有一份，宿主代差异全在注册面（见下方双代分支）。
+  const personaSectionText = (context) => {
+    if (isSubAgentContext(context)) return ''
+    const file = promptCache.get('sisyphus')
+    // sisyphus.md contains both persona and orchestration;
+    // extract just the persona (everything before ## 编排规则)
+    if (file) {
+      const cutPoint = file.indexOf('## 编排规则')
+      return cutPoint > 0 ? file.slice(0, cutPoint).trim() : file.trim()
+    }
+    return SISYPHUS_PERSONA_FALLBACK
+  }
+
+  // 宿主代探测：0.1.5 上游把内建 persona 段拆成 deployment:persona-prefix
+  // (order 0) + deployment:persona-suffix (order 10200) 两段。getSectionOrder
+  // 两版都只是 SECTION_ORDERS 查表（未知键返回 undefined，不抛），故探针天然
+  // 分界：新宿主认 DEPLOYMENT_PERSONA_PREFIX，旧宿主（含无此方法的更老形态）判假。
+  // **两代名字绝不并注**：旧宿主上 'deployment:persona-prefix' 是自由名，注册它
+  // 等于在真 persona 段之外多塞一份人设。
+  const PERSONA_PREFIX_ORDER = ctx.systemPrompt?.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX')
+  if (PERSONA_PREFIX_ORDER !== undefined) {
+    ctx.effect(() => ctx.systemPrompt.section({
+      name: 'deployment:persona-prefix',
+      order: PERSONA_PREFIX_ORDER,
+      text: personaSectionText,
+    }), 'dsh-my-go-broker.persona()')
+    // 遮蔽新宿主多出来的 suffix 槽位：本插件不追加后缀，但必须占住这个名字，
+    // 否则部署方的 personaSuffix 会原样泄进每一个子代上下文。
+    ctx.effect(() => ctx.systemPrompt.section({
+      name: 'deployment:persona-suffix',
+      order: ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX'),
+      text: '',
+    }), 'dsh-my-go-broker.personaSuffix()')
+  } else {
+    ctx.effect(() => ctx.systemPrompt.section({
+      name: 'deployment:persona',
+      order: 0,
+      text: personaSectionText,
+    }), 'dsh-my-go-broker.persona()')
+  }
 
   // Orchestration section: loaded from prompts/sisyphus.md (after persona)
   ctx.effect(() => ctx.systemPrompt.section({
@@ -647,7 +715,10 @@ export async function apply(ctx, config = {}) {
   // Promotion: after first tool call or first response (per policy).
 
   const PROMOTED_BY_SESSION = new WeakMap()
-  const PERSONA_SECTION_NAMES = new Set(['deployment:persona', 'persona'])
+  // 并集非替换：新宿主上我方注册的是 prefix/suffix 两个新名，但旧名仍可能来自
+  // 更老形态的装配输入（以及 :589 兼容分支在旧宿主上注册的 'deployment:persona'）；
+  // phase-1 白名单漏掉任何一代的真名段，开了开关的工种第一轮就是零人设。
+  const PERSONA_SECTION_NAMES = new Set(['deployment:persona', 'persona', 'deployment:persona-prefix', 'deployment:persona-suffix'])
 
   function promotionStateFor(session) {
     let state = PROMOTED_BY_SESSION.get(session)
@@ -878,7 +949,7 @@ export async function apply(ctx, config = {}) {
   async function dispatchWork(agentType, prompt, parent, signal, queuedWork, orchHint) {
     if (!rosterKeys().includes(agentType)) {
       const roster = rosterKeys().map((t) => `- ${t}: ${describeAgent(t, bindings[t]?.persona)}`).join('\n')
-      throw new Error(`unknown agent role: ${String(agentType)} — not in the live roster. Available roles:\n${roster}\n(see the roles section of orchestration_status for model bindings and tool filters)`)
+      throw new Error(`unknown agent role: ${String(agentType)} — not in the live roster. Re-run go_work with one of the available roles:\n${roster}\n(model bindings and tool filters: see the roles section of orchestration_status)`)
     }
     const binding = bindings[agentType] ?? {}
     // 队列路径的父会话兜底已上移到 advanceQueue（按 work.parentId 从
@@ -896,6 +967,11 @@ export async function apply(ctx, config = {}) {
     if (!orch.isLaneFree(laneOf(agentType))) {
       const workId = orch.enqueue(agentType, prompt, parent?.id)
       bump()
+      // T2 停摆期新派工（本批）：任务已入队，而占着本泳道槽位的是一位挂起等处置的
+      // 子代——它不会自己结束，这条 work 也就永远不会被 end 驱动上岗。与 T1 共用
+      // 同一份文案与同一枚 episode 守卫（谁先撞上谁报，另一处自然静默）。
+      const stallNotice = buildStallNotice(orch, stallHolder(orch, agentType))
+      if (stallNotice) notifyParent(parent, stallNotice)
       return { childId: workId, status: 'queued', label: agentLabel(agentType, prompt.slice(0, SUBAGENT_PROMPT_MAX)), queued: true }
     }
     const placeholder = orch.beginSpawning(agentType, prompt)
@@ -1136,12 +1212,11 @@ export async function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'go_work',
     description: [
-      'Dispatch a sub-agent (role) from the live roster to work on a task. The sub-agent starts with an empty context and runs with its role\'s persona and tool set.',
-      'The roster = built-in specialists + custom roles. Before dispatching an unfamiliar name, check the roles section of orchestration_status for the current roster, per-role model bindings and tool filters.',
-      'Concurrency model (read-pool): the write plane (Hermes/Hephaestus/Prometheus/Oracle/Looker/custom roles) runs one at a time; the read plane (Explore/Librarian) runs up to readPoolSize in parallel — default 1 keeps the legacy fully-serial behavior.',
-      'A task whose lane is at capacity is queued and starts when a slot frees in ITS lane. Lane-aware scheduling: a queued task may start while other lanes are still busy, and dispatching a new task can immediately start already-queued work of the same lane when a slot is free (within one session; other sessions always run independent pipelines).',
-      'The result contains a childId you keep for later continue/forward operations.',
-      'If the task was queued (queued=true), the returned id is a queue placeholder (work-*), NOT a childId — once dispatched, find the real childId via orchestration_status.',
+      'Dispatch a NEW sub-agent (role) from the live roster with an empty context, running under its role persona and tool set. Orchestrator-only gate: sub-agents cannot call this — their only uplink is need_help.',
+      'Routing: go_work = fresh task or new specialty; continue = resume an existing childId keeping its context (cheaper for follow-ups on the same task). agent/prompt and the returned childId are a stable contract (never renamed).',
+      'Roster = built-in specialists + custom roles; unknown names are rejected with the roster listed — check the roles section of orchestration_status for bindings and tool filters.',
+      'Lanes: the write plane runs one at a time; the read plane (Explore/Librarian) runs up to readPoolSize in parallel (default 1 = fully serial). A full lane queues the task until a slot frees in ITS lane; other sessions run independent pipelines.',
+      'Anti-polling: after dispatch you MUST stop — no more tool calls, no user reply; completion arrives as a notification. queued=true returns a work-* placeholder, NOT a childId — find the real one via orchestration_status.',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -1184,8 +1259,9 @@ export async function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'continue',
     description: [
-      'Resume a sub-agent by its childId with a new prompt. Use to reject its conclusion (state reason + correction) or relay a follow-up. The sub-agent keeps its current turn context.',
-      'urgency tiers: queued (default) parks behind the current turn and is consumed when it ends; steer surfaces at the running sub-agent\'s next step boundary without interrupting in-flight tool calls (running state only — any other state is delivered as queued); abort interrupts the current turn (started tool calls drain but their side effects are NOT rolled back), then delivers the prompt — it needs the child\'s live agent in the registry, and a non-resident/cold child (nothing to interrupt) is delivered as queued instead. A record still spawning (dispatch not resolved) is rejected outright: its id is a placeholder with no session behind it.',
+      'Resume a sub-agent by childId with a new prompt — orchestrator-only. Use it to reject a conclusion (state reason + correction) or deliver a follow-up; the sub-agent keeps its current turn context — prefer it over a fresh go_work for the same task.',
+      'id/prompt/urgency are a stable contract (never renamed). urgency: queued (default) parks behind the current turn; steer surfaces at the running sub-agent\'s next step boundary without interrupting in-flight tool calls (any other state falls back to queued); abort interrupts the current turn (tool calls drain, side effects NOT rolled back) then delivers the prompt — it needs the child\'s live agent in the registry, else falls back to queued. A still-spawning placeholder id is rejected outright.',
+      'Anti-polling: after a successful call, stop and wait — do not poll or re-send.',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -1282,8 +1358,8 @@ export async function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'need_help',
     description: [
-      'Request assistance from Sisyphus. Use when you need another sub-agent\'s capability (explore/read_doc/look_image), your operation is sandbox/permission denied (execute), you need user clarification (ask_user), or the task is beyond your ability (replan).',
-      'Calling this suspends you: Sisyphus will review the request and either forward it or continue you with a new prompt.',
+      'The sub-agent\'s ONLY uplink to Sisyphus (orchestrators never call this). intent/content: stable contract (never renamed). explore/read_doc/look_image = need another specialist; execute = sandbox/permission denied (exact command in content); ask_user = user clarification (questions in content); replan = beyond your ability.',
+      'Calling this suspends you: Sisyphus forwards the request or continues you with a new prompt — stop and wait.',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -1360,10 +1436,10 @@ export async function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'forward',
     description: [
-      'Forward a pending need_help request to a target sub-agent.',
-      '- target = childId: equivalent to continue with the help content as prompt (same sub-agent resumes).',
-      '- target = agent type: dispatch a NEW sub-agent of that type with the help content as prompt (go_work).',
-      'The forwarded help request is resolved; the requesting child stays suspended until you continue it explicitly.',
+      'Forward a pending need_help request — orchestrator-only; from/target are a stable contract (never renamed).',
+      '- target = childId: continue-equivalent — same sub-agent resumes with the help content as prompt.',
+      '- target = agent type: go_work-equivalent — dispatch a NEW sub-agent with the help content as prompt.',
+      'The forwarded request is resolved; the requesting child stays suspended until you continue it explicitly.',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -1454,7 +1530,7 @@ export async function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'orchestration_status',
-    description: 'Read the current orchestration state: running sub-agent, queue, pending help requests, and run history with conclusions.',
+    description: 'Read the current orchestration state: running sub-agents, lanes, queue, pending help requests, roster, and history with conclusions. Read-only.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: {
       schema: {
@@ -1525,8 +1601,8 @@ export async function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'list_subagents',
     description: [
-      'List every sub-agent this orchestration has spawned: its agent type, childId, current status, and the LAST prompt Sisyphus sent it (go_work or continue).',
-      'Use this to decide whether to continue an existing sub-agent (same task, keep context) or dispatch a new one — especially when reusing an idle/done worker for a follow-up step instead of paying for a fresh context.',
+      'List every sub-agent this orchestration has spawned: agent type, childId, current status, and the LAST prompt Sisyphus sent it (go_work or continue). Read-only.',
+      'Routing: use it to decide continue (same task, keep context) vs go_work (fresh) — reuse an idle/done worker for a follow-up instead of paying for a fresh context.',
     ].join('\n'),
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: {
@@ -1572,12 +1648,12 @@ export async function apply(ctx, config = {}) {
     ctx.tools.register({
       name: 'report_submit',
       description: [
-        'Submit your COMPLETE task report to the report board, where the orchestrator can read it back with report_fetch. Call it ONCE when your task work is done, with all four fields:',
+        'Submit your COMPLETE task report to the report board, where the orchestrator reads it back with report_fetch. Sub-agent-only gate: orchestrators never submit. Call it ONCE when your task work is done, with all four fields (stable contract, never renamed):',
         '- report: the COMPLETE report text (implementation details, process, all evidence). Plain text or Markdown; goes to the board for sliced reading.',
         '- conclusion: 2-4 sentence self-contained conclusion (what was done, key decisions, outcome).',
         '- evidence: string array; each item is one bare "path:line" anchor (e.g. preset/tools/broker.mjs:87) with no surrounding prose; pass ["无"] only when there is truly no file evidence.',
         '- open: remaining/deferred items; write 「无」 if none.',
-        'A successful submit IS the delivery — the orchestrator receives a system-synthesized summary receipt, and your final message can be a short free-form wrap-up (one sentence is ideal). Validation failures return per-item errors: fix and re-call in place, no need to redo the task. What you submit here does NOT go into the orchestrator\'s context.',
+        'A successful submit IS the delivery — the orchestrator gets a system-synthesized summary receipt, and your final message can be one free-form sentence. Validation failures return per-item errors: fix and re-call in place. What you submit does NOT enter the orchestrator\'s context.',
       ].join('\n'),
       parameters: {
         type: 'object',
@@ -1610,7 +1686,7 @@ export async function apply(ctx, config = {}) {
         }
         const checked = validateReportArgs(args)
         if (!checked.ok) {
-          throw new Error(['report_submit: 字段校验未通过（未落板、未登记，原地修正重调即可）', ...checked.errors.map((e) => `- ${e}`)].join('\n'))
+          throw new Error(['report_submit: 检测到字段校验未通过（未落板、未登记）——请按下逐条修正后原地重调', ...checked.errors.map((e) => `- ${e}`)].join('\n'))
         }
         let written
         try {
@@ -1619,7 +1695,7 @@ export async function apply(ctx, config = {}) {
           console.warn(`[dsh-my-go] report_submit 落板失败 (${sessionId}/${child.id}): ${String(error)}`)
           throw new Error(`report_submit failed: ${String(error)}`)
         }
-        childRegistry.reportSubmitted.set(child.id, checked.value)
+        childRegistry.markSubmitted(child.id, checked.value)
         // D14 容量观测（开放 schema 直接打新 kind，metrics 模块零改动）：
         // bytes 供容量基线，sessionId/childId 供 R1.5 无界增长观测按会话分桶溯源。
         METRICS.record({ kind: 'board-write', sessionId, childId: child.id, bytes: written.bytes })
@@ -1640,12 +1716,10 @@ export async function apply(ctx, config = {}) {
     ctx.tools.register({
       name: 'report_fetch',
       description: [
-        'Read a sub-agent\'s report back from the report board, sliced by lines. Sub-agents wrote these reports there via report_submit.',
+        'Read a sub-agent\'s report back from the report board, sliced by lines — orchestrator-only gate (sub-agents wrote these via report_submit; they never read boards).',
         '切片是常态，全文取回是异常路径：日常只用 offset/limit 读关键段（报告 evidence 里的「路径:行号」可直接换算成行位），把整份报告一次性拉进上下文会挤占你自己的预算——仅在切片不足以下判断时才扩大窗口。',
-        '- childId: which sub-agent\'s report to read (ids are listed in orchestration_status).',
-        '- offset: 0-BASED line offset — how many lines to SKIP before reading (Array.slice semantics, NOT a 1-based page number). Default 0.',
-        '- limit: max lines to return per call. Default 200, capped at 2000.',
-        'The response carries totalLines so you can page precisely; out-of-range offset/limit are clamped, and the response echoes the effective values.',
+        'childId/offset/limit are a stable contract (never renamed): childId = which sub-agent\'s report (ids in orchestration_status); offset = 0-BASED lines to SKIP (Array.slice semantics, NOT a 1-based page number), default 0; limit = max lines per call, default 200, capped at 2000.',
+        'The response carries totalLines for precise paging; out-of-range offset/limit are clamped and the effective values echoed.',
       ].join('\n'),
       parameters: {
         type: 'object',
@@ -2080,11 +2154,19 @@ export async function apply(ctx, config = {}) {
         // 逐名兜底的「could not deny」查无此具噪音）；开关开 = 工具在册 =
         // deny 必须生效。go_work/continue/forward 等无条件注册的基础名单
         // 维持无条件 deny 不动；per-name 兜底告警通道保留（真异常仍要叫）。
+        // Agent Teams 实验面（宿主注册，非本插件自产）：spawn_teammate / wait_agent /
+        // team_task_* 让叶子自拉队友、自建任务板——完整的自我派生旁路面，故并入本闸
+        // 摘除。**只在本闸**：主会话保留这六件（Agent Teams 是主编排会话的实验玩法，
+        // 收口只到叶子派生，与 subagent/subagent_fork/workflow/ralph 同款口径）。
+        // 名单随宿主在册状态联动，理由与上面条件注册三件同源：未注册时硬 deny 只会
+        // 换来 restrict 批级拒绝 + 逐名兜底的「查无此具」噪音。
+        const teamsLive = liveToolNames()
         denyTools(agent.ctx.tools, [
           'subagent', 'subagent_fork', 'workflow', 'ralph', 'go_work', 'continue', 'forward',
           ...(REPORT_EXT ? ['report_fetch'] : []),
           ...(RELAY_CHAINS ? ['chain_start', 'chain_resolve'] : []),
           ...ADJACENT_BYPASS_TOOLS,
+          ...AGENT_TEAMS_TOOLS.filter((name) => teamsLive?.has(name)),
         ], 'sub-agent gate')
         return
       }
@@ -2411,9 +2493,13 @@ export async function apply(ctx, config = {}) {
       // spawn 前登记 pending 备选（棒2-Z2）：覆盖 startContinuable resolve
       // 之前 waterfall 只能靠 label 识别工种的窗口
       pendingFallbackByLabel.set(fallbackLabel, { provider: entry.provider, model: entry.model })
+      // 恢复前缀注入（A1）：仅本重派分支把 REDISPATCH_RESUME_PREFIX 拼进
+      // prompt[0] 头部——首发路径（dispatchWork）走同一 spawnChild 但不经此
+      // 拼接，一个字都不加。record.prompt 存的仍是原文（beginSpawning 在上
+      // 方用未拼接的 prompt 入账），链上下一跳重派逐次现拼，前缀不累积。
       const newChildId = await spawnChild({
         agentType: type,
-        prompt,
+        prompt: `${REDISPATCH_RESUME_PREFIX}\n${prompt}`,
         parent,
         label: fallbackLabel,
         agentOptions: { provider: entry.provider, model: entry.model },
@@ -2497,6 +2583,14 @@ export async function apply(ctx, config = {}) {
   // 全文落板兜底（1.5 优雅降级底座）：report_submit 已落板则跳过（board 上的
   // 是完整报告，finalize 的 lastAssistantMessage 只是摘要块，覆盖即退化）；未落
   // 过 → 落最后消息全文。失败只 warn——落板是降级底座，绝不改变编排终局流程。
+  //
+  // 红线（Nova 裁决：接受保守漂移，不改 dump 锚）：本函数在 verdict / repair-failed
+  // 路径上会给**从未成功提交报告**的儿童也落一块板。自那以后闸门的板兜底
+  // （hasBoard）对该 childId 恒真——它若被复活重跑且仍不交报告，一律走
+  // pass-board-fallback 直通，**不再发射第二次补发**。这是「骚扰过一次就不再骚扰」
+  // 的故意取向：补发的意义在第一次提醒，反复唤醒一个顽固不交的子代只会冻结流水线。
+  // 统计口径靠 phase 分开（'pass' 真登记 / 'pass-board-fallback' 仅板命中 /
+  // 'verdict' 转裁决），看板观测时不要把 pass-board-fallback 当成干净直通。
   async function persistReportBoard(sessionId, childId, fullText) {
     if (typeof sessionId !== 'string' || sessionId === '') return
     if (typeof fullText !== 'string' || fullText === '') return
@@ -2623,11 +2717,15 @@ export async function apply(ctx, config = {}) {
       // 报告提交制闸门：开关关传 null = 现路径零变化；已提交判定与字段读取走
       // childRegistry.reportSubmitted（report_submit 校验过即登记），补发授权
       // 走 childRegistry.repairRetried（once-guard，同步段 op 落地）。
+      // hasBoard = 报告板兜底（表为快路径、板为准）：内存登记会随进程重启/冷恢复
+      // 清零，而全文在板上是持久的——只查表会把交过的儿童判成从未提交并发射补发。
+      // 每 end 至多一枚 existsSync（同步段零 await 不破：它是同步调用，不是 await）。
       reportGate: REPORT_EXT ? {
         enabled: true,
         reportSubmitted: (id) => childRegistry.reportSubmitted.has(id),
         readSubmitted: (id) => childRegistry.reportSubmitted.get(id),
         repairRetried: (id) => childRegistry.repairRetried.has(id),
+        hasBoard: () => (routed?.parentId ? hasBoardEntry(routed.parentId, childId) : false),
       } : null,
     })
     const ownerPid = facts.ownerPid
@@ -2675,6 +2773,15 @@ export async function apply(ctx, config = {}) {
         finalizeEnd(orch, ownerPid, facts.type, childId, `${facts.baseConclusion}${facts.failureLine}`, true, facts.failure)
         advanceQueue(orch)
       })
+    } else if (decision === 'suspended-help-hold') {
+      // T1 挂起瞬间的停摆通报（本批）。E8 是静默出口：不落史、不腾槽、不推进，
+      // 于是「槽位被一个等处置的子代占着」在主编那边完全没有回声——队列里有货
+      // 才说明这真是一次停摆（有任务在等一个永不到来的推进事件），此时经
+      // notifyParent 推一行非唤醒通知补齐可见性；队列空则零通知，与 E8 原口径
+      // （主编手里已有那张求助单）逐字节一致。队列长度在 dispatcher 侧取：
+      // attributeEnd 保持纯函数零改动，队列状态本就归 broker 管。
+      const stallNotice = buildStallNotice(orch, orch?.currentMap.get(childId))
+      if (stallNotice) notifyOwner(ownerPid, stallNotice)
     } else if (decision === 'finalize') {
       // 埋点（0.4.0-tisitan.0）：终局落账基线——报告大小分布（conclusionBytes）、
       // 子代运行时长（runMs，spawning 占位起算到 end）。record 在 finalizeEnd 之前

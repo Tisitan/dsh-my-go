@@ -9,6 +9,11 @@
 // 失效（改模型清单无需重启即被 agent/request 校验感知）。
 // 旧路径（followup/reportFrom）的 broker 级覆盖由 multi-session/bridge 等
 // 既有测试持有（它们的 mock 只提供旧 API，探测自然走旧路）。
+// 断裂①补丁追加：queued 档的排队符号两版通吃（queuePrompt 5 参 ↔ deliverPrompt
+// 6 参），相应用例见「断裂①」三形态批与文末契约哨兵。
+// 0.5.0-tisitan.1（F1）追加：本文件同时承担 0.1.5-alpha.1 的 **web 面**对账——
+// lib 半面板通道改走 webServer 直注册后，信封契约以搬进来的浏览器侧解析器为闸
+// （见文末 ④′，含「未认证 401 而非 405」的验收口径）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync } from 'node:fs'
@@ -16,11 +21,16 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import * as broker from '../preset/tools/broker.mjs'
-import { createMockCtx } from './helpers/mock-ctx.mjs'
+import { apply as hostApply } from '../lib/index.js'
+import { createMockCtx, createPanelRpcTransport } from './helpers/mock-ctx.mjs'
 import { sessionEvents, deliverToAdjacent, canQueueAdjacent, reportToParent, planAdjacentDelivery } from '../preset/shared/adjacent.mjs'
 
-// 上游 internal 的排队投递符号（queueHostSubagentPrompt 的运行时直取形态）
+// 上游 internal 的排队投递符号（queueHostSubagentPrompt 的运行时直取形态）。
+// 0.1.3-alpha.1（commit 040d73871b）起改名加宽为 deliverPrompt（6 参，末位
+// delivery='queue'）；两枚符号必须并查——只认一枚就等于把 queued 档押在某一个
+// 宿主版本上。
 const QUEUE_PROMPT = Symbol.for('dsh.subagent.queuePrompt')
+const DELIVER_PROMPT = Symbol.for('dsh.subagent.deliverPrompt')
 
 // 测试隔离：台账持久化在 apply 时从 DSH_HOME 读回——指向独立临时目录。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-compat-home-'))
@@ -98,8 +108,12 @@ test('deliverToAdjacent：双 API 同在时优先新 sendMessage；两者皆缺�
 
 test('canQueueAdjacent：alpha.4 带 internal 队列符号 → 可排队；符号缺席 → 不可', () => {
   assert.equal(canQueueAdjacent({ sendMessage: async () => {}, [QUEUE_PROMPT]: () => {} }), true)
+  // 上游 0.1.3-alpha.1 改名加宽：新符号单独在位同样必须探测为可排队（否则本机
+  // 升级后 queued 档会静默塌成 steer）
+  assert.equal(canQueueAdjacent({ sendMessage: async () => {}, [DELIVER_PROMPT]: () => {} }), true,
+    'deliverPrompt（6 参新符号）单独在位即可排队，不得因缺旧符号而塌档')
   assert.equal(canQueueAdjacent({ sendMessage: async () => {} }), false,
-    'alpha.4 的 sendMessage 固定 steer，无符号队列时 queued 不成立')
+    'alpha.4 的 sendMessage 固定 steer，两代符号都缺席时 queued 不成立')
   assert.equal(canQueueAdjacent({}), false)
   assert.equal(canQueueAdjacent(undefined), false)
 })
@@ -110,35 +124,50 @@ test('canQueueAdjacent：alpha.2/3 的 followup 本身 FIFO → 天然可排队'
   // 走 sendMessage 那一支，队列符号缺席即不可排队
   assert.equal(canQueueAdjacent({ sendMessage: async () => {}, followup: async () => {} }), false)
   assert.equal(canQueueAdjacent({ sendMessage: async () => {}, followup: async () => {}, [QUEUE_PROMPT]: () => {} }), true)
+  assert.equal(canQueueAdjacent({ sendMessage: async () => {}, followup: async () => {}, [DELIVER_PROMPT]: () => {} }), true)
 })
 
 // ── ①′ N15：投递计划（探测与投递同一份分支表的同构不变量）───────────────────
 
-// 五形态 × 两档位。旧写法里 canQueueAdjacent 与 deliverToAdjacent 各存一份分支
+// 形态表 × 两档位。旧写法里 canQueueAdjacent 与 deliverToAdjacent 各存一份分支
 // 顺序，靠注释维持同构；本批合一成 planAdjacentDelivery 后，这条不变量必须能被
 // 直接测出来：**探测说能不能排队，投递就必须真的走那条路**。
+// 形态表第三元 = 该 runtime 上「真排队」实际应命中的原语名（无排队通路给 null）。
+// 两代符号各自单独在位、以及同时在位（新优先），都必须被这张表覆盖——断裂①的
+// 回归就靠这三格钉住。
 const RUNTIME_SHAPES = [
-  ['alpha.4 带符号队列', (hit) => ({
+  ['alpha.4 带旧符号队列（queuePrompt）', (hit) => ({
     sendMessage: async () => { hit.push('sendMessage'); return 'via-sendMessage' },
     [QUEUE_PROMPT]: async () => { hit.push('queuePrompt'); return 'via-queuePrompt' },
-  })],
+  }), 'queuePrompt'],
+  ['alpha.4+ 带新符号队列（deliverPrompt，6 参）', (hit) => ({
+    sendMessage: async () => { hit.push('sendMessage'); return 'via-sendMessage' },
+    [DELIVER_PROMPT]: async () => { hit.push('deliverPrompt'); return 'via-deliverPrompt' },
+  }), 'deliverPrompt'],
+  ['双符号同在（新符号优先）', (hit) => ({
+    sendMessage: async () => { hit.push('sendMessage'); return 'via-sendMessage' },
+    [QUEUE_PROMPT]: async () => { hit.push('queuePrompt'); return 'via-queuePrompt' },
+    [DELIVER_PROMPT]: async () => { hit.push('deliverPrompt'); return 'via-deliverPrompt' },
+  }), 'deliverPrompt'],
   ['alpha.4 无符号（sendMessage 固定 steer）', (hit) => ({
     sendMessage: async () => { hit.push('sendMessage'); return 'via-sendMessage' },
-  })],
+  }), null],
   ['alpha.2/3 只有 followup', (hit) => ({
     followup: async () => { hit.push('followup'); return 'via-followup' },
-  })],
+  }), null],
   ['双 API 同在（防御形态，新 API 优先）', (hit) => ({
     sendMessage: async () => { hit.push('sendMessage'); return 'via-sendMessage' },
     followup: async () => { hit.push('followup'); return 'via-followup' },
     [QUEUE_PROMPT]: async () => { hit.push('queuePrompt'); return 'via-queuePrompt' },
-  })],
-  ['什么都不给（坏 runtime）', () => ({})],
+  }), 'queuePrompt'],
+  ['什么都不给（坏 runtime）', () => ({}), null],
 ]
 
-test('N15 planAdjacentDelivery：五种 runtime 形态 × 两档位的路由枚举全在册', () => {
+test('N15 planAdjacentDelivery：runtime 形态 × 两档位的路由枚举全在册', () => {
   const expect = {
-    'alpha.4 带符号队列': { queued: 'queue', steer: 'steer' },
+    'alpha.4 带旧符号队列（queuePrompt）': { queued: 'queue', steer: 'steer' },
+    'alpha.4+ 带新符号队列（deliverPrompt，6 参）': { queued: 'queue', steer: 'steer' },
+    '双符号同在（新符号优先）': { queued: 'queue', steer: 'steer' },
     'alpha.4 无符号（sendMessage 固定 steer）': { queued: 'steer', steer: 'steer' },
     'alpha.2/3 只有 followup': { queued: 'legacy', steer: 'legacy' },
     '双 API 同在（防御形态，新 API 优先）': { queued: 'queue', steer: 'steer' },
@@ -158,8 +187,8 @@ test('N15 planAdjacentDelivery：五种 runtime 形态 × 两档位的路由枚�
 })
 
 test('N15 同构不变量：canQueueAdjacent 的答复与 deliverToAdjacent 实际命中的原语逐格一致', async () => {
-  const HIT_OF_ROUTE = { queue: 'queuePrompt', steer: 'sendMessage', legacy: 'followup' }
-  for (const [name, make] of RUNTIME_SHAPES) {
+  const HIT_OF_ROUTE = { steer: 'sendMessage', legacy: 'followup' }
+  for (const [name, make, queuePrim] of RUNTIME_SHAPES) {
     const hit = []
     const subagents = make(hit)
     const probe = canQueueAdjacent(subagents)
@@ -173,8 +202,10 @@ test('N15 同构不变量：canQueueAdjacent 的答复与 deliverToAdjacent 实�
     }
     hit.length = 0
     await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'queued' })
-    assert.deepEqual(hit, [HIT_OF_ROUTE[planRoute]], `${name}：探测说「${planRoute}」，投递就得真打在 ${HIT_OF_ROUTE[planRoute]} 上`)
+    const expectedHit = planRoute === 'queue' ? queuePrim : HIT_OF_ROUTE[planRoute]
+    assert.deepEqual(hit, [expectedHit], `${name}：探测说「${planRoute}」，投递就得真打在 ${expectedHit} 上`)
     if (planRoute === 'queue') {
+      assert.notEqual(queuePrim, null, `${name}：route=queue 必须在形态表里指名命中的排队原语`)
       // steer 档在带队列符号的 runtime 上必须放弃 FIFO 换 next-step 可见
       hit.length = 0
       await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'steer' })
@@ -203,11 +234,83 @@ test('deliverToAdjacent：queued 档在 alpha.4 走 internal 队列符号，绝�
     'alpha.4 的 MessageSource 只剩 user/plugin/model/tool；排队投递用 plugin+relay')
 })
 
+// ── 断裂①：两代排队符号的 arity 三形态（新 6 参 / 旧 5 参 / 双缺失降级）────
+// 上游 0.1.3-alpha.1 把 queuePrompt 改名加宽为 deliverPrompt（第 6 参 delivery，
+// 传 'queue' 即原 FIFO 语义）。本机宿主实装只有旧符号，补丁必须两版通吃：
+// 新符号在就走 6 参，不在回退旧 5 参，都不在才落 steer。
+// 这里逐字核对参数个数与位次——错一位上游就拿到 undefined 当 signal。
+
+test('断裂① 新符号在位：queued 档命中 deliverPrompt，6 参且第 6 参为 "queue"', async () => {
+  const calls = []
+  const signal = new AbortController().signal
+  const subagents = {
+    sendMessage: async () => { throw new Error('must not steer') },
+    [DELIVER_PROMPT]: (...args) => { calls.push(args); return 'msg-deliver' },
+  }
+  const id = await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'queued', signal })
+  assert.equal(id, 'msg-deliver')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].length, 6, '新符号是 6 参签名')
+  const [parent, childId, content, source, sig, delivery] = calls[0]
+  assert.equal(parent, parentAgent, 'position 1 = 精确 live 父 Agent（与旧 5 参同形）')
+  assert.equal(childId, 'sess-1')
+  assert.equal(content, blocks)
+  assert.deepEqual(source, { kind: 'plugin', plugin: 'dsh-my-go', form: 'relay' })
+  assert.equal(sig, signal)
+  assert.equal(delivery, 'queue', '第 6 参传字符串 queue 即得原 FIFO 排队语义')
+})
+
+test('断裂① 仅旧符号在位：queued 档维持 queuePrompt 5 参调用，绝不塞第 6 参', async () => {
+  const calls = []
+  const signal = new AbortController().signal
+  const subagents = {
+    sendMessage: async () => { throw new Error('must not steer') },
+    [QUEUE_PROMPT]: (...args) => { calls.push(args); return 'msg-legacy' },
+  }
+  const id = await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'queued', signal })
+  assert.equal(id, 'msg-legacy')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].length, 5, '旧符号签名 5 参，多塞一个 delivery 会改变上游侧语义（本机宿主实装形态）')
+  assert.equal(calls[0][0], parentAgent)
+  assert.equal(calls[0][1], 'sess-1')
+  assert.equal(calls[0][2], blocks)
+  assert.deepEqual(calls[0][3], { kind: 'plugin', plugin: 'dsh-my-go', form: 'relay' })
+  assert.equal(calls[0][4], signal)
+})
+
+test('断裂① 双符号同在：deliverPrompt 优先，旧符号不得被调用', async () => {
+  const hit = []
+  const subagents = {
+    sendMessage: async () => { hit.push('sendMessage'); return 'via-sendMessage' },
+    [QUEUE_PROMPT]: async () => { hit.push('queuePrompt'); return 'via-queuePrompt' },
+    [DELIVER_PROMPT]: async () => { hit.push('deliverPrompt'); return 'via-deliverPrompt' },
+  }
+  assert.equal(await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'queued' }), 'via-deliverPrompt')
+  assert.deepEqual(hit, ['deliverPrompt'])
+})
+
+test('断裂① 双符号皆缺席：queued 档才落到既有 steer 降级支（sendMessage 单发）', async () => {
+  const hit = []
+  const subagents = {
+    sendMessage: async (sender, targetId, content, options) => { hit.push({ sender, targetId, content, options }); return 'msg-steer-only' },
+    // 一枚长得像队列符号的非函数值：typeof 判定必须把它当缺席
+    [QUEUE_PROMPT]: undefined,
+    [DELIVER_PROMPT]: null,
+  }
+  assert.equal(planAdjacentDelivery(subagents, 'queued').route, 'steer', '两枚符号都不可用才允许降级')
+  assert.equal(canQueueAdjacent(subagents), false)
+  assert.equal(await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'queued' }), 'msg-steer-only')
+  assert.equal(hit.length, 1)
+  assert.equal(hit[0].sender, parentAgent)
+  assert.ok(hit[0].options.signal instanceof AbortSignal)
+})
+
 test('deliverToAdjacent：steer 档即使在带队列符号的 runtime 上也直走 sendMessage', async () => {
   const calls = []
   const subagents = {
     sendMessage: async (sender, targetId, content, options) => { calls.push({ sender, targetId, options }); return 'msg-steer' },
     [QUEUE_PROMPT]: async () => { throw new Error('must not queue') },
+    [DELIVER_PROMPT]: async () => { throw new Error('must not queue') },
   }
   const id = await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'steer' })
   assert.equal(id, 'msg-steer')
@@ -684,6 +787,11 @@ function hostSubagentVersion() {
   }
 }
 
+// 排队符号契约（断裂①）：上游 0.1.3-alpha.1（commit 040d73871b）把
+// queuePrompt 改名加宽为 deliverPrompt（6 参，末位 delivery='queue'）。适配层
+// 两版通吃，故这里也两枚并查——**只有两枚同时缺席**才是真断链（queued 档静默
+// 塌成 steer），存在任一枚即必须由对应 arity 命中。本机实装 0.1.2-alpha.5 只有
+// 旧符号（5 参），新符号缺席不构成红。
 test('契约哨兵：宿主 dsh-subagent >= 0.1.2-alpha.3 时门面只剩 sendMessage 且队列符号在位', async (t) => {
   const version = hostSubagentVersion()
   if (typeof version !== 'string') return t.skip('宿主 @deepseek-ai/dsh-subagent 不可解析（本仓未安装该依赖），契约哨兵跳过')
@@ -695,5 +803,103 @@ test('契约哨兵：宿主 dsh-subagent >= 0.1.2-alpha.3 时门面只剩 sendMe
   assert.equal(typeof proto?.sendMessage, 'function', 'alpha.3+ 门面必须有 sendMessage（deliverToAdjacent/reportToParent 的新路径）')
   assert.equal(proto.followup, undefined, 'followup 必须已并入 sendMessage（探测分界的前提）')
   assert.equal(proto.reportFrom, undefined, 'reportFrom 必须已删（否则 need_help 兜底路径假设失效）')
-  assert.equal(typeof proto[Symbol.for('dsh.subagent.queuePrompt')], 'function', '真 FIFO 排队通路（R4）依赖的注册符号必须在 prototype 上，否则 queued 档会静默塌成 steer')
+  const hasQueue = typeof proto[QUEUE_PROMPT] === 'function'
+  const hasDeliver = typeof proto[DELIVER_PROMPT] === 'function'
+  assert.ok(hasQueue || hasDeliver,
+    '两枚排队注册符号（queuePrompt / deliverPrompt）必须至少一枚在 prototype 上，都缺席时 queued 档才会静默塌成 steer')
+  // 存在的那一枚必须吃得下我们传的位次（parent, childId, content, source, signal）；
+  // 新符号的第 6 参 delivery 可能带默认值（Function.length 不计默认后的形参），
+  // 故只钉 5 的下界，不钉精确 6——精确 arity 由 mock 侧「断裂①」三形态用例把关。
+  const queueFn = hasDeliver ? proto[DELIVER_PROMPT] : proto[QUEUE_PROMPT]
+  assert.ok(queueFn.length >= 5, `排队符号形参数不得少于 5（实际 ${queueFn.length}），否则位次对不上`)
+  // 双符号同在时，适配层必须认新符号（旧符号已被上游退役，走它是错路）
+  if (hasQueue && hasDeliver) {
+    assert.equal(planAdjacentDelivery({ sendMessage: async () => {}, [QUEUE_PROMPT]: () => {}, [DELIVER_PROMPT]: () => {} }, 'queued').route, 'queue')
+  }
+})
+
+// ── ④′ 0.1.5-alpha.1 的 web 面对账：面板通道信封必须过浏览器侧解析器 ────────────
+// 上方哨兵能拿真宿主包对账，是因为 dsh-subagent 在本仓 devDependencies 里解析得到；
+// 而 F1 依赖的 dsh-client-connection / dsh-host-webserver 是宿主的**嵌套**依赖，插件
+// 侧 createRequire 恒 MODULE_NOT_FOUND——照 ④ 的形态再写一枚哨兵就是 N1 刚清理过的
+// 「永不点火的闸」。所以这里换个方向对账：把**消费者**从宿主包里搬进来。
+// parseBrowserFrame 逐行同构于 dsh-client-connection@0.1.5-alpha.1
+// lib/client.js:6222-6247 的 parseConnectionResponse（type / rpcId 回显 / result.ok
+// 二分 / error 三字段硬校验）。lib 半手工封装的每一个端点响应都要过它，浏览器侧
+// connection.rpc.call 的解析契约即由此钉死。
+
+const isRecord = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
+
+function parseBrowserFrame(value, sentRpcId) {
+  if (!isRecord(value) || value.type !== 'server-response' || typeof value.rpcId !== 'string') {
+    throw new TypeError('connection: invalid server-response envelope')
+  }
+  if (value.rpcId !== sentRpcId) {
+    throw new Error(`rpcId mismatch: sent ${sentRpcId}, got ${value.rpcId}`)
+  }
+  const result = value.result
+  if (!isRecord(result)) throw new TypeError('connection: invalid server-response result')
+  if (result.ok === true) return { ok: true, value: result.value }
+  if (result.ok !== false || !isRecord(result.error)) throw new TypeError('connection: invalid server-response result')
+  const { code, message, details } = result.error
+  if (typeof code !== 'string' || typeof message !== 'string' || !isRecord(details)) {
+    throw new TypeError('connection: invalid server-response failure')
+  }
+  return { ok: false, error: { code, message, details } }
+}
+
+const PANEL_ENDPOINT_CALLS = [
+  ['snapshot', {}],
+  ['listModels', {}],
+  ['listTools', {}],
+  ['getBuiltinPersona', { type: 'hermes' }],
+  ['getBuiltinPersona', { type: 'Hermes' }],
+  ['loadSettings', {}],
+  ['saveSettings', {}],
+  ['getUsage', {}],
+  ['no-such-endpoint', {}],
+]
+
+test('0.1.5-alpha.1 web 面对账：lib 半手工信封的每个端点响应都过浏览器侧解析器', async () => {
+  const panel = createPanelRpcTransport()
+  const settings = { register: () => ({}), get: () => undefined, mutate: async () => {} }
+  const ctx = {
+    get: (name) => {
+      if (name === 'settings') return settings
+      if (name === 'connection') return panel.connection
+      if (name === 'webServer') return panel.webServer
+      return undefined
+    },
+    on: () => {},
+    inject: panel.inject,
+  }
+  await hostApply(ctx, { installPreset: false })
+  assert.ok(panel.routes.has('prefix /dsh-my-go'), '面板通道挂在 webServer 上')
+  let index = 0
+  for (const [endpoint, payload] of PANEL_ENDPOINT_CALLS) {
+    const rpcId = `compat-${index += 1}`
+    const { status, frame } = await panel.request({ endpoint, rpcId, payload })
+    assert.equal(status, 200, `${endpoint} 已认证请求必须进业务分发（非 4xx 直出）`)
+    const parsed = parseBrowserFrame(frame, rpcId)
+    assert.equal(typeof parsed.ok, 'boolean', `${endpoint} 的 result 是二分信封`)
+    if (parsed.ok === false) {
+      assert.ok(parsed.error.code && typeof parsed.error.message === 'string', `${endpoint} 错误信封带 code/message`)
+      assert.ok(isRecord(parsed.error.details), `${endpoint} 错误信封必带 details 对象`)
+    }
+  }
+})
+
+test('0.1.5-alpha.1 验收口径：未认证的面板请求直出 401（不再是通道失踪造成的 405）', async () => {
+  for (const [rejection, expect] of [[401, 'unauthorized'], [403, 'forbidden']]) {
+    const panel = createPanelRpcTransport({ rejection })
+    const ctx = {
+      get: (name) => (name === 'connection' ? panel.connection : name === 'webServer' ? panel.webServer : undefined),
+      on: () => {},
+      inject: panel.inject,
+    }
+    await hostApply(ctx, { installPreset: false })
+    const res = await panel.request({ endpoint: 'loadSettings', payload: {} })
+    assert.equal(res.status, rejection)
+    assert.equal(res.body, expect)
+  }
 })

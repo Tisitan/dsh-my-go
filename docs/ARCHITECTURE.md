@@ -269,10 +269,18 @@ client 编辑面与 host 存储面之间的形状约定（tisitan.15 起白纸�
 - **snapshot 端点自带 try（tisitan.8 E10/B-03）**：桥函数抛错回
   `ok:false + internal`（附 message）而非抛穿 RPC 框架——旧写法让 Web 侧
   拿到一个没有信封的传输错，与「通道根本没注册」在客户端完全同形。
-- **RPC 注册 arity 探测（tisitan.8 E9/B-07）**：`connection.rpc.handle` 的
-  形参个数按宿主版本漂移（本机两参，更新版要第三参 `options.authority`），
-  故 `handle.length >= 3` 才带 `{ authority: 'loopback' }`。探测偏保守：
-  带默认值的形参不计入 `.length`，最坏情况退回旧的两参调用。
+- **面板通道注册壳（0.5.0-tisitan.2 F1）**：`/dsh-my-go` 不再经
+  `connection.rpc.handle` 注册，而是本半自己
+  `webServer.register({ kind: 'prefix', path: '/dsh-my-go', handler })`（宿主自身
+  `/api` 的同款写法）。起因：宿主 0.1.5-alpha.1 的 `rpc.handle` 在注册时读
+  `owner.webServer`，owner 被钉死在 client-connection 只 inject 了 credentials 的
+  apply fiber 上，cordis 门禁当场拒读 → 通道静默失踪、面板 RPC 全量吃 405。
+  `connection` 与 `webServer` 一律经 `ctx.get(...)` 取用（`get` 在门禁之外，属性访问
+  不在），两者任缺其一即 `console.warn` 留痕跳过注册，headless/CLI 形态零影响。
+  handler 内补回 `rpc.handle` 代做的两件事：`connection.requestRejection(req)` 鉴权
+  直出（未认证 401/403，绝不进业务分发）+ `client-request`/`server-response` 信封
+  封装（endpoint 从 pathname 去前缀，判定表与宿主同构；信封不合法回
+  `gateway/bad-request` 帧而非 4xx）。分发体七支端点一字未改。
 
 ### 2.6 共享源层 preset/shared/（tisitan.15；tisitan.21 起编排面 broker 独有）
 

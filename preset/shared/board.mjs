@@ -46,7 +46,8 @@
  * metrics 模块零改动。
  */
 
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { encodeSegment } from './archive.mjs'
@@ -58,8 +59,10 @@ export function boardRoot() {
 }
 
 // 唯一拼路径点：根焊死 + 双段编码（session 目录 + child 文件名）。
-function boardPath(sessionId, childId) {
-  return join(boardRoot(), encodeSegment(sessionId), `${encodeSegment(childId)}.md`)
+// ext 只有两枚取值：'.md' 正板、'.prev.md' 覆盖写留痕（见 writeBoard 顺手项A）。
+// 后缀差异留在文件名内部，会话段与编码规则完全同源——不存在第二处拼路径的点。
+function boardPath(sessionId, childId, ext = '.md') {
+  return join(boardRoot(), encodeSegment(sessionId), `${encodeSegment(childId)}${ext}`)
 }
 
 // 行切分（字节保真：不归一 CRLF；尾随换行不计行数；空文件 0 行）。
@@ -72,14 +75,23 @@ function splitLines(raw) {
 // 写入报告全文（覆盖语义：同 (sessionId, childId) 重写即替换）。
 // tmp+rename 原子范式（broker.mjs writeLedgerSync 同款）：撕裂的只会是 .tmp，
 // 残骸尽力清理后把原错误抛给调用方处置。
+// 覆盖留痕（报告板覆盖卫生）：正板已存在时，先把旧板改名 <childId>.prev.md 再写
+// 新板——被顶掉的上一版不至于无声蒸发（取证现场：一次落板把 4993B 原文压成
+// 777B 摘要，无从对照）。只保留最近一版（同名 .prev 直接被覆盖），且刻意不参与
+// 任何读取路径：hasBoardEntry / readBoardSlice 都只认正板 <childId>.md。
 export async function writeBoard(sessionId, childId, content) {
   if (typeof content !== 'string') {
     throw new TypeError(`writeBoard: content must be a string, got ${typeof content}`)
   }
   const path = boardPath(sessionId, childId)
+  const prevPath = boardPath(sessionId, childId, '.prev.md')
   const tmpPath = `${path}.tmp`
   try {
     await mkdir(dirname(path), { recursive: true })
+    // 只让位给「确实是文件」的旧板：路径被目录等异常形态占住时不碰它，
+    // 让下面真正的 rename 去暴露冲突（失败语义与既有实现一致）。
+    const existing = await stat(path).catch(() => null)
+    if (existing?.isFile()) await rename(path, prevPath)
     await writeFile(tmpPath, content, 'utf-8')
     await rename(tmpPath, path)
   } catch (error) {
@@ -88,6 +100,19 @@ export async function writeBoard(sessionId, childId, content) {
   }
   // bytes = UTF-8 真实字节数（R1.5/D14 容量观测的原料，见文件头注释）。
   return { path, bytes: Buffer.byteLength(content, 'utf-8') }
+}
+
+// 板上是否已有该儿童的报告（报告闸门兜底判定，复活轮误判修复批改点2）。
+// 同步 fs：本函数被 end 归因的同步段消费（协议第 1 条「同步段零 await」），
+// 一枚 existsSync 的代价即一次 stat——archive.mjs 的附因兜底读档早有同步先例。
+// 拼路径恒过 boardPath（穿越面与读侧同一道闸）；段名畸形（空段）时按「无货」
+// 回答，绝不让判定器抛出——闸门读不到货的后果是多问一次，不是炸整个 end 管线。
+export function hasBoardEntry(sessionId, childId) {
+  try {
+    return existsSync(boardPath(sessionId, childId))
+  } catch {
+    return false
+  }
 }
 
 // 按行切片读取（D1）。文件缺席返回 { error: 'not-found', path }，不抛出；

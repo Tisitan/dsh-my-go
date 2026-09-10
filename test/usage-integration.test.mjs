@@ -15,7 +15,7 @@ import { zstdCompressSync } from 'node:zlib'
 import * as broker from '../preset/tools/broker.mjs'
 import { apply as hostApply } from '../lib/index.js'
 import { projectKey } from '../preset/shared/archive.mjs'
-import { createMockCtx, withRealSignalContract, execOf, waitFor, removeHomeWithRetry } from './helpers/mock-ctx.mjs'
+import { createMockCtx, withRealSignalContract, execOf, waitFor, removeHomeWithRetry, createPanelRpcTransport } from './helpers/mock-ctx.mjs'
 
 const header = (seq, provider, model) => ({
   type: 'request/header',
@@ -80,17 +80,22 @@ test('集成：broker spawn+end 落账 → 档案 usage 帧 → lib getUsage 出
 
     // ── lib 半出账：真 hostApply RPC 接线（installPreset: false 不抢测试装置）──
     const settings = { register: () => ({}), get: () => undefined, mutate: async () => {} }
-    const rpcHandlers = new Map()
+    const panel = createPanelRpcTransport()
     const hostCtx = {
-      get: (name) => (name === 'settings' ? settings : undefined),
+      get: (name) => {
+        if (name === 'settings') return settings
+        if (name === 'connection') return panel.connection
+        if (name === 'webServer') return panel.webServer
+        return undefined
+      },
       on: () => {},
-      inject: (_deps, cb) => { cb({ connection: { rpc: { handle: (channel, fn) => { rpcHandlers.set(channel, fn) } } } }) },
+      inject: panel.inject,
       effect: () => {},
       systemPrompt: { section: () => {} },
       tools: { register: () => {} },
     }
     await hostApply(hostCtx, { installPreset: false })
-    const { ok, value } = await rpcHandlers.get('/dsh-my-go')('getUsage', { parentSessionId: 'parent-1' })
+    const { ok, value } = await panel.rpc('/dsh-my-go', 'getUsage', { parentSessionId: 'parent-1' })
     assert.equal(ok, true)
     assert.equal(value.found, true, 'broker 落的台账行被 lib 半聚合器认领（台账桶键 = 属主会话 id）')
     assert.equal(value.children.length, 2, '父会话自身行（D6）+ 子代行')

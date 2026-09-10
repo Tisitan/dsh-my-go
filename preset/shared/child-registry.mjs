@@ -16,8 +16,11 @@
  *   reportSubmitted        报告提交成功事实（提交制，0.5.0-tisitan.1）：
  *                          childId → 已校验的 { conclusion, evidence, open }，
  *                          report_submit 落板成功即登记，供终局合成回执消费；
- *                          「含历史轮」口径——只在终局 retireChild 清，
- *                          复活轮不重交也视为已交付
+ *                          「含历史轮」口径的**实现手段**：有界 FIFO（容量
+ *                          REPORT_SUBMITTED_CAP，超容驱逐最旧）跨终局保留——
+ *                          retireChild / retireTypeRecords 都**不清**它，故复活轮
+ *                          不重交也视为已交付；无界增长由 CAP 兜住，childId 全局
+ *                          唯一（uuid），保留条目不会与后世代际串号
  *   modelCache             provider → 模型 id 集合（只缓存「列举成功」的清单，含空集）
  *
  * 抽出来的理由：这几张表的生命周期**互相缠绕**——墓碑换出要顺带摘备选覆盖、
@@ -34,6 +37,11 @@
 
 // 墓碑有界 FIFO 上限：end 事件永久缺席时也不致无限增长；正常路径自会消费清除。
 export const DISPOSED_TYPES_CAP = 50
+
+// 成功提交登记的有界 FIFO 上限（复活轮误判修复批）：这张表**刻意不随终局清空**
+// （「含历史轮」口径，见文件头），跨终局保留的代价是无界增长，故容量即它唯一的
+// 收缩手段。200 枚 = 远大于任何单进程的存活儿童数，驱逐只在长跑/常驻宿主上发生。
+export const REPORT_SUBMITTED_CAP = 200
 
 /**
  * @param options.disposedTypesCap 墓碑表容量（测试可缩小以验证驱逐路径）
@@ -70,6 +78,20 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     return true
   }
 
+  /**
+   * 报告提交成功登记（有界 FIFO，照 tombstoneType 同款范式）：delete→set 先摘后插
+   * 刷新最近性（同 childId 重交不占两个位置），超容按插入序驱逐最旧条目。这张表
+   * 跨终局保留，本方法是它唯一的收缩手段——不设容量就等于让一条永不被清理的表
+   * 随常驻进程无限长。
+   */
+  function markSubmitted(id, value) {
+    reportSubmitted.delete(id)
+    reportSubmitted.set(id, value)
+    if (reportSubmitted.size > REPORT_SUBMITTED_CAP) {
+      reportSubmitted.delete(reportSubmitted.keys().next().value)
+    }
+  }
+
   /** end 收尾 / 重派换键：工种 + 墓碑 + 备选覆盖 + 属主路由四张表一起翻篇。 */
   function retireChild(id) {
     sessionTypes.delete(id)
@@ -81,7 +103,10 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     // guard 必须随终局翻篇——补发链本身不走 rearmChild，若这里不清，授权状态
     // 会随 childId 永挂（childId 全局唯一，无别的清理时机）。
     repairRetried.delete(id)
-    reportSubmitted.delete(id)
+    // reportSubmitted 这里**不清**（复活轮误判修复批）：曾有的 `delete(id)` 让
+    // 「含历史轮」承诺成为假话——终局清空后，任何 continue/forward 复活轮只要
+    // 不重交报告就被闸门判成「从未提交」并发射补发（历史现场 2026-09-07
+    // 7f6c44fa）。提交过是永久的历史事实，收缩只由 markSubmitted 的 FIFO 容量承担。
   }
 
   /**
@@ -93,7 +118,7 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     sessionTypes.delete(id)
     disposedTypes.delete(id)
     activeFallback.delete(id)
-    reportSubmitted.delete(id)
+    // 与 retireChild 同理：reportSubmitted 不随任何终局形态清空。
   }
 
   /**
@@ -141,7 +166,10 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     // 只投 followup）——故此处清理不构成死循环回路，两处清理各司其职。
     repairRetried.delete(childId)
     // reportSubmitted 刻意**不清**（提交制「含历史轮」口径）：交过就是交过，
-    // 复活轮不重交也视为已交付；条目随终局 retireChild 翻篇，不跨终局残留。
+    // 复活轮不重交也视为已交付。实现手段是有界 FIFO 跨终局保留（见 markSubmitted
+    // 与文件头该表注释）：条目不随终局 retireChild / retireTypeRecords 翻篇，
+    // 只按 REPORT_SUBMITTED_CAP 驱逐最旧者——此前它在终局被清空，本注释是假话，
+    // 复活轮因此被闸门误判「从未提交」而吃了不该吃的补发。
     sessionTypes.set(childId, record.agentType)
     if (typeof record.fallbackEntry?.provider === 'string' && typeof record.fallbackEntry.model === 'string') {
       activeFallback.set(childId, record.fallbackEntry)
@@ -161,6 +189,7 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     reportSubmitted,
     modelCache,
     tombstoneType,
+    markSubmitted,
     retireChild,
     retireTypeRecords,
     fallbackOverrideFor,

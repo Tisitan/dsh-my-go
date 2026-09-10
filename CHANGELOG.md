@@ -22,6 +22,99 @@
 
 ## [Unreleased]
 
+### [0.5.0-tisitan.2]（起草中，未发布——面板通道改走 webServer 直注册，绕开 0.1.5-alpha.1 宿主缺陷）
+
+宿主升到 `@deepseek-ai/dsh@0.1.5-alpha.1` 后，Web 设置面板的全部 RPC 吃 HTTP 405，
+面板顶部两条红字横幅（loadSettings / listModels）常驻。定位：`connection.rpc.handle()`
+注册时读 `owner.webServer`，而 `owner` 被钉死在 dsh-client-connection 自己的 apply fiber
+上（该 fiber 只 `inject = ["credentials"]`，见其 `lib/index.js:736`），cordis 4.0.2 的
+inject 门禁当场抛 `cannot get property "webServer" without inject`（病根行同包
+`:618`）——`/dsh-my-go` 通道从未挂上，路由没人认领，405 由 webServer 的 fallback 出。
+这是宿主缺陷：**不在本半修宿主，也不等上游**，照宿主自身 `/api` 的同款写法
+（同包 `:758-781`）在插件侧直注册。客户端半（`src/` 与 `dist/client.js`）零改动——
+URL、通道名、信封三者全部不变，浏览器侧 `connection.rpc.call` 无从分辨差别。
+
+### Fixed
+
+- **通道注册壳换件**（`lib/index.js:572-894`）：`ctx.inject(['connection'])` 内的
+  `rpc.handle('/dsh-my-go', …)` 改为 `ctx.inject(['connection', 'webServer'])` +
+  `webContext.effect(() => webServer.register({ kind: 'prefix', path: PANEL_CHANNEL,
+  handler }))`。两个服务**都只经 `ctx.get(...)` 取用**（`get` 是 cordis 门禁外的直读，
+  属性访问才会撞门禁——正是宿主塌方的位置）；inject 声明只作「两服务都挂齐再点火」的
+  触发条件，headless/CLI profile 无 webServer 时纤维本就不点火，若在席却读不到服务
+  则 `console.warn` 留痕并跳过注册，本半存储/安装面照跑。
+- **rpc.handle 原本代做的两件事在 handler 内补回**（新增模块级
+  `createPanelRpcHandler`，`lib/index.js:101-235`）：
+  - 鉴权直出：先调 `connection.requestRejection(req)`（同包公开面 `:552-556`），
+    未认证请求按 401/403 直出并短信用语收尾，**绝不落到业务分发**（405 变 401）。
+  - 信封封装：请求体 `{type:'client-request', rpcId, method, payload}`、响应体
+    `{type:'server-response', rpcId, result}`，字段形状与同包 `clientRequestSchema`
+    （`:502-507`）/`fullResponse`（`:685-692`）逐字对齐；endpoint 由 `req.url` 的
+    pathname 去掉 `/dsh-my-go/` 前缀得出，判定表与宿主 `endpointFromPath`（`:673-678`）
+    同构（含 `.`/`..`/空段/非法字符一律 404）。**不 import 宿主 schema**：
+    dsh-client-connection 是宿主的嵌套依赖，插件侧 `createRequire` 恒
+    MODULE_NOT_FOUND，静态 import 会直接把本半挂载打死。
+  - 一并补回 415（非 `application/json`）、400（body 非 JSON）、413（体积超 32 MiB
+    上限，含 `content-length` 预检与流式计量两道）与 method/endpoint 不一致的
+    `gateway/bad-request` 帧。
+  - 与宿主的唯一有意分歧：分发函数抛穿时宿主回裸 500（面板只显示 transport failure），
+    本壳收口成 `gateway/internal` 合法信封 + warn 留痕——状态码仍是 2xx，异常正文进
+    `error.message`，红字横幅拿得到原因。
+- 端点分发体（snapshot/listModels/listTools/getBuiltinPersona/loadSettings/
+  saveSettings/getUsage 七支出参入参与错误码）**一字未改**，仅外层注册壳换件。
+
+### Changed
+
+- **peer 上界收紧到实机验证线**（`package.json:75-81`）：七个 `@deepseek-ai/dsh-*`
+  peer 从 `>=0.1.2-alpha.2 <0.2.0` 改 `>=0.1.2-alpha.2 <0.1.6`——本批改动依赖
+  `dsh-host-webserver` 的 `WebRoute{kind,path,handler(req,res)}` 形状与
+  `HostConnectionService.requestRejection` 公开面，两者都只在 0.1.5-alpha.1 上真机
+  验过，`<0.2.0` 那个「整个 0.x 都号称支持」的上界在此不再成立。仓库 peer 段本无
+  `@deepseek-ai/dsh` 一项（宿主版本历来由家族包代理声明），故收紧的是代理面而非新增。
+- 退役 `rpc.handle` 的 `Function.length >= 3` arity 探测与 `{authority:'loopback'}`
+  第三参（注册面不再经手）。
+- **Agent Teams 实验面提前收口（子代理侧单侧 deny）**：即将启用的 Agent Teams 会
+  注册 `spawn_teammate` / `wait_agent` / `team_task_create` / `team_task_list` /
+  `team_task_get` / `team_task_update`——六件合起来是一条完整的自我派生旁路面：叶子
+  自拉队友、自建任务板，绕开 `go_work` / `need_help` 的星型收口与台账。新增常量
+  `AGENT_TEAMS_TOOLS`（`preset/shared/constants.mjs`），并只并入 broker 的
+  `agent/created` 闸中**子代理那一支**（`preset/tools/broker.mjs:2157`）；**主会话支
+  （orchestrator scope）一字未动**——Agent Teams 是主会话的实验玩法，收口只到叶子
+  派生，与 `subagent` / `subagent_fork` / `workflow` / `ralph` 同款口径。双侧闸本
+  就是两处独立调用点，名单可分喂，无须共用，故不存在「要动主会话」的取舍。
+  名单另随宿主在册状态联动（`AGENT_TEAMS_TOOLS.filter((n) => liveToolNames()?.has(n))`）：
+  六件由宿主注册、不由本插件开关掌握，而当前部署（0.1.5-alpha.1，实机核过
+  `dsh-tool-subagent-control` 只有邻接三件套）尚未注册它们，硬 deny 只会换来
+  `restrict` 批级拒绝 + 逐名兜底的「could not deny」查无此具噪音——与 `report_fetch` /
+  链两件同款口径（闸的意图被「工具根本不存在」真空满足）；宿主升级注册后自动生效，
+  无须再改代码。
+
+### Tests
+
+- 新增共享替身 `createPanelRpcTransport` / `callWebRouteHandler`
+  （`test/helpers/mock-ctx.mjs`）：connection 替身带一枚**会抛**的 `rpc.handle`
+  （把宿主缺陷原样搬进替身，谁退回它谁当场红），驱动侧造真 node:http 形状的
+  req/res，鉴权直出、信封封装、endpoint 解析全部在壳里真跑一遍。七个 lib 级
+  夹具（host-parity / host-lib-fixes / roster-roles / settings-fence /
+  usage-aggregator / usage-integration / usage-prices）统一改吃该替身，端点用例
+  的 `rpc(channel, endpoint, payload)` 签名不变、断言零改动。
+- `test/host-lib-fixes.test.mjs` 的 E9 arity 例改写为九例 F1 壳回归：注册形态 /
+  401·403 直出 / GET·裸通道·穿越路径·非 JSON content-type / 坏 JSON·缺 rpcId·
+  method 不匹配·未知端点 / 分发抛穿收口 / 413 体积闸 / 客户端断开兜底 /
+  无 webServer 降级留痕 / 缺陷面回归闸。
+- `test/compat-alpha4.test.mjs` 扩 0.1.5-alpha.1 的 **web 面**对账（④′）：把浏览器侧
+  `parseConnectionResponse`（宿主 `lib/client.js:6222-6247`）逐行同构搬进本仓当闸，
+  九个端点调用逐个过解析器 + 未认证 401 验收口径。既有 ④ 契约哨兵那种
+  `createRequire` 真宿主对账形态在此**不可复制**（两个宿主包都解析不到，
+  照搬就是 N1 刚清理过的「永不点火的闸」）。
+- `test/host-parity.test.mjs`：单通道 needle 从 `rpc.handle('/dsh-my-go'` 计数改
+  口径为 `path: PANEL_CHANNEL` 恰一处（唯一注册点）+ `rpc.handle('/dsh-my-go'`
+  零出现（负向不变量：缺陷面不得复活）；补 broker 半 `webServer.register(` 零出现。
+- `test/anti-bypass.test.mjs` 补 Agent Teams 三档：常量 pin（六件套名字改了就红）；
+  宿主在册 → 子代理侧六件全量入名单 / 宿主未注册 → 一件不入（噪音闸）；主会话侧
+  宿主在册也恒不摘（负向不变量：Agent Teams 主场不得被自家闸摘除），并保留
+  `skill` 既有屏蔽面不回潮的断言。
+
 ### [0.5.0-tisitan.1]（起草中，未发布——报告提交制：report_submit 四字段 + broker 合成回执）
 
 报告机制代际改造（主人拍板，第二代替换第一代）：子代交付从「最后一条消息手写

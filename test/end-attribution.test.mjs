@@ -171,6 +171,60 @@ test('换序回归 E3→E4：属主已销毁时不清 abort 护航——retire �
   assert.equal(opsOf(r).includes('consume-abort-guard'), false)
 })
 
+// ── E8：need_help 挂起回合的静默出口（闸门不适用）──────────────────────────────
+// 子代调 need_help 即 suspend（台账 status 转 waiting），挂起前那一轮仍以 completed
+// 上报 end。这条 end 不是完工口径：既不该落账，更不该进报告闸门——闸门一旦判它
+// 「未交报告」就会 queued 补发，把挂起中的子代 coldResume 唤醒（求助单还在册上）。
+
+test('E8 挂起中的那一轮以 completed 收尾 → suspended-help-hold：闸门不发、零通知、不推进', () => {
+  const r = fixture({
+    ledgerRecord: { agentType: 'hermes', status: 'waiting' },
+    reportGate: { enabled: true, reportSubmitted: () => false, readSubmitted: () => undefined, repairRetried: () => false },
+  })
+  assert.equal(r.decision, 'suspended-help-hold')
+  assert.equal(r.facts.advance, 'no', '挂起子代续占单线槽位，等主编 forward/continue')
+  assert.deepEqual(opsOf(r), [], '不 add-repair-guard：挂起轮不是完工，没有补发授权这回事')
+  assert.deepEqual(r.notices, [], '静默出口零通知（主编已收到求助单，不该再收一次假完工预告）')
+  assert.equal(r.notices.some((n) => n.text?.includes('报告未提交')), false, '绝不再发「报告未提交」')
+  assert.equal(r.calls.readFailure, 0, '早退不读附因（那是 I/O）')
+  assert.equal(r.facts.lane, 'write', 'lane 是纯事实：type 已定就照常记')
+  assert.match(r.facts.warn, /is a suspended turn settling; record stays waiting, gate not applied/)
+})
+
+test('E8b 挂起判定与闸门开关无关；非 waiting 形态（含既有 fixture 的无 status 字段）自然判假走原路径', () => {
+  assert.equal(fixture({ ledgerRecord: { agentType: 'hermes', status: 'waiting' } }).decision, 'suspended-help-hold', 'gate 缺省也走静默出口')
+  assert.equal(fixture({ ledgerRecord: { agentType: 'hermes' } }).decision, 'finalize', '回归闸门：无 status 字段 = 判假，现路径一字不动')
+  assert.equal(fixture({ ledgerRecord: { agentType: 'hermes', status: 'running' } }).decision, 'finalize')
+  assert.equal(fixture({ ledgerRecord: { agentType: 'hermes', status: 'done' } }).decision, 'finalize')
+  assert.equal(fixture({ ledgerRecord: { agentType: 'hermes', status: 'failed' } }).decision, 'finalize')
+})
+
+test('换序回归 E4→E8：挂起轮带着 abort 护航时 guard 仍就地消费，出口是静默而非补发', () => {
+  const r = fixture({ abortSet: ['sess-1'], ledgerRecord: { agentType: 'hermes', status: 'waiting' } })
+  assert.equal(r.decision, 'suspended-help-hold')
+  assert.deepEqual(opsOf(r), ['consume-abort-guard'], 'guard 不留残，否则误伤下一代际')
+})
+
+test('换序回归 E5→E8：评估在飞优先于挂起静默（双发第二发仍按在飞口径消化）', () => {
+  const r = fixture({
+    decidedSet: ['sess-1'],
+    ledgerRecord: { agentType: 'hermes', status: 'waiting' },
+    info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] },
+  })
+  assert.equal(r.decision, 'fallback-in-flight')
+  assert.equal(opsOf(r).includes('add-repair-guard'), false)
+})
+
+test('换序回归 E8→闸门：挂起判定必须早于报告闸门，否则挂起子代被 queued 补发唤醒', () => {
+  // 同一份「completed + 从未提交」输入，只把台账 status 改成 waiting，出口就必须
+  // 从 report-gate-repair 换成 suspended-help-hold——分支先后即本用例的全部内容。
+  const notSubmitted = { enabled: true, reportSubmitted: () => false, readSubmitted: () => undefined, repairRetried: () => false }
+  assert.equal(fixture({ reportGate: notSubmitted }).decision, 'report-gate-repair', '对照基线：未挂起时闸门照发')
+  const r = fixture({ reportGate: notSubmitted, ledgerRecord: { agentType: 'hermes', status: 'waiting' } })
+  assert.equal(r.decision, 'suspended-help-hold')
+  assert.equal(r.facts.reportGate, undefined, 'facts 不带闸门 phase（dispatcher 不会记 report-gate 埋点）')
+})
+
 // ── E6：备选评估（error 终局 + 有链的唯一决策点）─────────────────────────────────────────────────────────────
 
 test('E6 error 终局 + 有链 + 本代际未决策 → fallback-evaluation：guard 与预告同批产出', () => {
@@ -276,8 +330,9 @@ test('每条 DECISIONS 出口都必须登记队列推进时机，且只有 now/i
     'late-duplicate',
     'no-owning-orchestration',
     'report-gate-repair',
+    'suspended-help-hold',
     'unattributable',
-  ], '九条出口齐备（1.5 新增 report-gate-repair，advance=no：补发期间槽位仍占；增删决策要在这里说明理由）')
+  ], '十条出口齐备（1.5 新增 report-gate-repair，advance=no：补发期间槽位仍占；need_help 挂起批新增 suspended-help-hold，advance=no：挂起子代续占槽；增删决策要在这里说明理由）')
   const seen = new Set()
   const scenarios = [
     { args: { childId: undefined, info: {} } },
@@ -288,13 +343,14 @@ test('每条 DECISIONS 出口都必须登记队列推进时机，且只有 now/i
     { args: { childId: 'x', info: { stopReason: 'error' }, type: 'hermes', fallbackDecided: () => true } },
     { args: { childId: 'x', info: { stopReason: 'error' }, type: 'hermes', bindings: { hermes: { fallbacks: CHAIN } } } },
     { args: { childId: 'x', info: { stopReason: 'completed' }, type: 'hermes' } },
+    { args: { childId: 'x', info: { stopReason: 'completed' }, type: 'hermes', ledgerRecord: { agentType: 'hermes', status: 'waiting' } } },
   ]
   for (const { args } of scenarios) {
     const r = attributeEnd({ routing: { parentId: 'p' }, hasLiveRecord: () => true, ...args })
     seen.add(r.decision)
     assert.ok(['now', 'no', 'if-owned'].includes(r.facts.advance), `${r.decision} 的 advance 口径合法`)
   }
-  assert.equal(seen.size, 8, `无 gate 的基础场景集打到八条出口（report-gate-repair 由下方闸门直测批单独覆盖），实际只到 ${[...seen].join(',')}`)
+  assert.equal(seen.size, 9, `无 gate 的基础场景集打到九条出口（report-gate-repair 由下方闸门直测批单独覆盖），实际只到 ${[...seen].join(',')}`)
   assert.equal(shouldAdvanceQueue({ advance: 'now' }), true)
   assert.equal(shouldAdvanceQueue({ advance: 'no' }), false)
   assert.equal(shouldAdvanceQueue({ advance: undefined }), false, '漏登记 = 不推进（宁可冻结也不放行两个并行）')
@@ -357,6 +413,23 @@ test('闸门·已提交直通：finalize 但 conclusion = 合成概要（conclus
   assert.equal(r.facts.reportGate.phase, 'pass')
   assert.deepEqual(opsOf(r).filter((o) => o === 'add-repair-guard'), [])
   assert.ok(r.facts.conclusion.includes('全文落板，report_fetch childId=sess-1 切片取阅'), '取阅指引随回执')
+})
+
+// 板兜底（复活轮误判修复批改点2）：表为快路径、板为准。表空而板有货 = 已交付，
+// 只是回执无从合成真字段（登记值缺席）→ 走显式最小兜底并把 phase 分开口径；
+// 表命中时一律按常规 pass 走（板根本不参与判定，热路径不多一次谓词调用）。
+test('闸门·板兜底：表空+板有货 → pass-board-fallback 直通；表命中 → 常规 pass', () => {
+  const byBoard = gateFixture({ submitted: false, gateOver: { hasBoard: () => true } })
+  assert.equal(byBoard.decision, 'finalize', '板上有货绝不发射补发')
+  assert.deepEqual(opsOf(byBoard).filter((o) => o === 'add-repair-guard'), [], '零 add-repair-guard')
+  assert.equal(byBoard.facts.advance, 'now', '照常腾槽推进')
+  assert.equal(byBoard.facts.reportGate.phase, 'pass-board-fallback', '与常规 pass 分开记，统计不许混')
+  assert.ok(byBoard.facts.conclusion.includes('(报告已在板，成功登记表缺席)'), '登记值缺席走显式最小兜底（不留空字段）')
+  assert.ok(byBoard.facts.conclusion.includes('证据: 无') && byBoard.facts.conclusion.includes('遗留: 无'), '兜底四字段仍走同款拼装')
+  assert.ok(byBoard.facts.conclusion.includes('report_fetch childId=sess-1'), '取阅指针照常在')
+  const byTable = gateFixture({ submitted: true, gateOver: { hasBoard: () => true } })
+  assert.equal(byTable.facts.reportGate.phase, 'pass', '表命中即真直通，不因板也在而改口径')
+  assert.equal(byTable.facts.conclusion, summaryOf('sess-1'), '回执内芯 = 登记值合成，不是兜底文案')
 })
 
 test('闸门·从未提交首次 → 第九出口：guard op 同步随行、固定措辞补发 prompt、槽位保留', () => {

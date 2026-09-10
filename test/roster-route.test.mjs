@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as broker from '../preset/tools/broker.mjs'
+import { REDISPATCH_RESUME_PREFIX } from '../preset/shared/report-format.mjs'
 import { createMockCtx, withRealSignalContract, execOf, drain, snapOf, currentOf, waitFor } from './helpers/mock-ctx.mjs'
 
 const defaultSchemas = () => [{ name: 'read' }, { name: 'write' }, { name: 'glob' }, { name: 'bash' }]
@@ -159,7 +160,8 @@ test('fallback 重派：persona/toolFilter 与首派同源（bindings[type]）',
   assert.equal(specs[1].request.persona, 'hermes 定制人设', '重派 persona 与首派同源')
   assert.deepEqual(specs[1].request.toolFilter, { allow: ['read'] }, '重派 toolFilter 同源且缺名过滤')
   assert.deepEqual(specs[1].request.agentOptions, { provider: 'p1', model: 'm1' }, 'agentOptions 仍为备选条目')
-  assert.equal(specs[1].request.prompt[0].text, 'build it', '重派 prompt 保持纯任务文本')
+  assert.equal(specs[1].request.prompt[0].text, `${REDISPATCH_RESUME_PREFIX}\nbuild it`, '重派 prompt = 恢复前缀（A1）+ 任务文本（单源 import 不另抄）')
+  assert.equal(specs[0].request.prompt[0].text, 'build it', '首发路径零注入恢复前缀')
 })
 
 test('orchestration_status：尾部含角色名册区（内置 + 自定义），sisyphus 不入可派名册', async () => {
@@ -193,12 +195,12 @@ test('forward：target 为自定义角色时走 go_work 派发并携带 persona'
   const { ctx, listeners, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: 'sess-w' } }),
-    subagentsExtra: { reportFrom: async () => 'delivered' },
+    subagentsExtra: { reportFrom: async () => 'delivered', followup: async () => 'msg-w' },
   })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindings: { 'custom-x': { persona: 'X 人设' } } })
   await tools.get('go_work').execute({ agent: 'explore', prompt: 'scout' }, execOf(parent))
   const childExec = { agent: { id: 'sess-w', session: { header: { parentSession: 'parent-1' } } }, signal: new AbortController().signal }
-  // need_help 要求 tracked 子代理：先挂求助单，再完工清槽（否则 forward 的
+  // need_help 要求 tracked 子代理：先挂求助单，再让它真完工腾槽（否则 forward 的
   // go_work 分支因单线占位只会入队，不会真正 spawn）
   const r = await tools.get('need_help').execute({ intent: 'replan', content: '干不了，请求换人' }, childExec)
   assert.equal(r.suspended, true)
@@ -207,6 +209,17 @@ test('forward：target 为自定义角色时走 go_work 派发并携带 persona'
   const fw = await tools.get('forward').execute({ from: r.helpRequestId, target: 'custom-x' }, execOf(parent))
   assert.equal(fw.kind, 'go_work', '自定义角色按类型派发而非按 id 续聊')
   assert.equal(specs.length, 1, '占线期间只入队不 spawn')
+  // ── 口径变更（裁定 2026-09-09；触发事项：主人报修事项3「挂起回合被当成完工」）──
+  // 旧形态直接 dispatch 一条 completed end 给挂起中的 sess-w 来腾槽——那条 end 只是
+  // need_help 挂起的中场哨，现按 E8（suspended-help-hold）静默处置：不落史、不腾槽、
+  // 不推进队列（挂起子代续占单线槽位，等主编 forward/continue）。出列改由合法路径
+  // 驱动：主编先 continue 唤醒挂起子代（复籍 running），它真完工时 end 才收尾腾槽、
+  // advanceQueue 才把队首的 custom-x 派出去。persona 携带断言一字未改。
+  dispatch('subagent/end', { id: 'sess-w', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '挂起轮收尾' }] })
+  assert.equal(specs.length, 1, 'E8：挂起轮的 end 不腾槽，队首仍不出列')
+  assert.equal(currentOf('parent-1')?.status, 'waiting', '记录留在 waiting 原位')
+  await tools.get('continue').execute({ id: 'sess-w', prompt: '按现有材料收尾' }, execOf(parent))
+  assert.equal(currentOf('parent-1')?.status, 'running', 'continue 复籍：挂起态解除')
   dispatch('subagent/end', { id: 'sess-w', stopReason: 'completed', lastAssistantMessage: [] })
   await waitFor(() => specs.length >= 2, { what: '首派完工后队列出列派发' })
   assert.equal(specs.length, 2, '首派完工后队列出列派发')
@@ -272,17 +285,20 @@ test('system-prompt/assemble：DSV4P0813 工种识别走 typeOfAgent（label 兜
   const assemble = (listeners.get('system-prompt/assemble') ?? [])[0]
   assert.equal((listeners.get('system-prompt/assemble') ?? []).length, 1, "system-prompt/assemble 只应注册一个 handler")
   const mkAssembly = () => ({
-    sections: [{ name: 'persona' }, { name: 'runtime:ctx' }],
+    // 段名同时喂内建旧名与 0.1.5 拆段后的新名：phase-1 白名单漏掉任何一代，
+    // 开了 dsv4p0813 的工种第一轮就是零人设（同类改名下次必须在这里当场红）。
+    sections: [{ name: 'persona' }, { name: 'deployment:persona-prefix' }, { name: 'runtime:ctx' }],
     tools: [{ name: 'bash' }, { name: 'write' }],
     contexts: [{ id: 1 }],
   })
+  const PHASE1_SECTIONS = [{ name: 'persona' }, { name: 'deployment:persona-prefix' }]
   const next = async () => mkAssembly()
   const cold = await assemble(
     mkAssembly(),
     { agent: { id: 'cold-2', session: { header: { label: 'dsh-my-go:hermes: 快速执行' } } } },
     next,
   )
-  assert.deepEqual(cold.sections, [{ name: 'persona' }], 'cold-resume 形态：label 兜底识别 → phase-1 过滤生效')
+  assert.deepEqual(cold.sections, PHASE1_SECTIONS, 'cold-resume 形态：label 兜底识别 → phase-1 过滤生效（persona 两代名都放行）')
   assert.deepEqual(cold.tools, [{ name: 'bash' }, { name: 'write' }], '工具面收到 bootstrap 白名单（bash/read/write 等七件）')
   assert.deepEqual(cold.contexts, [])
   const unrelated = await assemble(
@@ -290,14 +306,14 @@ test('system-prompt/assemble：DSV4P0813 工种识别走 typeOfAgent（label 兜
     { agent: { id: 'other-2', session: { header: { label: 'unrelated' } } } },
     next,
   )
-  assert.equal(unrelated.sections.length, 2, '非本插件会话不过滤')
+  assert.equal(unrelated.sections.length, 3, '非本插件会话不过滤')
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'work' }, execOf(parent))
   const registered = await assemble(
     mkAssembly(),
     { agent: { id: 'sess-h', session: { header: { label: 'garbage' } } } },
     next,
   )
-  assert.deepEqual(registered.sections, [{ name: 'persona' }], '活登记优先于畸形 label')
+  assert.deepEqual(registered.sections, PHASE1_SECTIONS, '活登记优先于畸形 label')
 })
 
 test('DSV4P0813 promotion 行为面：tool/call 事件直判 / turn-end 翻转 / phase1→phase2 单向切换（棒2-L7；N7 修事件时序）', async () => {
@@ -315,7 +331,9 @@ test('DSV4P0813 promotion 行为面：tool/call 事件直判 / turn-end 翻转 /
   const sessionEvent = (listeners.get('session/event') ?? [])[0]
   assert.equal((listeners.get('session/event') ?? []).length, 1, "session/event 只应注册一个 handler")
   const mkAssembly = () => ({
-    sections: [{ name: 'persona' }, { name: 'runtime:ctx' }],
+    // persona 两代名并喂：phase-1 白名单（PERSONA_SECTION_NAMES 并集）漏任何一代
+    // 都会让这一轮零人设，改名类回归必须在这里当场红。
+    sections: [{ name: 'persona' }, { name: 'deployment:persona-prefix' }, { name: 'runtime:ctx' }],
     tools: [{ name: 'bash' }, { name: 'write' }],
     contexts: [{ id: 1 }],
   })
@@ -325,8 +343,8 @@ test('DSV4P0813 promotion 行为面：tool/call 事件直判 / turn-end 翻转 /
     const out = await assemble(mkAssembly(), agentCtx, async () => mkAssembly())
     return { sections: out.sections.map((s) => s.name), tools: out.tools.map((t) => t.name), contexts: out.contexts.length }
   }
-  const PHASE1 = { sections: ['persona'], tools: ['bash', 'write'], contexts: 0 }
-  const PHASE2 = { sections: ['persona', 'runtime:ctx'], tools: ['bash', 'write'], contexts: 1 }
+  const PHASE1 = { sections: ['persona', 'deployment:persona-prefix'], tools: ['bash', 'write'], contexts: 0 }
+  const PHASE2 = { sections: ['persona', 'deployment:persona-prefix', 'runtime:ctx'], tools: ['bash', 'write'], contexts: 1 }
   // 夹具必须复刻宿主派发时序（0.3.0-tisitan.7 N7）：Session.append 先 push 再 notify
   // （@deepseek-ai/dsh-session/lib/index.js:1433-1435），处理器看到的 events 数组
   // **末位恒为当前这条事件**。旧夹具把 tool/call 铺在末位、再派发 step/end，

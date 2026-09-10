@@ -49,7 +49,10 @@ _真正实现 “按量付费”_
 
 ### 理论最低要求
 
-- DeepSeek Harness `0.1.2-alpha.2`+（与 package.json peer `>=0.1.2-alpha.2 <0.2.0` 一致；基于 `agent/request` waterfall 与 continuable subagent API）
+- DeepSeek Harness `0.1.2-alpha.2`+（与 package.json peer `>=0.1.2-alpha.2 <0.1.6` 一致；基于 `agent/request` waterfall 与 continuable subagent API）
+  peer 上界在 0.5.0-tisitan.2 从 `<0.2.0` 收到 `<0.1.6`：Web 设置面板的通道注册现在依赖
+  `dsh-host-webserver` 的 `WebRoute{kind,path,handler(req,res)}` 与 `connection.requestRejection`
+  两枚公开面，它们只在 `0.1.5-alpha.1` 上真机验过——没验过的版本不号称支持。
 - Node.js 22.15+（`node:zlib` 的 zstd 压缩接口实需 22.15+/23.8+，与 package.json `engines` 一致）
 - 一个可用的 LLM provider
 - Windows / macOS / Linux（DSH 均支持）
@@ -208,6 +211,12 @@ dsh web   # 启动 Web GUI，新会话选择 MyGO!!!!! 模式
   `reasoningEffort`（**跟随 DSH 模型目录**：只设置该模型实际支持的思考档位；
   模型无思考选项或档位不支持时不设置，走模型默认）。
 - 单线阻塞 = broker 编排状态机按编排会话分桶（tisitan.10 起 Map&lt;会话id&gt; 各持一份 当前运行 / 队列 / 求助 / 历史）。
+- 面板通道 = host 半在 `webServer` 上直注册 `/dsh-my-go` prefix 路由，单通道 + 端点分发
+  （snapshot / listModels / listTools / getBuiltinPersona / loadSettings / saveSettings /
+  getUsage），信封 `{ok:true,value}` / `{ok:false,error:{code,message,details}}`。0.5.0-tisitan.2
+  起不再走 `connection.rpc.handle`（宿主 0.1.5-alpha.1 上它注册即抛，通道静默失踪），而是
+  照宿主自身 `/api` 的写法自行注册，并在 handler 内补回**鉴权直出**与**信封封装**两件事——
+  URL、通道名、信封三者与旧路径逐字同形，client 半零改动（详见 docs/ARCHITECTURE.md 2.5）。
 - 详细设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 配置

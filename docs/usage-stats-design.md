@@ -29,7 +29,7 @@ token 聚合与价格解耦：单价热更零失效成本，聚合缓存永不�
 | F6 | 子代枚举持久权威：台账 `DSH_HOME/dsh-my-go/orchestration-ledger.json`，无上限；`childOwner`/`sessionTypes` 内存表是 broker 侧互补（lib 半不可达，本契约不依赖） | broker.mjs:354；preset/shared/child-registry.mjs:38-46 |
 | F7 | **复活即新世代**：continue/forward 命中已结束记录时 `rearmChild` 回填登记，childId 不变、产生新事件代际 | child-registry.mjs:113-140 |
 | F8 | 面板 600ms 轮询 `connection.rpc.call('/dsh-my-go','snapshot',{})`；`currentSessionId()` 读 `sessions.list.getSnapshot().current` | src/panel-tree.js:78-99, 429-438 |
-| F9 | RPC 单通道：`rpc.handle('/dsh-my-go', async (endpoint, payload) => ...)`，端点 camelCase（snapshot/listModels/listTools/getBuiltinPersona/loadSettings），信封 `{ok:true,value}` / `{ok:false,error:{code,message,details}}`，端点自带 try 回结构化 internal | lib/index.js:394-426 |
+| F9 | RPC 单通道：`webServer.register({ kind:'prefix', path:'/dsh-my-go', handler })` 直注册（0.5.0-tisitan.2 F1 起不再经宿主 `connection.rpc.handle`——它在 0.1.5-alpha.1 上注册即抛），handler 内先 `connection.requestRejection` 直出 401/403、再按 `client-request`/`server-response` 封装；端点 camelCase（snapshot/listModels/listTools/getBuiltinPersona/loadSettings），信封 `{ok:true,value}` / `{ok:false,error:{code,message,details}}`，端点自带 try 回结构化 internal | lib/index.js:594-884（分发体），:101-235（注册壳） |
 | F10 | settings 注册样板：`settings.register('dsh-my-go', z.object({...}))`，字典用 `z.dict(schema, z.string().pattern(KEY_PATTERN))`；`settings/updated` 热更两侧各挂 | lib/index.js:319-329, 346-353；broker.mjs:241-252 |
 | F11 | metrics end 埋点 `METRICS.record({kind:'end', childId, agentType, ...})`（v1 不搭车，裁决见 D2） | broker.mjs:2666-2679 |
 | F12 | lib 半可直接 import preset/shared（先例：`sharedRosterKeys`） | lib/index.js:367 |

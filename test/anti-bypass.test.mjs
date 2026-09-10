@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as broker from '../preset/tools/broker.mjs'
 import { createMockCtx } from './helpers/mock-ctx.mjs'
-import { ADJACENT_BYPASS_TOOLS } from '../preset/shared/constants.mjs'
+import { ADJACENT_BYPASS_TOOLS, AGENT_TEAMS_TOOLS } from '../preset/shared/constants.mjs'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-bypass-home-'))
 
@@ -101,6 +101,47 @@ test('agent/created：Sisyphus 侧 deny 掉 skill 与邻接三件套（R1/R3 顶
     assert.ok(!denied.includes(name), `编排六件套不得被自家闸摘除：${name}`)
   }
   assert.ok(!denied.includes('report_fetch'), 'report_fetch 不得被主编闸摘除（主编面向的读板通道，1.6）')
+})
+
+// ── Agent Teams 实验面（0.5.0-tisitan.2） ──────────────────────────────────
+// spawn_teammate / wait_agent / team_task_* 让叶子自拉队友、自建任务板——与邻接
+// 三件套同属旁路面，但处置口径**刻意不对称**：只摘子代理侧，主会话留着玩（主人
+// 拍板：Agent Teams 是主编排会话的实验玩法，收口只到叶子派生，与 subagent /
+// subagent_fork / workflow / ralph 同款）。名单另随宿主在册状态联动——这三件由
+// 宿主注册（当前 0.1.5-alpha.1 实况：未注册），硬 deny 未知名只会换来 restrict
+// 批级拒绝 + 逐名兜底的查无此具噪音。
+const TEAMS = ['spawn_teammate', 'wait_agent', 'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update']
+
+test('pin：AGENT_TEAMS_TOOLS 恒为 Agent Teams 六件套（名字改了就红）', () => {
+  assert.deepEqual([...AGENT_TEAMS_TOOLS].sort(), [...TEAMS].sort())
+})
+
+const teamsRegistry = () => ({ schemas: () => TEAMS.map((name) => ({ name })) })
+
+test('agent/created：Agent Teams 六件套只摘子代理侧；宿主未注册时不入名单（主会话恒保留）', async () => {
+  // ① 宿主已注册（Agent Teams 实验开）→ 子代理侧六件套全量入名单
+  const live = createMockCtx({ keepHome: true, captureRestrict: true, toolsRegistry: teamsRegistry() })
+  const deniedLive = []
+  await broker.apply(live.ctx, { reportExternalization: false })
+  live.dispatch('agent/created', { agent: childAgentOf((filter) => deniedLive.push(...filter.deny)) })
+  for (const name of TEAMS) assert.ok(deniedLive.includes(name), `宿主在册时子代理 deny 缺少 ${name}`)
+
+  // ② 宿主未注册（当前部署实况）→ 不入名单，杜绝查无此具噪音
+  const absent = mockCtx()
+  const deniedAbsent = []
+  await broker.apply(absent.ctx, { reportExternalization: false })
+  absent.dispatch('agent/created', { agent: childAgentOf((filter) => deniedAbsent.push(...filter.deny)) })
+  for (const name of TEAMS) assert.ok(!deniedAbsent.includes(name), `宿主未注册时不得 deny ${name}（批级拒绝 + 逐名兜底噪音源）`)
+
+  // ③ 主会话侧（orchestrator scope）即使宿主在册也恒不摘
+  const parentSide = createMockCtx({ keepHome: true, captureRestrict: true, toolsRegistry: teamsRegistry() })
+  const deniedParent = []
+  await broker.apply(parentSide.ctx, { reportExternalization: false })
+  parentSide.dispatch('agent/created', {
+    agent: { id: 'parent-at', session: { header: {} }, ctx: { tools: { restrict: (f) => deniedParent.push(...f.deny) } } },
+  })
+  for (const name of TEAMS) assert.ok(!deniedParent.includes(name), `主会话不得被摘除 ${name}（Agent Teams 主场）`)
+  assert.ok(deniedParent.includes('skill'), '主会话既有屏蔽面不回潮')
 })
 
 test('restrict 批级抛错（某部署缺一个工具行）→ 逐名兜底，其余屏蔽项不连坐', async () => {

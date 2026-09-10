@@ -10,7 +10,7 @@
  *
  * 本模块把决策抽成纯函数：输入是**已经取好的状态快照与只读谓词**，输出是
  * `{ decision, ops, notices, facts }`：
- *   decision  九个出口之一（见 DECISIONS）
+ *   decision  十个出口之一（见 DECISIONS）
  *   ops       要改哪些表（由 dispatcher 按序落地；本模块不持有任何一张表）
  *   notices   要对谁说哪一句话（target: 'owner' 注入属主 / 'log' 留痕）
  *   facts     执行所需事实（归因到的 parentId、工种、结论文本、失败附因、advance）
@@ -36,7 +36,8 @@
  *
  * 报告提交制闸门（0.5.0-tisitan.1，第二代替换第一代消息块解析闸）：第九出口
  * `report-gate-repair`。completed 终局且调用方传 `reportGate.enabled` 时过闸：
- *   - 本轮（含历史轮）report_submit 已成功（reportGate.reportSubmitted 命中）→
+ *   - 本轮（含历史轮）report_submit 已成功（reportGate.reportSubmitted 命中，
+ *     或 hasBoard 兜底命中——表为快路径、板为准）→
  *     仍走 'finalize'，facts.conclusion 改存 buildOwnerSummary 合成概要（短）；
  *     全文已由 report_submit 落板（登记前提），无需落板兜底。
  *   - 从未成功提交 → 'report-gate-repair'：ops 携带 add-repair-guard（once-guard，
@@ -64,6 +65,7 @@ export const DECISIONS = Object.freeze([
   'fallback-in-flight', // E5 备选评估在飞窗口内的双发第二发：不矛盾口径、不推进
   'fallback-evaluation', // E6 error 终局 + 有备选链 + 本代际未决策：进异步重派
   'finalize', // E7 正常收尾（成功落账 / 失败附因落账 / 闸门合格或转裁决）
+  'suspended-help-hold', // E8 need_help 挂起（台账 status=waiting）的那一轮在收尾：不是完工，闸门不适用，记录留 waiting
   'report-gate-repair', // E9（报告提交制）completed 但从未成功提交报告：guard 登记 + queued 补发，槽位保留不落史
 ])
 
@@ -77,8 +79,22 @@ const DECISION_ADVANCE = {
   'fallback-in-flight': 'no',
   'fallback-evaluation': 'no',
   'finalize': 'now',
+  'suspended-help-hold': 'no', // 挂起子代续占单线槽位，等主编 forward/continue
   'report-gate-repair': 'no', // 补发期间槽位仍占（记录留 currentMap，队列不推进）
 }
+
+// 闸门 hasBoard 的缺省替身：调用方不注入即恒假（判定退回纯内存表）。既有替身
+// （只给 reportSubmitted/readSubmitted/repairRetried 的老测试）因此零扰动，本模块
+// 也依旧零 fs——板上是否有货这件事实由 broker 现算后喂进来。
+const NEVER_HAS_BOARD = () => false
+
+// 登记值缺席但板上有货时的最小四字段（回执内芯的合成原料）。措辞点名「登记表
+// 缺席」而非「未提交」：报告是真在板上的，主编照 report_fetch 取全文即可。
+const BOARD_ONLY_SUBMITTED = Object.freeze({
+  conclusion: '(报告已在板，成功登记表缺席)',
+  evidence: '无',
+  open: '无',
+})
 
 /**
  * @param childId       end 载荷里的子会话 id
@@ -93,10 +109,12 @@ const DECISION_ADVANCE = {
  * @param reportGate    报告提交制闸门输入，null/缺省 = 关闭（现路径零变化）。启用形态：
  *                      { enabled: true, reportSubmitted: (id) => boolean,
  *                        readSubmitted: (id) => { conclusion, evidence, open },
- *                        repairRetried: (id) => boolean }
+ *                        repairRetried: (id) => boolean, hasBoard: (id) => boolean }
  *                      —— reportSubmitted/readSubmitted 读成功提交登记（report_submit
  *                      校验通过即登记，child-registry 持有），repairRetried 是
- *                      补发授权 once-guard 的成员判定谓词
+ *                      补发授权 once-guard 的成员判定谓词；hasBoard 是**报告板兜底**
+ *                      （该 childId 在板上是否已有货，broker 侧 existsSync 现算）。
+ *                      缺省 () => false：本模块零 fs、既有替身零扰动，判定退回纯内存表
  *
  * 二期 2.4（read-pool-semantics.md §4.3 方案 A）：spawningCandidates 参数与占位
  * 归因兜底（bind-spawning-child / set-child-owner 两 op）**退役**——end 抢跑场景
@@ -198,6 +216,18 @@ export function attributeEnd({
     })
   }
 
+  // E8：need_help 挂起回合的静默出口。子代调 need_help 即 suspend（台账 status 转
+  // waiting），而它挂起前的那一轮在 harness 侧仍以 completed 终局上报 end——这条
+  // end 不是完工口径，是「一次求助的中场哨」。此前它一路掉进报告闸门，被判成
+  // 「完工未交报告」：发射第九出口 + queued 补发 prompt，把已经挂起的子代
+  // coldResume 唤醒（求助单还挂在册上，人却被踢回去补交报告）。闸门在这里不适用：
+  // 不 finish、不补发、不推进队列——记录留在 waiting 原位，等主编 forward/continue。
+  if (ledgerRecord?.status === 'waiting') {
+    return done('suspended-help-hold', ops, { ownerPid, type: resolvedType }, {
+      warn: `subagent/end for ${String(childId)} (${resolvedType}) is a suspended turn settling; record stays waiting, gate not applied`,
+    })
+  }
+
   const blocks = Array.isArray(info?.lastAssistantMessage) ? info.lastAssistantMessage : []
   const text = blocks
     .filter((block) => block?.type === 'text' && typeof block.text === 'string')
@@ -261,18 +291,27 @@ export function attributeEnd({
   // failed 永不过闸（上方 failed 分支照旧）；reportGate 缺省 = 现路径一字不动。
   // 判定源是成功提交登记，子代最后一条消息不参与任何解析。
   if (reportGate?.enabled && !failed) {
-    if (reportGate.reportSubmitted(childId)) {
+    // 表为快路径（内存登记，跨终局保留），板为兜底（文件持久化）：任一命中即
+    // 视为已交付。补上兜底的病灶：进程重启/冷恢复后内存表必然为空，而报告全文
+    // 明明还在板上——只查表就会把「交过」的儿童判成「从未提交」并发射补发。
+    const hasBoard = reportGate.hasBoard ?? NEVER_HAS_BOARD
+    const tableHit = reportGate.reportSubmitted(childId)
+    if (tableHit || hasBoard(childId)) {
       // 已交付：回执内芯 = 从已校验字段合成的概要（短），全文已在板上
       // （report_submit 落板成功是登记前提），无需落板兜底。
+      // 登记值缺席（仅板命中）→ 显式兜底一份最小四字段，phase 记成
+      // 'pass-board-fallback' 与常规 'pass' 分开：统计上这是「板为准」的保守
+      // 放行，不是真读到了提交值，两种口径不许混在一个 phase 里。
+      const registered = tableHit ? reportGate.readSubmitted(childId) : undefined
       return done('finalize', ops, {
         ownerPid,
         type: resolvedType,
         failure,
-        conclusion: buildOwnerSummary(reportGate.readSubmitted(childId), childId),
+        conclusion: buildOwnerSummary(registered ?? BOARD_ONLY_SUBMITTED, childId),
         failed,
         fallbackChain: chain,
         notices,
-        reportGate: { phase: 'pass' },
+        reportGate: { phase: registered ? 'pass' : 'pass-board-fallback' },
       })
     }
     if (reportGate.repairRetried(childId)) {
