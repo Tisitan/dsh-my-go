@@ -4,7 +4,8 @@
  *
  * Pure functions shared by the client bundle (inlined by esbuild via
  * src/panel-tree.js → usage-panel.js) and the node --test suite (imported
- * directly) — keep this module dependency-free (no react, no @deepseek-ai/*),
+ * directly) — keep this module free of react and @deepseek-ai/* imports
+ * (preset/shared/constants is plain ESM constants, safe for both consumers),
  * same split as panel-format.js / usage-price-rows.js.
  *
  * Everything derives from ONE getUsage response (D4): byModel rows carry the
@@ -13,6 +14,8 @@
  * priced/unpriced verdict the models view shows (one source of truth, no
  * client-side re-matching against settings, which the client cannot even see).
  */
+
+import { LEGACY_PARENT_ID } from '../preset/shared/constants.mjs'
 
 // Three views over the same response (D4); `key` is the tab state value.
 export const USAGE_TABS = [
@@ -183,7 +186,7 @@ export function formatCost(cost, currency = 'USD') {
 export function usageSessionTarget(currentPid, parents) {
   if (typeof currentPid === 'string' && currentPid !== '') return currentPid
   const values = parents && typeof parents === 'object' ? Object.values(parents) : []
-  const real = values.filter((p) => p && typeof p.parentSessionId === 'string' && p.parentSessionId !== '' && p.parentSessionId !== 'legacy')
+  const real = values.filter((p) => p && typeof p.parentSessionId === 'string' && p.parentSessionId !== '' && p.parentSessionId !== LEGACY_PARENT_ID)
   return real.length === 1 ? real[0].parentSessionId : null
 }
 

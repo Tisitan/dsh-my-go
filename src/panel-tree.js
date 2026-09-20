@@ -16,6 +16,7 @@
  */
 
 import * as React from 'react'
+import { LEGACY_PARENT_ID, PANEL_RPC_CHANNEL, PANEL_ENDPOINTS } from '../preset/shared/constants.mjs'
 import { shortId, oneLine, formatRelativeTime, extractFallbackNote } from './panel-format.js'
 import { UsageSection } from './usage-panel.js'
 import { usageSessionTarget, sessionsListPhase } from './usage-views.js'
@@ -87,7 +88,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
     }
     pollInFlight = true
     try {
-      const res = await connection.rpc.call('/dsh-my-go', 'snapshot', {})
+      const res = await connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.snapshot, {})
       if (res && res.ok) {
         const next = res.value
         // 首帧必 emit（哪怕 seq 恰与初值同）：花名册区在 seq=0 的降级空态里
@@ -155,7 +156,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
         usage = { state: 'loading', report: null, detail: '' }
         emit()
       }
-      const res = await connection.rpc.call('/dsh-my-go', 'getUsage', { parentSessionId: pid })
+      const res = await connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.getUsage, { parentSessionId: pid })
       if (res && res.ok) {
         usage = { state: 'ok', report: res.value, detail: '' }
       } else {
@@ -216,10 +217,10 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
     const parents = s.parents && typeof s.parents === 'object' ? s.parents : {}
     // 面板扁平化展示所有编排会话的条目；parents 数量 >1 时每条附
     // parentSessionId 短后缀 chip 区分归属。
-    // 'legacy' 是台账 v1 兼容桶（broker 载入时造出的幽灵父区）：它没有属主
+    // LEGACY_PARENT_ID 是台账 v1 兼容桶（broker 载入时造出的幽灵父区）：它没有属主
     // 会话、current 恒空、点开无处可跳，出现在父区列表里只会被误认成一个
     // 真实编排会话（tisitan.8 A-04，父区直接过滤）。
-    const parentList = Object.values(parents).filter((p) => p && p.parentSessionId !== 'legacy')
+    const parentList = Object.values(parents).filter((p) => p && p.parentSessionId !== LEGACY_PARENT_ID)
     const multi = parentList.length > 1
 
     // 统一徽章（chip）：标识符一律等宽小字、浅底圆角；title 悬浮给全量值

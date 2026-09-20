@@ -146,6 +146,47 @@ test('身份推导防御：无 exec.agent 抛错；parentSession 非字符串抛
   )
 })
 
+test('施工层小节闸（agentType 走登记表反查）：hephaestus 子代缺节即拒收不落板，补齐后放行', async () => {
+  const parent = { id: 'parent-rs', session: { header: {} } }
+  const { ctx, tools } = createMockCtx({
+    agents: { get: (id) => (id === 'parent-rs' ? parent : undefined) },
+    startContinuable: async () => ({ childId: 'child-hp' }),
+  })
+  const home = process.env.DSH_HOME
+  try {
+    await broker.apply(ctx, {})
+    await tools.get('go_work').execute({ agent: 'hephaestus', prompt: '改 broker' }, execOf(parent))
+    const exec = execOf(childAgent('child-hp'))
+    const boardPath = join(home, 'dsh-my-go', 'board', encodeSegment('parent-rs'), 'child-hp.md')
+    await assert.rejects(
+      () => tools.get('report_submit').execute(argsOf(), exec),
+      (error) => {
+        const text = String(error.message)
+        return text.includes('缺少「偏差记录」小节') && text.includes('缺少「未验项」小节') && !text.includes('conclusion:')
+      },
+      '缺哪节报哪节（其余字段不误伤）',
+    )
+    assert.equal(existsSync(boardPath), false, '小节闸不过不落板、不登记')
+    const fixed = argsOf({ report: '# 完整报告\n偏差记录：无\n未验项：无\n' })
+    assert.equal((await tools.get('report_submit').execute(fixed, exec)).ok, true, '两节齐（值为「无」）放行')
+    assert.equal(readFileSync(boardPath, 'utf-8'), fixed.report)
+  } finally {
+    await removeHomeWithRetry(home)
+  }
+})
+
+test('工种反查两腿：注册表缺席靠 label 兜底认工种；两条腿都查不到 → 不强制', async () => {
+  const { tools } = await applyBroker({})
+  const labeled = (type) => ({ id: 'child-cold', session: { header: { parentSession: 'parent-rs', label: `dsh-my-go:${type}: 施工` } } })
+  await assert.rejects(
+    () => tools.get('report_submit').execute(argsOf(), execOf(labeled('hephaestus'))),
+    /缺少「偏差记录」小节/,
+    'cold-resume 后活登记为空，label 兜底仍认得出施工层',
+  )
+  assert.equal((await tools.get('report_submit').execute(argsOf(), execOf(labeled('oracle')))).ok, true, '非施工层不强制')
+  assert.equal((await tools.get('report_submit').execute(argsOf(), execOf(childAgent('child-plain')))).ok, true, '注册表 + label 双缺（自定义角色）→ 放行')
+})
+
 test('开关关（config.reportExternalization=false）：工具不在册', async () => {
   const { tools } = await applyBroker({ reportExternalization: false })
   assert.equal(tools.get('report_submit'), undefined, '开关关 → 工具不注册（挂载期读一次）')

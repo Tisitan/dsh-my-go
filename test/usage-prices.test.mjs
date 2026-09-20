@@ -11,6 +11,7 @@ import {
   apply as hostApply,
 } from '../lib/index.js'
 import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
+import { buildSettingsOps, draftFromSection } from '../src/settings-ops.js'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-usage-prices-home-'))
 
@@ -71,7 +72,7 @@ test('schema：usagePrices 缺省解析为空 dict（空表 = 不计成本），
   const parsed = schema(legacy)
   assert.deepEqual(parsed.usagePrices, {}, '无 usagePrices 键 = 空表默认，不 undefined 不炸')
   assert.deepEqual(parsed.sisyphus, legacy.sisyphus, '既有字段不受新字段影响')
-  assert.deepEqual(parsed.toolMask.deny, ['mcp__a__x'], 'toolMask 行为不变')
+  assert.deepEqual(parsed.toolMask, legacy.toolMask, '旧 toolMask 键原样透传（schemastery 未知键透传，消费面已拆除不再读它），存量文件解析不炸')
 })
 
 test('schema：键违反「第一个 / 切分、两段非空」被拒；PRICE_KEY_PATTERN 与 re-export 同源', async () => {
@@ -105,54 +106,33 @@ test('schema：usageCurrency 缺省 USD、CNY 合法、非法枚举拒（D1a 全
   assert.throws(() => schema({ usageCurrency: 42 }), '非串拒')
 })
 
-// ── round-trip：loadSettings 透传 / saveSettings 不触碰存量 ──────────────
+// ── round-trip：读面投影 / 写面不触碰存量 ─────────────────────────────────
 
 const STORED_WITH_PRICES = {
   sisyphus: { provider: 'p-s', model: 'm-s', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] },
-  toolMask: { deny: ['mcp__a__x'] },
   roles: { hermes: { provider: 'p1', model: 'm1', reasoningEffort: 'default', dsv4p0813: false, fallbacks: [] } },
   usagePrices: USAGE_PRICES,
 }
 
-test('round-trip 加载面：loadSettings 原样透传 usagePrices，不丢不洗', async () => {
-  const settings = {
-    register: () => ({}),
-    get: (ns) => (ns === 'dsh-my-go' ? structuredClone(STORED_WITH_PRICES) : undefined),
-    mutate: async () => {},
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  const { ok, value } = await rpc('/dsh-my-go', 'loadSettings', {})
-  assert.equal(ok, true)
-  assert.deepEqual(value.usagePrices, USAGE_PRICES, '存储里的单价表随加载面完整到达')
-  assert.equal(typeof value.revision, 'number', 'revision 凭照照常下发')
+test('round-trip 加载面：命名空间值经 draftFromSection 原样抵达单价编辑器', () => {
+  const draft = draftFromSection(structuredClone(STORED_WITH_PRICES))
+  assert.deepEqual(draft.usagePrices, USAGE_PRICES, '存储里的单价表随读面投影完整到达')
 })
 
-async function saveOpsOf(draft, stored = STORED_WITH_PRICES) {
-  const mutations = []
-  const settings = {
-    register: () => ({}),
-    get: (ns) => (ns === 'dsh-my-go' ? structuredClone(stored) : undefined),
-    mutate: async (_ns, ops) => { mutations.push(...ops) },
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  const res = await rpc('/dsh-my-go', 'saveSettings', draft)
-  assert.equal(res.ok, true)
-  return mutations
+// 写面从「宿主替身收到的 ops」变成「编译器的返回值」：判据一字未改。
+function saveOpsOf(draft, stored = STORED_WITH_PRICES) {
+  return buildSettingsOps(draft, { value: structuredClone(stored), user: structuredClone(stored), base: {} })
 }
 
-test('round-trip 保存面：draft 不带 usagePrices 时零触碰（存量单价表不被保存动作洗掉）', async () => {
-  const draft = { sisyphus: { provider: 'p2', model: 'm2' }, toolMask: { deny: [] } }
-  const ops = await saveOpsOf(draft)
+test('round-trip 保存面：draft 不带 usagePrices 时零触碰（存量单价表不被保存动作洗掉）', () => {
+  const draft = { sisyphus: { provider: 'p2', model: 'm2' } }
+  const ops = saveOpsOf(draft)
   assert.equal(ops.filter((op) => op.path?.[0] === 'usagePrices').length, 0, '显式携带才写：draft 无此键 = 完全不触碰')
 })
 
-test('round-trip 保存面：draft 携带完整存量表 → 逐行 set、无 unset（与存储一致时不产生删除面）', async () => {
-  // 不带 revision = 旧前端/脚本的无条件写路径（mock 无宿主 describe，凭照比对不适用）
+test('round-trip 保存面：draft 携带完整存量表 → 逐行 set、无 unset（与存储一致时不产生删除面）', () => {
   const draft = structuredClone(STORED_WITH_PRICES)
-  delete draft.revision
-  const ops = await saveOpsOf(draft)
+  const ops = saveOpsOf(draft)
   const sets = ops.filter((op) => op.op === 'set' && op.path?.[0] === 'usagePrices')
   assert.deepEqual(sets.map((op) => op.path[1]).sort(), Object.keys(USAGE_PRICES).sort(), 'draft 全表显式携带 → 行级 set')
   assert.equal(ops.filter((op) => op.op === 'unset' && op.path?.[0] === 'usagePrices').length, 0, '存储行都在 draft 里 → 零删除面')
@@ -160,30 +140,29 @@ test('round-trip 保存面：draft 携带完整存量表 → 逐行 set、无 un
 
 // ── 关键接缝 1：局部合并写回（步骤 3/7）─────────────────────────────────
 
-test('写面（局部合并）：draft 逐行 set、存储缺行 unset、draft 未提及行不触碰其他字段', async () => {
+test('写面（局部合并）：draft 逐行 set、存储缺行 unset、draft 未提及行不触碰其他字段', () => {
   const stored = {
     ...STORED_WITH_PRICES,
     usagePrices: { 'a/b': { input: 1, output: 2 }, 'stale/old': { input: 3, output: 4 } },
   }
   const draft = { usagePrices: { 'a/b': { input: 9, output: 8 }, 'c/d': { input: 0.5, output: 1 } } }
-  const ops = await saveOpsOf(draft, stored)
+  const ops = saveOpsOf(draft, stored)
   const priceOps = ops.filter((op) => op.path?.[0] === 'usagePrices')
   assert.deepEqual(priceOps.find((op) => op.path[1] === 'a/b'), { op: 'set', path: ['usagePrices', 'a/b'], value: { input: 9, output: 8 } }, '已存行按 draft 新值 set')
   assert.deepEqual(priceOps.find((op) => op.path[1] === 'c/d'), { op: 'set', path: ['usagePrices', 'c/d'], value: { input: 0.5, output: 1 } }, '新增行 set')
   assert.deepEqual(priceOps.find((op) => op.path[1] === 'stale/old'), { op: 'unset', path: ['usagePrices', 'stale/old'] }, 'draft 缺的存量行 unset')
   assert.equal(priceOps.length, 3, '局部合并 = 恰好三枚 ops')
-  assert.equal(ops.filter((op) => op.path?.[0] === 'roles' || op.path?.[0] === 'sisyphus').length, 0, 'roles/sisyphus 零触碰（toolMask.deny 的无条件 unset 是既有行为，不属本断言）')
+  assert.equal(ops.filter((op) => op.path?.[0] === 'roles' || op.path?.[0] === 'sisyphus').length, 0, 'roles/sisyphus 零触碰（toolMask ops 已随屏蔽功能拆除，不属本断言）')
 })
 
-test('写面（空表语义）：draft.usagePrices = {} → 存量行全部 unset（显式清空单价表 = 未定价持久态）', async () => {
-  const ops = await saveOpsOf({ usagePrices: {} }, { usagePrices: { 'a/b': { input: 1, output: 2 }, 'c/d': { input: 1, output: 2 } } })
-  const unsets = ops.filter((op) => op.op === 'unset' && op.path?.[0] === 'usagePrices')
-  assert.deepEqual(unsets.map((op) => op.path[1]).sort(), ['a/b', 'c/d'], '空表 = 全部 unset，不残留')
+test('写面（空表语义）：draft.usagePrices = {} → 整键 unset（清空 = 回到未配置，不落空字典）', () => {
+  const ops = saveOpsOf({ usagePrices: {} }, { usagePrices: { 'a/b': { input: 1, output: 2 }, 'c/d': { input: 1, output: 2 } } })
+  assert.deepEqual(ops.filter((op) => op.path?.[0] === 'usagePrices'), [{ op: 'unset', path: ['usagePrices'] }], '撤整键而不是逐行留一个 `usagePrices: {}` 噪声')
 })
 
 // ── 关键接缝 2：写入时拒绝 NaN/Infinity/负数（schemastery 拦不住的三种值）──
 
-test('写面（写入拒绝）：NaN/Infinity/负数/缺必填/脏键行丢弃 fail-closed，合法行照常落盘且值为 number', async () => {
+test('写面（写入拒绝）：NaN/Infinity/负数/缺必填/脏键行丢弃 fail-closed，合法行照常落盘且值为 number', () => {
   const draft = { usagePrices: {
     'good/k': { input: 1, output: 2 },
     'nan/k': { input: NaN, output: 2 },
@@ -196,7 +175,7 @@ test('写面（写入拒绝）：NaN/Infinity/负数/缺必填/脏键行丢弃 f
     '/lead': { input: 1, output: 2 },
     'trail/': { input: 1, output: 2 },
   } }
-  const ops = await saveOpsOf(draft, { usagePrices: {} })
+  const ops = saveOpsOf(draft, { usagePrices: {} })
   const sets = ops.filter((op) => op.op === 'set' && op.path?.[0] === 'usagePrices')
   assert.deepEqual(sets.map((op) => op.path[1]).sort(), ['good/k', 'negopt/k'], '必填桶非法/脏键行整行拒；可选桶非法 = 桶级剔除（Z11 视同该桶未定价）')
   const negopt = sets.find((op) => op.path[1] === 'negopt/k')
@@ -204,19 +183,19 @@ test('写面（写入拒绝）：NaN/Infinity/负数/缺必填/脏键行丢弃 f
   assert.equal(typeof sets[0].value.input, 'number', '落盘值恒为 number（schema 可收）')
 })
 
-test('写面（数字串兜底）：脚本直调塞数字串 → coerce 成 number 落盘；非数字串仍拒', async () => {
-  const ops = await saveOpsOf({ usagePrices: { 'a/b': { input: '2.5', output: '8' }, 'c/d': { input: 'x', output: '1' } } }, { usagePrices: {} })
+test('写面（数字串兜底）：脚本直调塞数字串 → coerce 成 number 落盘；非数字串仍拒', () => {
+  const ops = saveOpsOf({ usagePrices: { 'a/b': { input: '2.5', output: '8' }, 'c/d': { input: 'x', output: '1' } } }, { usagePrices: {} })
   const sets = ops.filter((op) => op.op === 'set' && op.path?.[0] === 'usagePrices')
   assert.deepEqual(sets.map((op) => op.path[1]), ['a/b'], '数字串 coerce 合法、非数字串拒')
   assert.equal(sets[0].value.input, 2.5, 'coerce 后是 number 2.5')
 })
 
-test('写面（usageCurrency）：合法值 set 顶级键、无键零触碰、非法值丢弃 fail-closed（D1a）', async () => {
-  const ops1 = await saveOpsOf({ usageCurrency: 'CNY' }, {})
+test('写面（usageCurrency）：合法值 set 顶级键、无键零触碰、枚举外丢弃（D1a）', () => {
+  const ops1 = saveOpsOf({ usageCurrency: 'CNY' }, {})
   assert.deepEqual(ops1.filter((op) => op.path?.[0] === 'usageCurrency'), [{ op: 'set', path: ['usageCurrency'], value: 'CNY' }], '合法值逐点 set')
-  const ops2 = await saveOpsOf({ usagePrices: {} }, { usagePrices: {} })
+  const ops2 = saveOpsOf({ usagePrices: {} }, { usagePrices: {} })
   assert.equal(ops2.filter((op) => op.path?.[0] === 'usageCurrency').length, 0, '无键 = 显式携带才写，零触碰')
-  const ops3 = await saveOpsOf({ usageCurrency: 'EUR' }, {})
+  const ops3 = saveOpsOf({ usageCurrency: 'EUR' }, {})
   assert.equal(ops3.filter((op) => op.path?.[0] === 'usageCurrency').length, 0, '枚举外丢弃（不毒杀整批）')
 })
 

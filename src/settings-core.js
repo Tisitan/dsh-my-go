@@ -1,570 +1,625 @@
 /**
- * dsh-my-go — settings page core (tisitan.15 split).
+ * dsh-my-go — configuration card (0.5.0-tisitan.3).
  *
- * SettingsPage skeleton + draft lifecycle (load/null-gate/save), the eight
- * built-in specialist cards (model priority chain, persona override) and
- * the save row. The custom-roles section and the tool-mask
- * dual-list render through roles-editor.js / tool-mask-editor.js, which
- * receive every piece of state explicitly via their deps objects — no
- * module-level mutable state anywhere.
+ * The plugin's single configuration entry, rendered inside the official plugin
+ * page through the `plugins.bundle.config` slot. It reads and writes the
+ * 'dsh-my-go' namespace over the host's `settingsScope` — the private
+ * `loadSettings` / `saveSettings` RPC pair is retired, so nothing about the
+ * stored shape is decided twice.
  *
- * Unsaved-work / concurrent-write defense (tisitan.9 E6/A-03): every draft
- * mutation goes through mutateDraft (dirty flag), the dirty flag arms a
- * beforeunload guard, the host revision travels load → save and a conflict
- * response locks saving until an explicit reload. The interpretation helpers
- * live in settings-guard.js so they are unit-testable without a DOM.
+ * Information architecture: two blocks, each a two-column master/detail grid
+ * with its own full-width annotation strip, plus a save bar.
+ *   1. 模型与角色 — one row per role (8 built-ins + the custom roster), the
+ *      selected role edited on the right (model priority chain, effort, DSV
+ *      patch, persona override, tool allow/deny, card JSON).
+ *   2. 用量单价表 — one row per "{provider}/{model}" key, four buckets on the
+ *      right, one currency knob for the whole table.
+ *
+ * Draft discipline (what the previous page could not promise):
+ *  - nothing reaches the wire until 保存;
+ *  - the write carries the revision the draft was *opened* at, not the latest;
+ *  - an external change never overwrites the draft — it raises a drift notice;
+ *  - a save is only reported as saved when the namespace answers back with the
+ *    intended section (the official channel rejects silently).
+ *
+ * The pane renderers (roles-editor.js, usage-prices-editor.js) and all row math
+ * (chain-rows.js, roster-rows.js, usage-price-rows.js) stay as they were: pure,
+ * state-free, driven from here.
  */
 
 import * as React from 'react'
 
-import { composeChain, decomposeChain, addChainEntry, removeChainEntry, moveChainEntry, updateChainEntry, stripEmptyFallbackRows } from './chain-rows.js'
-import { builtinSummaryText, withPersonaOverride, personaOverrideSource, resolveBuiltinPersonaResult } from './roster-rows.js'
-import { interpretLoadResult, interpretSaveResult, attachBeforeUnloadGuard } from './settings-guard.js'
-import { renderRolesEditor } from './roles-editor.js'
-import { renderToolMaskEditor } from './tool-mask-editor.js'
-import { renderUsagePricesEditor } from './usage-prices-editor.js'
-import { sanitizePriceRow, PRICE_KEY_PATTERN } from './usage-price-rows.js'
-import { AGENT_TYPES, AGENT_LABELS, AGENT_BLURBS, ACCENT_QUEUE, MONO_FONT } from './client-constants.js'
+import { PRICE_KEY_PATTERN, ROLE_KEY_PATTERN, PANEL_RPC_CHANNEL, PANEL_ENDPOINTS, PRICE_BUCKETS, PRICE_BUCKET_LABELS } from '../preset/shared/constants.mjs'
+import { composeChain, decomposeChain } from './chain-rows.js'
+import { AGENT_LABELS, AGENT_TYPES } from './client-constants.js'
+import { mountSettingsStyles } from './client-styles.js'
+import { normalizeRoleRows, personaOverrideSource, resolveBuiltinPersonaResult, withPersonaOverride } from './roster-rows.js'
+import { attachBeforeUnloadGuard, describeSaveOutcome, resolveCardView } from './settings-guard.js'
+import { buildSettingsOps, compareKey, draftFromSection, dirtyLabels, summaryLine, writeLanded } from './settings-ops.js'
+import { renderRolesPane } from './roles-editor.js'
+import { renderPricesPane } from './usage-prices-editor.js'
 
-export function SettingsPage({ scope: sp, connection, close }) {
+const el = React.createElement
+
+/**
+ * The slot component. `view` comes from the plugin page: `summary` is the line a
+ * collapsed row shows, `page` is the editor.
+ */
+export function SettingsCard({ view = 'page', scope, face, catalog, connection }) {
+  const snapshot = useScopeSnapshot(scope)
+  if (view === 'summary') {
+    const card = resolveCardView(snapshot)
+    return el('span', { className: 'mygo-summary' }, card.kind === 'ready' ? summaryLine(snapshot.value) : (snapshot === undefined ? '配置读取中…' : '命名空间未就绪'))
+  }
+  return el(SettingsPage, { snapshot, scope, face, catalog, connection })
+}
+
+/** Subscribe to the scope mirror; the card's stylesheet rides the same lifetime. */
+function useScopeSnapshot(scope) {
+  const subscribe = React.useCallback((emit) => {
+    const off = typeof scope?.subscribe === 'function' ? scope.subscribe(emit) : null
+    const styleOff = mountSettingsStyles()
+    return () => {
+      if (typeof off === 'function') off()
+      styleOff()
+    }
+  }, [scope])
+  const get = React.useCallback(() => (scope?.getSnapshot ? scope.getSnapshot() : undefined), [scope])
+  const snapshot = React.useSyncExternalStore(subscribe, get, get)
+  // 首次挂载拉一次 describe（bind 不会自己发请求），失败由镜像自己变成
+  // unavailable 态，页面据此出「重试」而不是转圈。
+  React.useEffect(() => {
+    if (typeof scope?.ensure === 'function') void scope.ensure()
+    else if (typeof scope?.load === 'function') void scope.load()
+  }, [scope])
+  return snapshot
+}
+
+function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const [draft, setDraft] = React.useState(null)
+  const [fence, setFence] = React.useState(null)
   const [saving, setSaving] = React.useState(false)
-  const [msg, setMsg] = React.useState(null)
-  const [available, setAvailable] = React.useState({ providers: [], models: {}, errors: {} })
-  // 加载态三分（tisitan.20）：draft=null 时靠 loadError 区分「加载中」与「加载
-  // 失败」——初始渲染不再误报失败横幅；modelsReady 区分 listModels 未返回与
-  // 确实拉不到 Provider 列表（fetchFailed 提示只在确认失败后出现）
-  const [loadError, setLoadError] = React.useState(false)
-  const [modelsReady, setModelsReady] = React.useState(false)
-  // 未保存/并发写防线（tisitan.9 E6/A-03）：
-  //  - dirty：任何一次草稿变更置位，保存成功即复位（配合 beforeunload 与角标）
-  //  - revision：loadSettings 带回来的不透明版本凭据，保存时原样带回
-  //  - conflict：host 判定「他处已改」后锁死保存，直到用户主动重新加载
-  const [dirty, setDirty] = React.useState(false)
-  const [revision, setRevision] = React.useState(null)
-  const [conflict, setConflict] = React.useState(null)
-  const [reloadNonce, setReloadNonce] = React.useState(0)
-  // 工具屏蔽（tisitan.13）：花名册快照 + 左列过滤词 + 双列选中项 + 手填工具名
-  const [roster, setRoster] = React.useState([])
-  const [maskFilter, setMaskFilter] = React.useState('')
-  const [maskSelL, setMaskSelL] = React.useState(null)
-  const [maskSelR, setMaskSelR] = React.useState(null)
-  const [maskManual, setMaskManual] = React.useState('')
-  // 自定义角色（tisitan.14）：新建名输入 + 各角色 toolFilter 手填草稿
+  const [message, setMessage] = React.useState(null)
+  const [picked, setPicked] = React.useState(AGENT_TYPES[0])
+  const [pickedPrice, setPickedPrice] = React.useState(null)
   const [newRoleKey, setNewRoleKey] = React.useState('')
-  const [roleToolDrafts, setRoleToolDrafts] = React.useState({})
+  const [toolDrafts, setToolDrafts] = React.useState({})
   const [importError, setImportError] = React.useState('')
-  // 用量单价表（contract D1）：新建键输入（行内四桶值住 draft.usagePrices 本体）
   const [newPriceKey, setNewPriceKey] = React.useState('')
-  const [openCards, setOpenCards] = React.useState({})
-  // 内置卡「载入文件默认」按工种记录红字错误（RPC 失败/文件缺失）
   const [personaFileErr, setPersonaFileErr] = React.useState({})
 
-  React.useEffect(() => {
-    if (!sp) return
-    // 读写一律走 host RPC，不用注入的 settingsScope：设置页的写形状是 roles
-    // dict 的 path-ops（set/unset 混合、脏键过滤、缺失键整删、旧顶级键迁移），
-    // 这套编译规则与 bindings 合并逻辑同属 lib 半唯一权威，浏览器侧再抄一份就
-    // 成了两处真相。sp 在这里只是「设置服务在不在」的门禁。
-    // （旧注释写的「DSH SettingsScope doesn't support nested reads」是伪前提，
-    // 宿主 scope.get() 返回整份命名空间值，嵌套读从来不是问题——tisitan.9 修正。
-    // 真要迁到 scope 是另一件事：得先把 ops 编译面搬到浏览器侧，另立专项。）
-    if (connection && connection.rpc && typeof connection.rpc.call === 'function') {
-      connection.rpc.call('/dsh-my-go', 'loadSettings', {}).then((res) => {
-        // 加载失败保持 draft=null 并禁用保存：空 draft 保存会清空全部配置；
-        // 失败经 loadError 亮红字横幅，不再完全静默
-        const loaded = interpretLoadResult(res)
-        if (loaded.status === 'ok') {
-          setDraft(loaded.draft)
-          setRevision(loaded.revision)
-          setDirty(false)
-          setConflict(null)
-          setLoadError(false)
-        } else {
-          setDraft(null); setLoadError(true)
-        }
-      }).catch(() => { setDraft(null); setLoadError(true) })
-      connection.rpc.call('/dsh-my-go', 'listModels', {}).then((res) => {
-        // models 字段一并校验：畸形响应（models 非对象）整体丢弃，不让
-        // Object.values 在渲染期炸整页（tisitan.20 D5）
-        if (res && res.ok && res.value && Array.isArray(res.value.providers)
-          && res.value.models !== null && typeof res.value.models === 'object') setAvailable(res.value)
-      }).catch(() => {}).finally(() => setModelsReady(true))
-      connection.rpc.call('/dsh-my-go', 'listTools', {}).then((res) => {
-        // 花名册拉取失败保持空数组：右列条目全部带「未连接」徽章，不阻塞编辑
-        if (res && res.ok && Array.isArray(res.value)) setRoster(res.value)
-      }).catch(() => {})
-    } else {
-      // 无可用 RPC 通道：等同加载失败，亮横幅而不是停在「加载中」
-      setLoadError(true)
-    }
-  }, [sp, reloadNonce])
+  const card = resolveCardView(snapshot)
+  const ready = card.kind === 'ready'
+  const layers = ready ? { value: snapshot.value, base: snapshot.base, user: snapshot.user } : { value: {}, base: {}, user: {} }
+  const stored = ready ? draftFromSection(snapshot.value) : null
+  const current = draft ?? stored ?? emptyDraft()
+  const dirty = draft !== null && compareKey(draft) !== compareKey(stored ?? emptyDraft())
+  const pending = draft === null ? [] : dirtyLabels(draft, snapshot?.value ?? {})
+  const drifted = draft !== null && typeof fence === 'number' && typeof snapshot?.revision === 'number' && fence !== snapshot.revision
+  const writable = ready && snapshot.writable !== false && snapshot.mode !== 'memory'
 
-  // 一切草稿变更都经 mutateDraft：先置 dirty 再改 draft（E6/A-03）——dirty 是
-  // 保守过近似（同值改写也算改），宁可多拦一次也不漏放一次未保存的关闭。
-  // 唯一豁免是上面的 loadSettings 回写，它直接吃 setDraft，不该被当成用户编辑。
-  const mutateDraft = (updater) => {
-    setDirty(true)
-    setDraft(updater)
-  }
+  const models = useCatalog(catalog)
+  const tools = useToolRoster(connection)
 
-  // 关页签/刷新前拦一道（E6/A-03）：宿主 settings.section 只给 `close`（弹窗
-  // 开合状态归 shell，没有 onClose/卸载时机可挂——见 dsh-client-ui-settings
-  // SettingsSectionOwnerProps），所以页内用「保存并关闭」把 close 用起来，页外
-  // 靠 beforeunload 兜住标签页关闭与刷新。hook 必须在下面的早退之前，
-  // 否则 sp 有无会让 hook 数量变化（React 硬约束）。
   React.useEffect(() => {
     if (!dirty) return undefined
-    const win = typeof window === 'undefined' ? undefined : window
-    return attachBeforeUnloadGuard(win)
+    return attachBeforeUnloadGuard(typeof window === 'undefined' ? undefined : window)
   }, [dirty])
 
-  if (!sp) return React.createElement('div', { style: { padding: 16, color: '#888' } }, '设置服务不可用')
-
-  // 标量编辑（reasoningEffort / dsv4p0813）：draft 为 null（尚未加载/加载
-  // 失败）时拒绝编辑——与 setDeny/setPersonaOverride 同款 null-gate，外层
-  // 拦截 + 函数式 prev 守卫双保险，避免从 null 造出半截 draft 后保存清空配置
-  const set = (type, field, value) => {
-    if (!draft) return
-    mutateDraft((prev) => {
-      if (!prev) return prev
-      return { ...prev, [type]: { ...prev?.[type], [field]: value } }
-    })
+  // 草稿建立只在「第一次打开编辑」时记栅栏（那一刻的 revision）；此后外部提交
+  // 一律走漂移提示，绝不动用户手里的东西。
+  const stage = (updater) => {
+    setDraft((prev) => updater(prev ?? stored ?? emptyDraft()))
+    if (draft === null && typeof snapshot?.revision === 'number') setFence(snapshot.revision)
+    setMessage(null)
   }
 
-  // 模型优先级编辑（tisitan.19）：编辑发生在合并链投影上，decompose 回
-  // provider/model/fallbacks 三字段一次性写回——存储形状零变更。draft 里
-  // fallbacks 始终以数组提交；空链提交为 []，host 半 saveSettings 会自动转
-  // unset，前端无需特判。null-gate 同 set（tisitan.20）
-  const setChain = (type, chainRow) => {
-    if (!draft) return
-    mutateDraft((prev) => prev ? { ...prev, [type]: { ...prev?.[type], provider: chainRow.provider, model: chainRow.model, fallbacks: chainRow.fallbacks } } : prev)
+  const reload = () => {
+    if (typeof face?.getSnapshot === 'function') void face.load?.()
+    if (typeof scope?.load === 'function') void scope.load()
+    else if (typeof scope?.ensure === 'function') void scope.ensure()
   }
 
-  // 工具屏蔽编辑：deny 始终以数组提交；空数组提交 []，host 半转 unset。
-  // draft 为 null（尚未加载/加载失败）时拒绝编辑：避免从 null 造出只有
-  // toolMask 的半截 draft，保存时把其余配置全部 unset 清空。
-  const setDeny = (rows) => {
-    if (!draft) return
-    mutateDraft((prev) => prev ? { ...prev, toolMask: { deny: rows } } : prev)
+  const discardAndReload = () => {
+    setDraft(null)
+    setFence(null)
+    setMessage(null)
+    reload()
   }
 
-  // 内置工种人设覆盖（tisitan.15）：写 roles 形状部分行（只带 persona
-  // 字段，透传既有字段），host 端显式字段才写——绝不清掉已配的绑定
-  const setPersonaOverride = (type, text) => {
-    if (!draft) return
-    mutateDraft((prev) => prev ? { ...prev, roles: { ...(prev.roles ?? {}), [type]: withPersonaOverride(prev.roles?.[type], text) } } : prev)
+  const save = async () => {
+    if (!draft || !writable || saving) return
+    setSaving(true)
+    setMessage(null)
+    try {
+      const ops = buildSettingsOps(draft, layers)
+      const before = { value: snapshot.value, base: snapshot.base }
+      await scope.mutate(ops, typeof fence === 'number' ? fence : undefined)
+      const after = scope.getSnapshot()
+      const landed = ready
+        && after?.status === 'ready'
+        && writeLanded(draft, before, ops)
+        && compareKey(draftFromSection(after.value)) === compareKey(draft)
+      setMessage(describeSaveOutcome(landed, after?.revision))
+      if (landed) {
+        setDraft(null)
+        setFence(null)
+      }
+    } catch (error) {
+      setMessage({ ok: false, text: `写入通道异常：${String(error)}` })
+    } finally {
+      setSaving(false)
+    }
   }
 
-  // 载入文件默认（tisitan.16b）：拉 prompts/<type>.md 原文填入 textarea，
-  // 成为未保存草稿（点「立即保存」才落盘，沿用现有草稿流）；draft=null
-  // 拒编辑沿用 setPersonaOverride 的 null-gate，RPC 失败按卡红字提示。
-  const loadBuiltinPersona = async (type) => {
-    if (!draft) return
-    if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') {
-      setPersonaFileErr((prev) => ({ ...prev, [type]: '连接不可用' }))
+  // ── 角色清单（内置 + 自定义同列）─────────────────────────────────────────
+  const customRows = normalizeRoleRows(current.roles, AGENT_TYPES)
+  const roleList = [
+    ...AGENT_TYPES.map((type) => roleEntry(type, AGENT_LABELS[type] ?? type, current[type], current.roles?.[type], true)),
+    ...customRows.map((row) => roleEntry(row.key, row.key, row, current.roles?.[row.key], false)),
+  ]
+  const selectedKey = roleList.some((row) => row.key === picked) ? picked : AGENT_TYPES[0]
+  const selectedRole = roleList.find((row) => row.key === selectedKey)
+  const selectedBuiltin = AGENT_TYPES.includes(selectedKey)
+
+  const rowOf = (key) => (AGENT_TYPES.includes(key) ? { ...current[key], ...partialOf(key) } : { ...current.roles?.[key] })
+  function partialOf(key) {
+    const carried = current.roles?.[key]
+    return carried && typeof carried === 'object' && Object.prototype.hasOwnProperty.call(carried, 'persona') ? { persona: carried.persona } : {}
+  }
+
+  const setBinding = (key, field, value) => stage((prev) => (AGENT_TYPES.includes(key)
+    ? { ...prev, [key]: { ...prev[key], [field]: value } }
+    : { ...prev, roles: { ...prev.roles, [key]: { ...prev.roles?.[key], [field]: value } } }))
+
+  const setChain = (key, chain) => stage((prev) => {
+    // 分解只在写回收口一处做（decomposeChain 顺带归一脏条目），pane 交出来的是链本体
+    const split = decomposeChain(chain)
+    const row = { provider: split.provider, model: split.model, fallbacks: split.fallbacks }
+    if (AGENT_TYPES.includes(key)) return { ...prev, [key]: { ...prev[key], ...row } }
+    return { ...prev, roles: { ...prev.roles, [key]: { ...prev.roles?.[key], ...row } } }
+  })
+
+  const setPersona = (key, text) => stage((prev) => ({
+    ...prev,
+    roles: { ...prev.roles, [key]: withPersonaOverride(rowOf(key), text) },
+  }))
+
+  const setToolFilter = (key, filter) => stage((prev) => ({
+    ...prev,
+    roles: { ...prev.roles, [key]: { ...prev.roles?.[key], toolFilter: { allow: [...(filter.allow ?? [])], deny: [...(filter.deny ?? [])] } } },
+  }))
+
+  const loadBuiltinPersona = async (key) => {
+    if (!connection?.rpc?.call) {
+      setPersonaFileErr((prev) => ({ ...prev, [key]: '连接不可用' }))
       return
     }
     try {
-      const res = await connection.rpc.call('/dsh-my-go', 'getBuiltinPersona', { type })
-      const parsed = resolveBuiltinPersonaResult(res)
+      const parsed = resolveBuiltinPersonaResult(await connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.getBuiltinPersona, { type: key }))
       if (parsed.ok) {
-        setPersonaOverride(type, parsed.persona)
-        setPersonaFileErr((prev) => ({ ...prev, [type]: '' }))
+        setPersona(key, parsed.persona)
+        setPersonaFileErr((prev) => ({ ...prev, [key]: '' }))
       } else {
-        setPersonaFileErr((prev) => ({ ...prev, [type]: parsed.message }))
+        setPersonaFileErr((prev) => ({ ...prev, [key]: parsed.message }))
       }
-    } catch (e) {
-      setPersonaFileErr((prev) => ({ ...prev, [type]: String(e) }))
+    } catch (error) {
+      setPersonaFileErr((prev) => ({ ...prev, [key]: String(error) }))
     }
   }
-  const toggleCard = (id) => setOpenCards((prev) => ({ ...prev, [id]: !prev[id] }))
-  const cardOpen = (id) => openCards[id] === true
 
-  // 保存边界归一（tisitan.20 D1）：剔除 provider/model 全空的备选条目后提交。
-  // 空备选行在 host 半 pickFallbackEntry（lib/index.js:1354）只会 warn+跳过、
-  // 且虚增 attempt/total 计数，零正语义——不落盘。过滤放保存边界而非
-  // decomposeChain：链视图写回须与 composeChain 往返无损（添加空行后立即
-  // 消失会毁掉编辑流），编辑期空行照常保留。
-  const buildPersistDraft = (source) => {
-    const out = { ...source }
-    for (const type of AGENT_TYPES) {
-      const cfg = source[type]
-      if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) out[type] = stripEmptyFallbackRows(cfg)
-    }
-    if (source.roles && typeof source.roles === 'object' && !Array.isArray(source.roles)) {
-      const roles = { ...source.roles }
-      for (const [key, row] of Object.entries(roles)) {
-        if (row && typeof row === 'object' && !Array.isArray(row)) roles[key] = stripEmptyFallbackRows(row)
-      }
-      out.roles = roles
-    }
-    // Usage prices (contract D1): edit-loose rows in, sanitized number rows
-    // out — invalid rows (NaN/Infinity/negative/missing required bucket/dirty
-    // key) are dropped here and again host-side, so the atomic mutate never
-    // sees a schema-rejecting value. Keyless draft stays keyless (explicit
-    // carry: nothing touched server-side).
-    if (source.usagePrices !== undefined && source.usagePrices !== null && typeof source.usagePrices === 'object' && !Array.isArray(source.usagePrices)) {
-      const prices = {}
-      for (const [key, row] of Object.entries(source.usagePrices)) {
-        if (typeof key !== 'string' || !PRICE_KEY_PATTERN.test(key)) continue
-        const price = sanitizePriceRow(row)
-        if (price !== null) prices[key] = price
-      }
-      out.usagePrices = prices
-    }
-    return out
+  const createRole = () => {
+    const key = newRoleKey.trim()
+    if (!writable || !isValidRoleKey(key, customRows)) return
+    stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: blankRole() } }))
+    setNewRoleKey('')
+    setPicked(key)
+    setImportError('')
   }
 
-  // Manual save only — auto-save risks infinite loops with settings/updated events
-  // 返回是否保存成功（「保存并关闭」据此决定要不要真的关页）
-  const save = async () => {
-    if (!draft) { setMsg('配置尚未加载成功，已禁止保存以避免覆盖'); return false }
-    if (conflict) { setMsg(conflict); return false }
-    setSaving(true); setMsg(null)
+  const deleteRole = (key) => {
+    stage((prev) => {
+      const roles = { ...prev.roles }
+      delete roles[key]
+      return { ...prev, roles }
+    })
+    setPicked(AGENT_TYPES[0])
+  }
+
+  const renameRole = (from, to) => {
+    const next = String(to).trim()
+    if (!isValidRoleKey(next, customRows)) {
+      setImportError(`键名「${next}」非法或已存在（内置名与小写-规则同样拒收）`)
+      return
+    }
+    stage((prev) => {
+      const roles = { ...prev.roles }
+      roles[next] = { ...roles[from], }
+      delete roles[from]
+      return { ...prev, roles }
+    })
+    setPicked(next)
+    setImportError('')
+  }
+
+  const exportRole = async (key) => {
+    const json = JSON.stringify({ key, ...current.roles?.[key] }, null, 2)
     try {
-      if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') {
-        setMsg('连接不可用'); return false
-      }
-      const body = buildPersistDraft(draft)
-      // 并发写围栏（E6/A-03）：把加载时拿到的版本凭据原样带回。host 若在期间
-      // 观测到别的提交，就回 conflict——旧写法是后写覆盖前写，谁也不知道自己
-      // 洗掉了别人刚存的配置。revision=null（旧 host 半不回版本号）时不带键，
-      // 语义退回无围栏写，绝不发明 0 之类的假凭据。
-      if (typeof revision === 'number') body.revision = revision
-      const outcome = interpretSaveResult(await connection.rpc.call('/dsh-my-go', 'saveSettings', body))
-      if (outcome.status === 'saved') {
-        setDirty(false)
-        setConflict(null)
-        // 保存即推进版本：不adopt 新凭据，用户接着改第二处就会自撞一次假冲突
-        if (typeof outcome.revision === 'number') setRevision(outcome.revision)
-        setMsg(outcome.message)
-        return true
-      }
-      if (outcome.status === 'conflict') {
-        // 手里这份 draft 的基线已作废：锁保存直到用户主动重新加载（不做静默
-        // 重读合并——那等于替用户决定谁的改动赢）
-        setConflict(outcome.message)
-        setMsg(outcome.message)
-        return false
-      }
-      setMsg(outcome.message)
-      return false
-    } catch (e) {
-      setMsg('保存失败: ' + String(e))
-      return false
-    } finally { setSaving(false) }
+      await navigator.clipboard.writeText(json)
+    } catch {
+      if (typeof window !== 'undefined') window.prompt('剪贴板不可用，请手动复制该角色 JSON：', json)
+    }
   }
 
-  // close 来自宿主 settings.section（唯一 shell affordance）：只在「保存并关闭」
-  // 这条我们自己的路径上用——保存失败/冲突绝不关，未保存的草稿不会被静默丢弃
-  const saveAndClose = async () => {
-    if (await save() && typeof close === 'function') close()
+  const importOverwrite = (key) => {
+    const text = typeof window === 'undefined' ? null : window.prompt(`粘贴 JSON 覆盖角色「${key}」（键名以当前行为准）：`)
+    const parsed = parseRoleText(text)
+    if (!parsed.ok) {
+      setImportError(parsed.error)
+      return
+    }
+    stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: parsed.row } }))
+    setImportError('')
   }
 
-  const reloadDraft = () => {
-    setConflict(null)
-    setMsg(null)
-    setDirty(false)
-    setLoadError(false)
-    setDraft(null)
-    setReloadNonce((n) => n + 1)
+  const importRole = () => {
+    const text = typeof window === 'undefined' ? null : window.prompt('粘贴角色 JSON 导入（可先在别处导出，改 key 后导入）：')
+    const parsed = parseRoleText(text)
+    if (!parsed.ok) {
+      setImportError(parsed.error)
+      return
+    }
+    const key = parsed.key
+    if (!isValidRoleKey(key, customRows)) {
+      setImportError('键名缺失、非法或已存在（含内置名）')
+      return
+    }
+    stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: parsed.row } }))
+    setPicked(key)
+    setImportError('')
   }
 
-  const selectStyle = { background: 'var(--surface, #1e1e1e)', color: 'var(--text, #e0e0e0)', border: '1px solid var(--separator, #333)', borderRadius: 4, padding: '4px 8px', fontSize: 13, width: '100%', boxSizing: 'border-box' }
-  const labelStyle = { fontSize: 12, color: 'var(--text-secondary, #888)', marginBottom: 2 }
-  const hintStyle = { fontSize: 11, color: 'var(--text-secondary, #888)', marginTop: 2 }
-  const cardStyle = { border: '1px solid var(--separator, #333)', borderRadius: 8, padding: 12, marginBottom: 12 }
-  const rowStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }
-  const miniBtnStyle = { padding: '2px 8px', borderRadius: 4, border: '1px solid var(--separator, #333)', background: 'transparent', color: 'var(--text, #e0e0e0)', cursor: 'pointer', fontSize: 12 }
-  const chainRowStyle = { display: 'grid', gridTemplateColumns: 'minmax(56px, auto) 1fr 1fr auto', gap: 6, alignItems: 'center', marginBottom: 6 }
-  const primaryBadgeStyle = { fontSize: 10, padding: '0 5px', borderRadius: 4, background: 'rgba(76,175,80,0.15)', color: '#4caf50', border: '1px solid rgba(76,175,80,0.4)', flexShrink: 0 }
-  const glyphStyle = { fontSize: 10, color: 'var(--text-secondary, #888)', flexShrink: 0 }
-  const summaryStyle = { fontSize: 11, color: 'var(--text-secondary, #888)', marginTop: 3, overflowWrap: 'anywhere' }
+  // ── 单价清单 ─────────────────────────────────────────────────────────────
+  const priceKeys = Object.keys(current.usagePrices ?? {}).sort()
+  const selectedPrice = priceKeys.includes(pickedPrice ?? '') ? pickedPrice : (priceKeys[0] ?? null)
 
-  const EFFORTS = ['', 'low', 'high', 'max']
-  const providers = available.providers
-  const effortLabel = (v) => v === '' ? '跟随模型默认（不单独指定）' : ({ low: '低（low）', high: '高（high）', max: '最高（max）' }[v] ?? v)
+  const setPrice = (key, bucket, value) => stage((prev) => ({
+    ...prev,
+    usagePrices: { ...prev.usagePrices, [key]: { ...prev.usagePrices?.[key], [bucket]: value } },
+  }))
 
-  // disabled 参数（tisitan.20）：draft=null 时所有下拉一并锁定（调用方传
-  // !draft），与保存禁用同口径——控件可交互但改动被 null-gate 静默吞掉只会
-  // 造成「点了没反应」的困惑，不如直接禁用
-  const makeSelect = (value, options, labelFn, onChange, disabled = false) =>
-    React.createElement('select', { style: selectStyle, value: value ?? '', disabled, onChange: (e) => onChange(e.target.value) },
-      ...options.map((opt) =>
-        React.createElement('option', { key: opt, value: opt }, labelFn(opt))
-      )
-    )
-
-  // 可手填组合框（tisitan.9 A-06）：兑现页面顶部「下拉框也可以直接输入自定义
-  // 值」的承诺。旧 makeSelect 是裸 `<select>`——LLM 清单拉不到或渠道没上报模型
-  // 时，用户唯一能做的就是一路刷新碰运气，而文案早就许诺了手填。这里用
-  // input + datalist（与 roles-editor 工具名输入同一模式）：清单在场时点选照旧，
-  // 清单缺席/不全时直接键入，空值仍 = 跟随 Sisyphus（placeholder 说清楚）。
-  // 每格包一层 div：chain 行是四列网格，input 与 datalist 得算一个网格项。
-  const makeCombobox = (value, options, listId, placeholder, onChange, disabled = false) =>
-    React.createElement('div', { style: { minWidth: 0 } },
-      React.createElement('input', {
-        style: { ...selectStyle, fontFamily: MONO_FONT },
-        value: value ?? '',
-        list: listId,
-        placeholder,
-        disabled,
-        spellCheck: false,
-        onChange: (e) => onChange(e.target.value),
-      }),
-      React.createElement('datalist', { id: listId },
-        ...options.filter((opt) => opt !== '').map((opt) => React.createElement('option', { key: opt, value: opt })),
-      ),
-    )
-
-  // Compute per-type model list: when provider is set, filter to that provider's models; otherwise show all
-  const modelsForProvider = (providerId) => {
-    // models 缺席/非对象时归空：listModels 畸形响应不炸渲染（tisitan.20 D5）
-    const modelsMap = available.models && typeof available.models === 'object' ? available.models : {}
-    if (!providerId) return [...new Set(Object.values(modelsMap).flat())]
-    const specific = modelsMap[providerId]
-    return Array.isArray(specific) ? specific : []
+  const createPrice = () => {
+    const key = newPriceKey.trim()
+    if (!writable || !isValidPriceKey(key, current)) return
+    stage((prev) => ({ ...prev, usagePrices: { ...prev.usagePrices, [key]: blankPriceRow() } }))
+    setNewPriceKey('')
+    setPickedPrice(key)
   }
 
-  // 渠道级失败标记（tisitan.9 A-06）：lib 半 listModels 现在逐渠道回报错误，
-  // 「清单读取失败」与「该渠道确实没有模型」从此可分——旧写法把失败渠道的键
-  // 直接删掉，前端只能显示一张空清单，用户以为 provider 是坏的。
-  const modelListErrorFor = (providerId) => {
-    if (!providerId) return ''
-    const errors = available.errors && typeof available.errors === 'object' ? available.errors : {}
-    const detail = errors[providerId]
-    return typeof detail === 'string' && detail !== '' ? detail : ''
+  const deletePrice = (key) => {
+    stage((prev) => {
+      const prices = { ...prev.usagePrices }
+      delete prices[key]
+      return { ...prev, usagePrices: prices }
+    })
+    setPickedPrice(null)
   }
 
-  // 模型优先级编辑器（tisitan.19，内置工种卡与自定义角色卡共用）：主选与
-  // 备选链合并为单一列表——#1 即主选（带徽章，空值=跟随 Sisyphus），#2..N
-  // 即备选链顺序。链视图为编辑期唯一真源：渲染经 composeChain 投影、编辑经
-  // decomposeChain 写回存储形状（provider/model/fallbacks）。跨 #1/#2 边界
-  // 移动即「一键扶正」（备选 ↑ 到顶换位成主选）；删除守卫：链至少保留主选
-  // 位 1 条。keyPrefix 只是 React key 的行前缀（内置卡传工种名、角色卡传
-  // `role-<key>`），避免同页两处链的行 key 撞车——不参与任何数据流。
-  // disabled（tisitan.20）：draft=null 时整条链只读（select + 三按钮 + 添加行）
-  const renderChainEditor = (keyPrefix, cfg, onChange, disabled = false) => {
-    const chain = composeChain(cfg)
-    const apply = (next) => onChange(decomposeChain(next))
-    return React.createElement('div', { style: { marginBottom: 8 } },
-      React.createElement('div', { style: labelStyle }, '模型优先级（主选 + 备选链）'),
-      React.createElement('div', { style: { fontSize: 11, color: 'var(--text-secondary, #888)', marginBottom: 6 } },
-        '#1 为主选；主模型失败（限流重试耗尽后）按序自动切换后续条目。备选 ↑ 到顶 = 一键扶正为主选；删除 #1 则 #2 自动扶正。',
-      ),
-      chain.map((row, i) => {
-        const listError = modelListErrorFor(row.provider)
-        return React.createElement(React.Fragment, { key: `${keyPrefix}-chain-${i}` },
-          React.createElement('div', { style: chainRowStyle },
-            React.createElement('span', { style: { fontSize: 11, color: 'var(--text-secondary, #888)', display: 'flex', alignItems: 'center', gap: 4 } },
-              `#${i + 1}`,
-              i === 0 ? React.createElement('span', { style: primaryBadgeStyle }, '主选') : null,
-            ),
-            makeCombobox(row.provider, providers, `${keyPrefix}-${i}-providers`,
-              i === 0 ? '跟随 Sisyphus（可点选或手填渠道）' : '（渠道：可点选或手填）',
-              (v) => apply(updateChainEntry(chain, i, 'provider', v)), disabled),
-            makeCombobox(row.model, modelsForProvider(row.provider), `${keyPrefix}-${i}-models`,
-              i === 0 ? '跟随 Sisyphus（可点选或手填模型）' : '（模型：可点选或手填）',
-              (v) => apply(updateChainEntry(chain, i, 'model', v)), disabled),
-            React.createElement('div', { style: { display: 'flex', gap: 4 } },
-              React.createElement('button', { style: miniBtnStyle, disabled: disabled || i === 0, title: '上移（#2 到顶即扶正为主选）', onClick: () => apply(moveChainEntry(chain, i, -1)) }, '↑'),
-              React.createElement('button', { style: miniBtnStyle, disabled: disabled || i === chain.length - 1, title: '下移（更后尝试）', onClick: () => apply(moveChainEntry(chain, i, 1)) }, '↓'),
-              React.createElement('button', { style: miniBtnStyle, disabled: disabled || chain.length <= 1, title: '删除该行（至少保留主选位；删 #1 则 #2 扶正）', onClick: () => apply(removeChainEntry(chain, i)) }, '×'),
-            ),
-          ),
-          // 行内渠道失败提示（tisitan.9 A-06）：与「该渠道真的没有模型」区分——
-          // 清单没拉上来，不是清单为空
-          listError
-            ? React.createElement('div', { style: { ...hintStyle, marginTop: -2, marginBottom: 6, color: ACCENT_QUEUE } },
-                `⚠ 渠道 ${row.provider} 的模型清单读取失败：${listError}（可直接手填模型名，不影响保存）`)
-            : null,
-        )
-      }),
-      React.createElement('button', { style: miniBtnStyle, disabled, onClick: () => apply(addChainEntry(chain)) }, '+ 添加条目'),
-    )
-  }
+  return el('section', { className: 'mygo-config', 'data-plugin': 'dsh-my-go' },
+    el('p', { className: 'mygo-intro' }, '给每个工种单独指定模型优先级与思考档位；留空 = 跟随 Sisyphus（即对话框里选的模型）。改完点「立即保存」，下次派发生效。'),
+    el('p', { className: 'mygo-intro' }, '本页只是宿主里 dsh-my-go 命名空间的视图：不点保存不写任何字节；清空一个可空字段等于发 unset（回落到 cordis 行 config 或 schema 默认）；手改 settings.yaml 的 dsh-my-go 段与本面是同一层。'),
 
-  // 只在 listModels 确认返回（成败都算）后才允许亮「拉不到列表」提示——
-  // 加载途中的空列表不再误报（tisitan.20 I4）
-  const fetchFailed = modelsReady && available.providers.length === 0
-
-  return React.createElement('div', { style: { padding: 16, maxWidth: 600 } },
-    React.createElement('h2', { style: { margin: '0 0 4px' } }, 'MyGO 编排配置'),
-    React.createElement('p', { style: { margin: '0 0 6px', fontSize: 13, color: 'var(--text-secondary, #888)' } }, '给每个工种单独指定模型；留空 = 跟随 Sisyphus（即您在对话框里选的模型）。改完点「立即保存」，下次派发生效。'),
-    fetchFailed ? React.createElement('div', {
-      style: { padding: 12, marginBottom: 16, borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 13 },
-    }, '⚠ 暂时读不到 DSH 的 Provider/Model 列表——确认 dsh web 已重启、LLM 插件已配置并激活后，回来刷新即可。不影响手填：渠道与模型两栏都是可手填输入框，清单在场时点选即可。') : null,
-    // 加载失败红字横幅（tisitan.20 Z1'）：与「加载中」可区分，保存已被禁用
-    loadError ? React.createElement('div', {
-      style: { padding: 12, marginBottom: 16, borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 13 },
-    }, '⚠ 配置加载失败（loadSettings 不可用或返回错误）——为防清空配置已禁用全部编辑与保存，请确认插件已激活后刷新重试。') : null,
-    // 并发写冲突横幅（tisitan.9 E6/A-03）：他处已经改过这份配置，保存被锁，
-    // 唯一出路是显式重新加载（草稿会被丢弃——所以顺带把 beforeunload 的语义
-    // 也说清楚，用户知道自己手里有未保存的东西）
-    conflict ? React.createElement('div', {
-      style: { display: 'flex', alignItems: 'center', gap: 10, padding: 12, marginBottom: 16, borderRadius: 6, background: 'rgba(230,162,60,0.12)', border: '1px solid rgba(230,162,60,0.45)', fontSize: 13 },
-    },
-      React.createElement('span', { style: { color: ACCENT_QUEUE, fontWeight: 600 } }, '⚠ ' + conflict),
-      React.createElement('button', {
-        style: miniBtnStyle,
-        title: '丢弃当前草稿，重新读取最新配置（未保存的修改会丢失）',
-        onClick: reloadDraft,
-      }, '重新加载'),
+    ready ? null : el(BlockedNotice, { card, scope }),
+    ready && !writable ? el('div', { className: 'mygo-notice mygo-noticeWarn' }, '这份文档当前只读（宿主拒绝写入）：编辑区照常可看，保存已禁用。') : null,
+    drifted ? el('div', { className: 'mygo-notice mygo-noticeWarn', 'data-role': 'drift' },
+      el('span', null, `外部已经改过这一命名空间（草稿建在 r${fence}，现在 r${snapshot?.revision}）：你的草稿还在，但保存会被拒。`),
+      el('button', { className: 'mygo-btn mygo-btnMini', onClick: discardAndReload }, '丢弃草稿并重读'),
     ) : null,
-    !draft && !loadError ? React.createElement('div', {
-      style: { padding: 12, marginBottom: 16, borderRadius: 6, border: '1px solid var(--separator, #333)', fontSize: 13, color: 'var(--text-secondary, #888)' },
-    }, '配置加载中…') : null,
-    ...AGENT_TYPES.map((type) => {
-      const cfg = draft?.[type] || {}
-      const open = cardOpen(type)
-      return React.createElement('div', { key: type, style: cardStyle },
-        // 卡片标题行：工种中文名 + 英文名（AGENT_LABELS 已合并）+ 一句话角色说明
-        React.createElement('div', {
-          style: { cursor: 'pointer', marginBottom: open ? 8 : 0 },
-          onClick: () => toggleCard(type),
-        },
-          React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' } },
-            React.createElement('span', { style: glyphStyle }, open ? '▾' : '▸'),
-            React.createElement('span', { style: { fontWeight: 600 } }, AGENT_LABELS[type] || type),
-            React.createElement('span', { style: { fontSize: 12, color: 'var(--text-secondary, #888)' } }, AGENT_BLURBS[type] ?? ''),
+
+    el('div', { className: 'mygo-block', 'data-block': 'roles' },
+      el('div', { className: 'mygo-blockHead' },
+        el('span', { className: 'mygo-blockTitle' }, '模型与角色'),
+        el('span', { className: 'mygo-count' }, `${AGENT_TYPES.length} 内置 · ${customRows.length} 自定义`),
+        el('span', { className: 'mygo-blockHint' }, '左列选角色，右列只改这一行。'),
+      ),
+      el('div', { className: 'mygo-grid' },
+        el('div', { className: 'mygo-col' },
+          el('div', { className: 'mygo-colHead' }, el('span', { className: 'mygo-label' }, '角色清单')),
+          el('div', { className: 'mygo-list', role: 'listbox', 'aria-label': '角色清单' }, roleList.map((entry) => el('div', {
+            key: entry.key,
+            role: 'option',
+            'aria-selected': entry.key === selectedKey,
+            'data-selected': entry.key === selectedKey,
+            className: 'mygo-listRow',
+            title: `${entry.label} · ${entry.meta}`,
+            onClick: () => setPicked(entry.key),
+          },
+            el('span', { className: 'mygo-rowName' }, entry.label),
+            el('span', { className: 'mygo-rowMeta' }, entry.meta),
+            entry.badges.map((badge) => el('span', { key: badge.text, className: 'mygo-rowBadge', 'data-tone': badge.tone ?? '' }, badge.text)),
+          ))),
+          el('div', { className: 'mygo-colFoot' },
+            el('input', {
+              className: 'mygo-input mygo-inputMono',
+              value: newRoleKey,
+              placeholder: '新角色键名（小写字母开头，可含 -）',
+              disabled: !writable,
+              spellCheck: false,
+              'aria-label': '新角色键名',
+              onChange: (event) => setNewRoleKey(event.target.value),
+              onKeyDown: (event) => { if (event.key === 'Enter') createRole() },
+            }),
+            el('button', { className: 'mygo-btn', disabled: !writable || !isValidRoleKey(newRoleKey.trim(), customRows), onClick: createRole, title: '新建一个自定义角色并选中它' }, '+ 新建角色'),
+            el('button', { className: 'mygo-btn', disabled: !writable, onClick: importRole, title: '粘贴角色 JSON 导入为新角色' }, '导入 JSON'),
           ),
-          React.createElement('div', { style: summaryStyle }, builtinSummaryText(cfg)),
         ),
-        open ? React.createElement(React.Fragment, null,
-          // Sisyphus 卡片语义（broker.mjs:599,1580）：绑定仅当插件配置
-          // bindSisyphus===true 才参与 agent/request 覆盖，默认完全跟随对话框模型
-          type === 'sisyphus'
-            ? React.createElement('div', { style: { ...hintStyle, marginBottom: 8 } }, '总调度只认对话框所选模型，此处配置为兜底/补丁位（仅当插件配置 bindSisyphus 开启时生效）。')
-            : null,
-          // 模型优先级列表（tisitan.19）：主选（#1）与备选链（#2..N）合并编辑
-          renderChainEditor(type, cfg, (chainRow) => setChain(type, chainRow), !draft),
-          React.createElement('div', { style: rowStyle },
-            React.createElement('div', null,
-              React.createElement('div', { style: labelStyle }, '思考档位（Reasoning Effort）'),
-              React.createElement('div', { style: hintStyle }, '推理强度：越高越聪明，也越贵'),
-              makeSelect(cfg.reasoningEffort ?? '', EFFORTS, effortLabel, (v) => set(type, 'reasoningEffort', v), !draft),
-            ),
-            React.createElement('div', null,
-              React.createElement('div', { style: labelStyle }, 'DSV4P0813 补丁'),
-              // 棒4-Z3（tisitan.20）：Sisyphus 卡置灰锁定——注入识别面
-              // typeOfAgent（broker.mjs:527-534）恒不命中 sisyphus 会话，勾选
-              // 永不生效，留可勾选只会误导
-              React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, cursor: draft && type !== 'sisyphus' ? 'pointer' : 'not-allowed', fontSize: 13, paddingTop: 2 } },
-                React.createElement('input', { type: 'checkbox', checked: cfg.dsv4p0813 === true, disabled: !draft || type === 'sisyphus', onChange: (e) => set(type, 'dsv4p0813', e.target.checked) }),
-                '启用',
-              ),
-              React.createElement('div', { style: hintStyle },
-                type === 'sisyphus'
-                  ? 'Sisyphus 会话不经过 DSV4P0813 注入识别面，勾选对其不生效，已置灰锁定'
-                  : '两阶段锚定上下文注入，专为 DeepSeek V4 Pro 0813 调校，其他模型勿开；仅对 MyGO preset 派发的子代理会话生效，lib-only 部署形态下不生效'),
-            ),
+        el('div', { className: 'mygo-col' }, selectedRole ? renderRolesPane({
+          role: selectedRole,
+          current,
+          writable,
+          catalog: models,
+          tools: tools.names,
+          rosterFailed: tools.failed,
+          toolDrafts,
+          setToolDrafts,
+          importError,
+          personaFileErr,
+          setBinding,
+          setChain,
+          setPersona,
+          setToolFilter,
+          loadBuiltinPersona,
+          onExportRole: exportRole,
+          onImportOverwrite: importOverwrite,
+          onDeleteRole: deleteRole,
+          onRenameRole: renameRole,
+          onRefreshTools: tools.refresh,
+        }) : null),
+      ),
+      el('div', { className: 'mygo-detail', 'data-role': 'role-detail' }, roleDetailText(selectedKey, current)),
+    ),
+
+    el('div', { className: 'mygo-block', 'data-block': 'prices' },
+      el('div', { className: 'mygo-blockHead' },
+        el('span', { className: 'mygo-blockTitle' }, '用量单价表'),
+        el('span', { className: 'mygo-count' }, `${priceKeys.length} 条`),
+        el('span', { className: 'mygo-blockHint' }, '按「渠道/模型」记四类 token 单价，用量面板据此折算成本；不配就只统计 token 数。'),
+      ),
+      el('div', { className: 'mygo-grid' },
+        el('div', { className: 'mygo-col' },
+          el('div', { className: 'mygo-colHead' }, el('span', { className: 'mygo-label' }, '计价键')),
+          el('div', { className: 'mygo-list', role: 'listbox', 'aria-label': '计价键清单' }, priceKeys.length === 0
+            ? el('div', { className: 'mygo-hint' }, '（还没有一条单价：在下方输入「渠道/模型」建第一条）')
+            : priceKeys.map((key) => el('div', {
+              key,
+              role: 'option',
+              'aria-selected': key === selectedPrice,
+              'data-selected': key === selectedPrice,
+              className: 'mygo-listRow',
+              title: key,
+              onClick: () => setPickedPrice(key),
+            },
+            el('span', { className: 'mygo-rowName' }, key),
+            el('span', { className: 'mygo-rowMeta' }, priceMetaText(current.usagePrices[key])),
+          ))),
+          el('div', { className: 'mygo-colFoot' },
+            el('input', {
+              className: 'mygo-input mygo-inputMono',
+              value: newPriceKey,
+              placeholder: '渠道/模型，如 deepseek/deepseek-chat',
+              disabled: !writable,
+              list: 'mygo-price-keys',
+              spellCheck: false,
+              'aria-label': '新计价键',
+              onChange: (event) => setNewPriceKey(event.target.value),
+              onKeyDown: (event) => { if (event.key === 'Enter') createPrice() },
+            }),
+            el('datalist', { id: 'mygo-price-keys' }, priceSuggestions(models).map((key) => el('option', { key, value: key }))),
+            el('button', { className: 'mygo-btn', disabled: !writable || !isValidPriceKey(newPriceKey.trim(), current), onClick: createPrice }, '+ 新建行'),
           ),
-          // 人设覆盖（tisitan.15）：内置工种走「roles 行 persona > prompts 文件」
-          // 解析链；Sisyphus 的编排纪律人设是行为本体，不开放覆盖
-          type === 'sisyphus'
-            ? React.createElement('div', { style: { ...hintStyle, marginTop: 4 } }, 'Sisyphus 的编排纪律人设不提供面板覆盖。')
-            : React.createElement('div', { style: { marginBottom: 8 } },
-                React.createElement('div', { style: labelStyle }, '人设覆盖（Persona）'),
-                React.createElement('div', { style: hintStyle, marginBottom: 4 }, `当前来源：${personaOverrideSource(draft?.roles?.[type])}；留空保存 = 恢复 prompts/${type}.md 文件默认`),
-                React.createElement('textarea', {
-                  value: draft?.roles?.[type]?.persona ?? '',
-                  disabled: !draft,
-                  rows: 3,
-                  placeholder: `留空 = 使用 prompts/${type}.md 文件默认人设`,
-                  onChange: (e) => setPersonaOverride(type, e.target.value),
-                  style: { ...selectStyle, resize: 'vertical', fontFamily: 'inherit' },
-                }),
-                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 } },
-                  React.createElement('button', {
-                    style: miniBtnStyle,
-                    disabled: !draft,
-                    title: `读取 prompts/${type}.md 原文填入上方编辑框（草稿态，点保存才生效）`,
-                    onClick: () => loadBuiltinPersona(type),
-                  }, '载入文件默认'),
-                  personaFileErr[type]
-                    ? React.createElement('span', { style: { fontSize: 12, color: '#f44336' } }, personaFileErr[type])
-                    : null,
-                ),
-              ),
-        ) : null,
-      )
-    }),
-    // ── 自定义角色（tisitan.14/tisitan.15）：roles dict 里的非内置条目；渲染与行操作在 roles-editor.js
-    renderRolesEditor({
-      draft,
-      // 角色区一切写操作都经 mutateDraft（E6/A-03）：dep 名不变（roles-editor
-      // 仍按 deps.setDraft 消费），换的是实现——漏了这一处就会出现「改自定义
-      // 角色不置 dirty」的偏心 dirty，比没有 dirty 更坏
-      setDraft: mutateDraft,
-      newRoleKey,
-      setNewRoleKey,
-      roleToolDrafts,
-      setRoleToolDrafts,
-      importError,
-      setImportError,
-      openCards,
-      setOpenCards,
-      EFFORTS,
-      effortLabel,
-      makeSelect,
-      renderChainEditor,
-      roster,
-      styles: { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle, rowStyle },
-    }),
-    // ── 工具屏蔽（tisitan.13）：置于 8 工种卡片之后；渲染逻辑在 tool-mask-editor.js
-    // React 由该模块自身 import（tisitan.8 A-12，与 roles-editor 对齐）
-    renderToolMaskEditor({
-      draft,
-      roster,
-      maskFilter,
-      setMaskFilter,
-      maskSelL,
-      setMaskSelL,
-      maskSelR,
-      setMaskSelR,
-      maskManual,
-      setMaskManual,
-      setDeny,
-      cardOpen,
-      toggleCard,
-      styles: { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle },
-    }),
-    // ── 用量单价表（contract D1）：置于工具屏蔽之后；渲染逻辑在 usage-prices-editor.js，
-    // 行操作走 usage-price-rows.js 纯函数，保存边界在 buildPersistDraft 净化
-    renderUsagePricesEditor({
-      draft,
-      setDraft: mutateDraft,
-      newPriceKey,
-      setNewPriceKey,
-      openCards,
-      setOpenCards,
-      makeSelect,
-      makeCombobox,
-      available,
-      styles: { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle },
-    }),
-    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, flexWrap: 'wrap' } },
-      React.createElement('button', {
+        ),
+        el('div', { className: 'mygo-col' }, renderPricesPane({
+          selectedPrice,
+          current,
+          writable,
+          keys: priceSuggestions(models),
+          setCurrency: (value) => stage((prev) => ({ ...prev, usageCurrency: value })),
+          setPrice,
+          onDeletePrice: deletePrice,
+        })),
+      ),
+      el('div', { className: 'mygo-detail', 'data-role': 'price-detail' }, priceDetailText(selectedPrice, current, layers)),
+    ),
+
+    el('div', { className: 'mygo-legend' },
+      el('span', null, '链：#1 主选，#2..N 备选，失败按序降级'),
+      el('span', null, '覆盖：persona 覆盖了 prompts 文件默认'),
+      el('span', null, 'DSV：两阶段锚定注入，仅 DeepSeek V4 Pro 0813'),
+      el('span', null, '未连接：工具名不在宿主花名册（MCP 未连或手填）'),
+    ),
+
+    el('div', { className: 'mygo-footer' },
+      el('button', {
+        className: 'mygo-btnPrimary',
+        'data-role': 'save',
+        disabled: !writable || !ready || !dirty || saving,
         onClick: save,
-        // 冲突后锁保存（E6/A-03）：draft 的基线已作废，放行就等于让用户拿旧
-        // 快照盖掉新配置——正是围栏要拦的那件事。必须显式「重新加载」解锁。
-        disabled: saving || !draft || conflict !== null,
-        style: { padding: '6px 20px', borderRadius: 6, border: '1px solid var(--separator, #333)', background: 'transparent', color: 'var(--text, #e0e0e0)', cursor: saving ? 'wait' : 'pointer', fontSize: 13 },
+        title: '把草稿编译成命名空间 ops，一次原子提交（保存前不写任何字节）',
       }, saving ? '保存中…' : '立即保存'),
-      typeof close === 'function'
-        ? React.createElement('button', {
-          // close 的唯一使用点（E6/A-03）：保存成功才关设置页，失败/冲突绝不关
-          onClick: saveAndClose,
-          disabled: saving || !draft || conflict !== null,
-          title: '保存成功后关闭设置页（保存失败或他处已改时不会关闭）',
-          style: { padding: '6px 14px', borderRadius: 6, border: '1px solid var(--separator, #333)', background: 'transparent', color: 'var(--text, #e0e0e0)', cursor: 'pointer', fontSize: 13 },
-        }, '保存并关闭')
-        : null,
-      dirty && conflict === null
-        ? React.createElement('span', { style: { fontSize: 12, color: ACCENT_QUEUE }, title: '有未保存的修改：关页签/刷新前浏览器会拦一道' }, '● 未保存')
-        : null,
-      msg ? React.createElement('span', { style: { fontSize: 13, color: msg.startsWith('已') ? '#4caf50' : '#f44336' } }, msg) : null,
+      el('button', {
+        className: 'mygo-btn',
+        disabled: !dirty && !drifted,
+        onClick: discardAndReload,
+        title: '丢弃未保存草稿并重新读取宿主现值',
+      }, '丢弃草稿并重读'),
+      el('span', { className: 'mygo-status', 'data-role': 'status' }, statusText({ ready, dirty, pending, revision: snapshot?.revision })),
+      message ? el('span', { className: message.ok ? 'mygo-statusOk' : 'mygo-statusError', 'data-role': 'receipt' }, message.text) : null,
     ),
   )
+}
+
+/* ── 目录与花名册 ───────────────────────────────────────────────────────── */
+
+/** Model catalog from the host's own session face (lazy, signal-refreshed). */
+function useCatalog(catalog) {
+  const subscribe = React.useCallback((emit) => (catalog ? catalog.subscribe(emit) : () => {}), [catalog])
+  const get = React.useCallback(() => (catalog ? catalog.get() : { status: 'idle', providers: [], models: {}, errors: {} }), [catalog])
+  const state = React.useSyncExternalStore(subscribe, get, get)
+  React.useEffect(() => {
+    catalog?.load?.()
+  }, [catalog])
+  return state
+}
+
+/** The tool roster (listTools RPC): a snapshot the user may re-pull by hand. */
+function useToolRoster(connection) {
+  const [names, setNames] = React.useState([])
+  const [failed, setFailed] = React.useState(false)
+  const load = React.useCallback(() => {
+    if (!connection?.rpc?.call) return
+    connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.listTools, {})
+      .then((res) => {
+        if (res && res.ok && Array.isArray(res.value)) {
+          setNames(res.value.filter((name) => typeof name === 'string' && name !== ''))
+          setFailed(false)
+        } else {
+          setFailed(true)
+        }
+      })
+      .catch(() => setFailed(true))
+  }, [connection])
+  React.useEffect(() => {
+    load()
+  }, [load])
+  return { names, failed, refresh: load }
+}
+
+/* ── 小组件与纯投影 ─────────────────────────────────────────────────────── */
+
+function BlockedNotice({ card, scope }) {
+  return el('div', { className: 'mygo-notice mygo-noticeError', 'data-role': 'blocked' },
+    el('span', null, card.hint),
+    card.retryable ? el('button', { className: 'mygo-btn mygo-btnMini', onClick: () => reloadScope(scope) }, '重试') : null,
+  )
+}
+
+function reloadScope(scope) {
+  if (typeof scope?.load === 'function') void scope.load()
+  else if (typeof scope?.ensure === 'function') void scope.ensure()
+}
+
+export function statusText({ ready, dirty, pending, revision }) {
+  const at = typeof revision === 'number' ? ` · r${revision}` : ''
+  if (!ready) return `配置未就绪${at}`
+  if (!dirty) return `无改动${at}`
+  return `待保存：${pending.length > 0 ? pending.join(' · ') : '草稿与现值同形'}${at}`
+}
+
+export function roleEntry(key, label, row, carried, builtin) {
+  const badges = []
+  if (typeof carried?.persona === 'string' && carried.persona !== '') badges.push({ text: '覆盖', tone: 'warn' })
+  if (row?.dsv4p0813 === true) badges.push({ text: 'DSV', tone: 'on' })
+  if (!builtin) badges.push({ text: '自定义' })
+  return { key, label, meta: chainText(row), badges, builtin }
+}
+
+export function chainText(row) {
+  const chain = composeChain(row ?? {})
+  const first = chain[0]
+  const named = first && (first.provider !== '' || first.model !== '') ? `${first.provider}/${first.model}` : '跟随 Sisyphus'
+  return chain.length > 1 ? `${named} →${chain.length - 1}` : named
+}
+
+export function roleDetailText(key, current) {
+  if (!key) return '左列选一个角色来编辑。'
+  const builtin = AGENT_TYPES.includes(key)
+  const row = builtin ? (current[key] ?? {}) : (current.roles?.[key] ?? {})
+  const chain = composeChain(row)
+  const filter = row.toolFilter ?? {}
+  const lines = [
+    `${AGENT_LABELS[key] ?? key}（${key}）· ${builtin ? '内置工种' : '自定义角色'}`,
+    `模型优先级：${chain.map((entry, index) => `#${index + 1} ${entry.provider || '—'}/${entry.model || '—'}`).join('  ')}`,
+    `思考档位：${row.reasoningEffort || '跟随模型默认'}；DSV4P0813：${row.dsv4p0813 === true ? '开' : '关'}`,
+  ]
+  if (key !== 'sisyphus') lines.push(`人设来源：${personaOverrideSource(current.roles?.[key])}`)
+  if (!builtin) {
+    const allow = Array.isArray(filter.allow) ? filter.allow : []
+    const deny = Array.isArray(filter.deny) ? filter.deny : []
+    lines.push(`工具面：白名单 ${allow.length} 条${allow.length > 0 ? `（${allow.join(', ')}）` : ''}；黑名单 ${deny.length} 条${deny.length > 0 ? `（${deny.join(', ')}）` : ''}`)
+    lines.push('派发时 go_work 用键名点名该角色；删除后下次保存整键从 roles 字典移除。')
+  }
+  return lines.join('\n')
+}
+
+export function priceMetaText(row) {
+  if (!row) return ''
+  const at = (bucket) => (row[bucket] === '' || row[bucket] === undefined || row[bucket] === null ? '—' : String(row[bucket]))
+  return `入 ${at('input')} / 出 ${at('output')}`
+}
+
+export function priceDetailText(key, current, layers) {
+  if (!key) return '还没有任何计价行：用量面板只报 token 数，不折算成本。'
+  const row = current.usagePrices?.[key] ?? {}
+  const storedRow = layers.value.usagePrices?.[key]
+  const unit = current.usageCurrency === 'CNY' ? '人民币' : '美元'
+  const lines = [
+    `${key} · ${unit} / 1M tokens`,
+    PRICE_BUCKETS.map((bucket) => `${PRICE_BUCKET_LABELS[bucket]}：${row[bucket] === '' || row[bucket] === undefined ? '未定价' : row[bucket]}`).join('  '),
+    storedRow === undefined ? '该键在宿主现值里还不存在：保存后新增。' : `宿主现值：入 ${storedRow.input} / 出 ${storedRow.output}，缓存读 ${storedRow.cacheRead ?? '未定价'} / 写 ${storedRow.cacheWrite ?? '未定价'}。`,
+    '输入/输出必填，缓存两桶可选；不完整的行保存时整行跳过（fail-closed），不会毒杀同批其它行。',
+  ]
+  return lines.join('\n')
+}
+
+export function priceSuggestions(catalog) {
+  const map = catalog.models && typeof catalog.models === 'object' ? catalog.models : {}
+  return [...new Set(Object.entries(map).flatMap(([provider, ids]) => (Array.isArray(ids) ? ids : []).map((id) => `${provider}/${id}`)))]
+}
+
+export function isValidRoleKey(key, customRows) {
+  return typeof key === 'string' && ROLE_KEY_PATTERN.test(key) && !AGENT_TYPES.includes(key) && !customRows.some((row) => row.key === key)
+}
+
+export function isValidPriceKey(key, current) {
+  return typeof key === 'string' && PRICE_KEY_PATTERN.test(key) && current.usagePrices?.[key] === undefined
+}
+
+export function parseRoleText(text) {
+  if (text === null || String(text).trim() === '') return { ok: false, error: '没有输入内容' }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return { ok: false, error: '不是合法 JSON' }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, error: 'JSON 必须是一个角色对象' }
+  const key = typeof parsed.key === 'string' ? parsed.key : ''
+  const filter = parsed.toolFilter && typeof parsed.toolFilter === 'object' ? parsed.toolFilter : {}
+  const row = {
+    provider: typeof parsed.provider === 'string' ? parsed.provider : '',
+    model: typeof parsed.model === 'string' ? parsed.model : '',
+    reasoningEffort: typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort : '',
+    dsv4p0813: parsed.dsv4p0813 === true,
+    fallbacks: Array.isArray(parsed.fallbacks) ? parsed.fallbacks : [],
+    persona: typeof parsed.persona === 'string' ? parsed.persona : '',
+    toolFilter: {
+      allow: Array.isArray(filter.allow) ? filter.allow.map(String).filter((name) => name !== '') : [],
+      deny: Array.isArray(filter.deny) ? filter.deny.map(String).filter((name) => name !== '') : [],
+    },
+  }
+  return { ok: true, key, row }
+}
+
+export function blankRole() {
+  return { provider: '', model: '', reasoningEffort: '', dsv4p0813: false, fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } }
+}
+
+export function blankPriceRow() {
+  return { input: '', output: '', cacheRead: '', cacheWrite: '' }
+}
+
+export function emptyDraft() {
+  const draft = { roles: {}, usagePrices: {}, usageCurrency: 'USD' }
+  for (const type of AGENT_TYPES) draft[type] = { provider: '', model: '', reasoningEffort: '', dsv4p0813: false, fallbacks: [] }
+  return draft
 }

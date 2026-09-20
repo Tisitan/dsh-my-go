@@ -124,7 +124,7 @@ test('名册简报内容：工种/模型/备选链序列/toolFilter 概要/人�
   assert.ok(lines[0].includes('failed 通知先到是常态') && lines[0].includes('静默等待 broker 的备选处置通知'), '头部一行协议指路')
   assert.ok(lines.some((l) => l === '- hermes → p0·m0 → 备选链 2 条（p1·m1 → p2·m2） → 工具: 仅 read, write → 人设: 内置文件'), 'hermes 行全要素')
   assert.ok(lines.some((l) => l === '- custom-z → p9·m9 → 备选链 1 条（p8·m8） → 工具: 除 bash → 人设: 自定义人设'), '自定义角色行全要素')
-  assert.ok(lines.some((l) => l === '- explore → 跟随环境 → 无备选链 → 工具: 全量（除全局掩码） → 人设: 内置文件'), '未配工种回落跟随环境/无备选链')
+  assert.ok(lines.some((l) => l === '- explore → 跟随环境 → 无备选链 → 工具: 全量 → 人设: 内置文件'), '未配工种回落跟随环境/无备选链')
   // 键排序渲染：字典序——custom-z（c 开头）排在全部内置工种之前
   assert.ok(lines.indexOf(lines.find((l) => l.includes('- custom-z'))) < lines.indexOf(lines.find((l) => l.includes('- explore'))), '键排序渲染（字典序）')
 })

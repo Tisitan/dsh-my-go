@@ -1,7 +1,7 @@
 {
   "name": "dsh-my-go",
-  "version": "0.5.0-tisitan.2",
-  "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 7 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
+  "version": "0.5.0-tisitan.3",
+  "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 8 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle/Apelles) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
   "author": "Tisitan",
   "license": "MIT",
   "repository": {
@@ -55,7 +55,7 @@
     "build:client": "node scripts/build-client.mjs",
     "dump:session": "node scripts/dump-session.mjs",
     "typecheck:archive": "tsc --noEmit",
-    "test": "node scripts/build-client.mjs && node test/apply.mjs && node --test \"test/*.test.mjs\""
+    "test": "node scripts/build-client.mjs && node test/apply.mjs && node --test \"test/**/*.test.mjs\""
   },
   "dsh": {
     "bundle": {
@@ -66,19 +66,20 @@
       "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes"
       ]
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": ">=0.1.2-alpha.2 <0.1.6",
-    "@deepseek-ai/dsh-subagent": ">=0.1.2-alpha.2 <0.1.6",
-    "@deepseek-ai/dsh-agent": ">=0.1.2-alpha.2 <0.1.6",
-    "@deepseek-ai/dsh-llm": ">=0.1.2-alpha.2 <0.1.6",
-    "@deepseek-ai/dsh-settings": ">=0.1.2-alpha.2 <0.1.6",
-    "@deepseek-ai/dsh-client-locale": ">=0.1.2-alpha.2 <0.1.6",
-    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.2-alpha.2 <0.1.6",
+    "@deepseek-ai/dsh-tools": ">=0.1.2-alpha.2 <0.1.7",
+    "@deepseek-ai/dsh-subagent": ">=0.1.2-alpha.2 <0.1.7",
+    "@deepseek-ai/dsh-agent": ">=0.1.2-alpha.2 <0.1.7",
+    "@deepseek-ai/dsh-llm": ">=0.1.2-alpha.2 <0.1.7",
+    "@deepseek-ai/dsh-settings": ">=0.1.2-alpha.2 <0.1.7",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.2-alpha.2 <0.1.7",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.2-alpha.2 <0.1.7",
     "react": "^18.2.0"
   },
   "dependencies": {

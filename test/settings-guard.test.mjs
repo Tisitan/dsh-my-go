@@ -1,115 +1,85 @@
-// 设置页守卫纯函数（0.3.0-tisitan.9 E6/A-03 客户端半）：src/settings-guard.js 的
-// 三件出口——loadSettings 结果归一（revision 从 draft 里剥出来）、saveSettings
-// 结果三态归一（saved / conflict / failed）、beforeunload 守卫的注册与解除。
+// 配置卡守卫纯函数（0.5.0-tisitan.3 起对着 settingsScope 快照工作）：
+// src/settings-guard.js 的三件出口——读面四态归一（resolveCardView）、写面读回
+// 回执（describeSaveOutcome）、beforeunload 守卫的注册与解除。
+// 旧两件吃的是私有 RPC 信封（interpretLoadResult / interpretSaveResult），端点
+// 退役后信封没了：判据随官方信道改写成快照态，一条不删。
 // 本文件不碰 React、不起浏览器：这些语义都发生在渲染之外，能在 Node 侧钉死。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { interpretLoadResult, interpretSaveResult, attachBeforeUnloadGuard } from '../src/settings-guard.js'
+import { attachBeforeUnloadGuard, describeSaveOutcome, resolveCardView } from '../src/settings-guard.js'
 
-// ── interpretLoadResult ────────────────────────────────────────────────────
+// ── resolveCardView ────────────────────────────────────────────────────────
 
-test('interpretLoadResult：revision 从 draft 里剥出，绝不混进可保存的草稿', () => {
-  const parsed = interpretLoadResult({
-    ok: true,
-    value: { revision: 7, hermes: { model: 'm1' }, roles: { 'custom-x': { model: 'mx' } } },
-  })
-  assert.equal(parsed.status, 'ok')
-  assert.equal(parsed.revision, 7)
-  assert.ok(!('revision' in parsed.draft), 'draft 里没有 revision 键（保存时由前端另附，不作为配置字段回写）')
-  assert.deepEqual(parsed.draft, { hermes: { model: 'm1' }, roles: { 'custom-x': { model: 'mx' } } })
+test('resolveCardView：快照缺席与 loading 都是「读取中」，不许亮失败横幅', () => {
+  assert.deepEqual(resolveCardView(undefined), { kind: 'loading', hint: expect_loading(), retryable: false })
+  assert.equal(resolveCardView({ status: 'loading' }).kind, 'loading')
 })
 
-test('interpretLoadResult：旧 host 半不回 revision → null，不发明 0 当凭据', () => {
-  const parsed = interpretLoadResult({ ok: true, value: { hermes: {} } })
-  assert.equal(parsed.status, 'ok')
-  assert.equal(parsed.revision, null, '0 是合法版本号，不能被当成「没读到」的兜底值')
+function expect_loading() {
+  return resolveCardView(undefined).hint
+}
+
+test('resolveCardView：ready 才给编辑器', () => {
+  const view = resolveCardView({ status: 'ready', value: {}, base: {}, writable: true, mode: 'host' })
+  assert.equal(view.kind, 'ready')
+  assert.equal(view.hint, '', '就绪态不占提示条')
 })
 
-test('interpretLoadResult：ok:false 与畸形 value 一律 failed（null-draft 禁存门禁不变）', () => {
-  assert.deepEqual(interpretLoadResult({ ok: false, error: { code: 'unavailable', message: 'x', details: {} } }), { status: 'failed', draft: null, revision: null })
-  assert.equal(interpretLoadResult({ ok: true, value: null }).status, 'failed', 'value 缺席 = 没读到，不能渲染成一张干净空表单')
-  assert.equal(interpretLoadResult({ ok: true, value: [] }).status, 'failed', '数组不是合法 draft 形状')
-  assert.equal(interpretLoadResult(undefined).status, 'failed', '传输层空响应同样按失败处理')
+test('resolveCardView：unavailable 可重试，内存档（非本机回环）不可重试', () => {
+  const down = resolveCardView({ status: 'unavailable' })
+  assert.equal(down.kind, 'unavailable')
+  assert.equal(down.retryable, true, '命名空间暂时读不到（插件刚停用/宿主重启中）给重试按钮')
+  assert.match(down.hint, /dsh-my-go 设置命名空间不可用/)
+  const memory = resolveCardView({ status: 'unavailable', mode: 'memory' })
+  assert.equal(memory.retryable, false, '内存档重试也不会落盘，重试是假希望')
+  assert.match(memory.hint, /127\.0\.0\.1/)
 })
 
-// ── interpretSaveResult ────────────────────────────────────────────────────
-
-test('interpretSaveResult：保存成功 adopt 新凭据（不 adopt 会让下一次保存自撞假冲突）', () => {
-  const outcome = interpretSaveResult({ ok: true, value: { revision: 8 } })
-  assert.equal(outcome.status, 'saved')
-  assert.equal(outcome.revision, 8)
+test('resolveCardView：ready 但宿主只读，不算不可用（页面自己出只读告示）', () => {
+  assert.equal(resolveCardView({ status: 'ready', writable: false }).kind, 'ready')
 })
 
-test('interpretSaveResult：旧 host 半回 value:null 时 revision 为 null，保存仍算成功', () => {
-  const outcome = interpretSaveResult({ ok: true, value: null })
-  assert.equal(outcome.status, 'saved')
-  assert.equal(outcome.revision, null)
+// ── describeSaveOutcome ────────────────────────────────────────────────────
+
+test('describeSaveOutcome：落盘与没落盘两条文案，都带当前版本号', () => {
+  const ok = describeSaveOutcome(true, 8)
+  assert.equal(ok.ok, true)
+  assert.equal(ok.text, '已保存，配置即时生效 · r8')
+  const bad = describeSaveOutcome(false, 8)
+  assert.equal(bad.ok, false)
+  assert.match(bad.text, /没落盘/, '官方信道被拒不抛，只有读回能证伪「已保存」')
+  assert.match(bad.text, /丢弃草稿并重读/, '给出唯一出路')
+  assert.match(bad.text, /r8/)
 })
 
-test('interpretSaveResult：conflict 独立成态并作废本地凭据', () => {
-  const outcome = interpretSaveResult({
-    ok: false,
-    error: { code: 'conflict', message: 'settings changed since load (expected r3, now r5)', details: { expected: 3, actual: 5 } },
-  })
-  assert.equal(outcome.status, 'conflict')
-  assert.equal(outcome.revision, null, '冲突后旧凭据必须作废：留着它下次还会撞')
-  assert.match(outcome.message, /他处已修改，请重新加载/)
-  assert.match(outcome.message, /r5/, '把「他处改到了哪一版」如实报给用户，而不是只说「保存失败」')
-})
-
-test('interpretSaveResult：宿主原生 SETTINGS_CONFLICT 码也认（不把并发写降级成 settings-rejected）', () => {
-  const outcome = interpretSaveResult({
-    ok: false,
-    error: { code: 'SETTINGS_CONFLICT', message: 'namespace moved', details: {} },
-  })
-  assert.equal(outcome.status, 'conflict')
-})
-
-test('interpretSaveResult：真正的写失败仍走 failed 并保留 host 原因', () => {
-  const outcome = interpretSaveResult({
-    ok: false,
-    error: { code: 'settings-rejected', message: 'schema validation failed', details: {} },
-  })
-  assert.equal(outcome.status, 'failed')
-  assert.match(outcome.message, /schema validation failed/)
-  assert.equal(interpretSaveResult(undefined).status, 'failed', '空响应按失败处理，绝不静默当已保存')
+test('describeSaveOutcome：宿主没给版本号就不编一个', () => {
+  assert.equal(describeSaveOutcome(true, undefined).text, '已保存，配置即时生效')
 })
 
 // ── attachBeforeUnloadGuard ────────────────────────────────────────────────
 
-function fakeWindow() {
-  const byKind = new Map()
-  const of = (kind) => byKind.get(kind) ?? []
-  return {
-    of,
-    addEventListener(kind, fn) { byKind.set(kind, [...of(kind), fn]) },
-    removeEventListener(kind, fn) { byKind.set(kind, of(kind).filter((f) => f !== fn)) },
+test('attachBeforeUnloadGuard：脏草稿期间拦一道，disposer 真的解绑', () => {
+  const listeners = []
+  const win = {
+    addEventListener: (name, fn) => listeners.push([name, fn]),
+    removeEventListener: (name, fn) => {
+      const at = listeners.findIndex(([n, f]) => n === name && f === fn)
+      if (at >= 0) listeners.splice(at, 1)
+    },
   }
-}
-
-test('attachBeforeUnloadGuard：dirty 期间挂一个监听，disposer 精确摘掉它', () => {
-  const win = fakeWindow()
-  const detach = attachBeforeUnloadGuard(win)
-  assert.equal(win.of('beforeunload').length, 1)
-  detach()
-  assert.equal(win.of('beforeunload').length, 0, '解除后不得留下守卫（dirty 反复翻转时会堆叠）')
-  detach() // 幂等：重复解除不该抛（dirty 反复翻转时第二次解除是常态）
-})
-
-test('attachBeforeUnloadGuard：事件必须 preventDefault + returnValue，浏览器才弹自家确认框', () => {
-  const win = fakeWindow()
-  const detach = attachBeforeUnloadGuard(win)
-  const event = { prevented: false, preventDefault() { this.prevented = true } }
-  win.of('beforeunload')[0](event)
-  assert.equal(event.prevented, true)
+  const off = attachBeforeUnloadGuard(win)
+  assert.equal(listeners.length, 1)
+  assert.equal(listeners[0][0], 'beforeunload')
+  const event = { prevented: 0, returnValue: 'untouched', preventDefault() { this.prevented += 1 } }
+  listeners[0][1](event)
+  assert.equal(event.preventDefault === undefined ? 0 : event.prevented, 1, '取消事件才有浏览器确认框')
   assert.equal(event.returnValue, '')
-  detach()
+  off()
+  assert.equal(listeners.length, 0)
 })
 
-test('attachBeforeUnloadGuard：非浏览器环境（Node / SSR / 无 addEventListener）返回可调用的空 disposer', () => {
-  for (const env of [undefined, null, {}]) {
-    const detach = attachBeforeUnloadGuard(env)
-    assert.equal(typeof detach, 'function')
-    assert.doesNotThrow(() => detach())
-  }
+test('attachBeforeUnloadGuard：非浏览器环境（Node/SSR）是 no-op，不炸', () => {
+  assert.equal(typeof attachBeforeUnloadGuard(undefined), 'function')
+  assert.equal(typeof attachBeforeUnloadGuard({}), 'function', '没有 addEventListener 也不炸')
+  attachBeforeUnloadGuard(undefined)()
 })

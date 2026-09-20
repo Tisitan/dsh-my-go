@@ -6,10 +6,13 @@
  *
  *  - panel-tree.js: overlay tree panel + 600ms snapshot poll + auto-jump
  *    (current / queue / help / history / roster sections, click-to-jump via
- *    `sessions.openSubagent`).
- *  - settings-core.js: `settings.section` "dsh-my-go" — per-agent
- *    model/effort/DSV4P0813 config, persona overrides, custom roles
- *    (roles-editor.js) and the tool-mask dual-list editor (tool-mask-editor.js).
+ *    `sessions.openSubagent`). Unchanged: the panel is not a configuration
+ *    surface.
+ *  - settings-core.js: the configuration card, injected into the official
+ *    plugin page through `plugins.bundle.config` (0.5.0-tisitan.3) — the
+ *    `settings.section` entry is retired. It reads/writes the 'dsh-my-go'
+ *    namespace over `settingsScope`, and its model dropdowns ride the host's
+ *    own `remote.session.modelCatalog()` face.
  *
  * Built by scripts/build-client.mjs into dist/client.js (a
  * `__ModuleLoader__.load` wrapper around the esbuild CJS bundle). React is
@@ -20,12 +23,13 @@
 
 import * as React from 'react'
 
+import { SETTINGS_NAMESPACE as NAMESPACE } from '../preset/shared/constants.mjs'
 import { createOrchestrationPanel } from './panel-tree.js'
-import { SettingsPage } from './settings-core.js'
+import { SettingsCard } from './settings-core.js'
 
 export const name = 'dsh-my-go'
 
-export const inject = ['slots', 'settingsScope', 'connection']
+export const inject = ['slots', 'settingsScope', 'connection', 'remote', 'remote.session']
 
 // 宿主 timer 服务缺席时的回落（E2/A-01）：浏览器形态下 globalThis 即 window，
 // 故这就是 window.setInterval/clearInterval；每次建链返回自管 disposer，
@@ -87,18 +91,175 @@ export function apply(ctx) {
   // ── orchestration panel + polling + auto-jump（ tisitan.15 拆分至 panel-tree.js）
   const stopPanel = createOrchestrationPanel({ slots, connection, sessions, timer: panelTimer })
 
-  // ── settings page ───────────────────────────────────────────────────────
-  const scope = client.get('settingsScope')
-    ? client.get('settingsScope').bind({ namespace: 'dsh-my-go' })
-    : null
-
-  slots.inject('settings.section', () => slots.register(
-    { name: 'settings.section', id: 'dsh-my-go', order: 30, label: 'MyGO 编排' },
-    (props) => React.createElement(SettingsPage, { ...props, scope, connection }),
-  ))
+  // ── configuration card（官方插件页内的唯一配置入口）───────────────────────
+  const binder = client.get('settingsScope')
+  const remote = client.get('remote')
+  if (binder && slots && typeof slots.inject === 'function') {
+    const scope = binder.bind({ namespace: NAMESPACE })
+    const face = binder.describe ? binder.describe() : null
+    const catalog = createCatalogStore(remote)
+    // 只有宿主真的在服务这个命名空间时才挂卡：插件被停用 / 宿主半注册失败时，
+    // 页面上不会出现一张读不到东西的空表单（官方内置插件卡同款门控）。
+    client.effect(() => {
+      let off = null
+      const sync = () => {
+        const served = new Set((face?.getSnapshot?.()?.view?.namespaces ?? []).map((entry) => entry.ns))
+        const available = face === null || served.has(NAMESPACE)
+        if (available && off === null) off = registerCard(slots, scope, face, catalog, connection)
+        else if (!available && off !== null) {
+          off()
+          off = null
+        }
+      }
+      const unsubscribe = face?.subscribe ? face.subscribe(sync) : () => {}
+      void (face?.ensure ? face.ensure() : face?.load ? face.load() : undefined)
+      sync()
+      return () => {
+        unsubscribe()
+        if (off !== null) off()
+      }
+    }, 'dsh-my-go: configuration card')
+    // 模型目录跟着宿主的信号走：适配器变了、文档变了、连接重代了，都作废重拉。
+    client.effect(() => {
+      const offs = [
+        remote?.$on?.('llm/adapters-updated', () => catalog.invalidate()),
+        remote?.$on?.('settings/document-updated', () => catalog.invalidate()),
+      ]
+      const reset = () => catalog.reset()
+      const offReset = typeof client.on === 'function' ? client.on('connection/reset', reset) : null
+      return () => {
+        for (const off of offs) if (typeof off === 'function') off()
+        if (typeof offReset === 'function') offReset()
+      }
+    }, 'dsh-my-go: model catalog invalidations')
+  }
 
   // ── cleanup ─────────────────────────────────────────────────────────────
   return () => {
     stopPanel()
+  }
+}
+
+/**
+ * One registration under the bundle identity the plugin page looks a bundle up
+ * by. The page keys a bundle by the name the *profile* installed it under, so a
+ * `link:` install whose key differs from the package name would silently lose the
+ * card — dsh-tts tripped on exactly that. Here the dependency key, the bundle
+ * entry and the package name are all `dsh-my-go`, so one key covers every
+ * install shape; the sandbox acceptance re-confirms it.
+ */
+function registerCard(slots, scope, face, catalog, connection) {
+  return slots.inject('plugins.bundle.config', () => slots.register(
+    { name: 'plugins.bundle.config', key: NAMESPACE },
+    (props) => React.createElement(
+      SettingsCardBoundary,
+      null,
+      React.createElement(SettingsCard, { ...props, scope, face, catalog, connection }),
+    ),
+  ))
+}
+
+/** A throwing render must cost the card, not the whole plugin page. */
+class SettingsCardBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { failed: false }
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  componentDidCatch(error) {
+    console.error('[dsh-my-go] configuration card render failed:', error)
+  }
+
+  render() {
+    if (this.state.failed) {
+      return React.createElement('div', { className: 'mygo-notice mygo-noticeError' }, 'dsh-my-go 配置卡渲染异常（已拦截，不影响页面其它部分）。')
+    }
+    return this.props.children
+  }
+}
+
+/**
+ * Lazy model-catalog store over the host's own session face — the same source
+ * the official Subagent card reads, so provider/model lists here can never
+ * disagree with what the chat model picker offers. `load()` fetches at most once
+ * per generation; `invalidate()` refetches only after something has been read.
+ */
+export function createCatalogStore(remote) {
+  const empty = { status: 'idle', providers: [], models: {}, errors: {} }
+  let state = empty
+  let generation = 0
+  let started = false
+  const listeners = new Set()
+  const publish = () => {
+    for (const listener of [...listeners]) listener()
+  }
+
+  async function fetchCatalog() {
+    const at = ++generation
+    state = { ...state, status: 'loading' }
+    publish()
+    if (!remote?.session || typeof remote.session.modelCatalog !== 'function') {
+      state = { status: 'error', providers: [], models: {}, errors: {} }
+      publish()
+      return
+    }
+    try {
+      const response = await remote.session.modelCatalog()
+      if (at !== generation) return
+      if (!response || response.ok !== true || !response.value) {
+        state = { status: 'error', providers: [], models: {}, errors: {} }
+        publish()
+        return
+      }
+      const value = response.value
+      const groups = Array.isArray(value.groups) ? value.groups : []
+      const failures = Array.isArray(value.failures) ? value.failures : []
+      const providers = (Array.isArray(value.routableProviders) && value.routableProviders.length > 0
+        ? value.routableProviders
+        : groups.map((group) => group?.id)).filter((id) => typeof id === 'string' && id !== '')
+      const models = {}
+      for (const group of groups) {
+        if (!group || typeof group.id !== 'string') continue
+        models[group.id] = (Array.isArray(group.models) ? group.models : [])
+          .map((model) => model?.id)
+          .filter((id) => typeof id === 'string' && id !== '')
+      }
+      for (const provider of providers) if (!(provider in models)) models[provider] = []
+      const errors = {}
+      for (const failure of failures) {
+        if (failure && typeof failure.id === 'string') errors[failure.id] = String(failure.message ?? '模型清单读取失败')
+      }
+      state = { status: 'ready', providers, models, errors }
+    } catch (error) {
+      if (at !== generation) return
+      state = { status: 'error', providers: [], models: {}, errors: { '': String(error) } }
+    }
+    publish()
+  }
+
+  return {
+    get: () => state,
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    load() {
+      if (started) return Promise.resolve(state)
+      started = true
+      return fetchCatalog()
+    },
+    invalidate() {
+      if (!started) return Promise.resolve(state)
+      return fetchCatalog()
+    },
+    reset() {
+      started = false
+      state = empty
+      publish()
+    },
   }
 }

@@ -10,13 +10,13 @@
                         │                                                                                          │
  用户 ──► DSH WebUI ──► │  【client 半】dist/client.js（React 插件）                                               │
  （浏览器）             │   ├─ 🧭 侧栏按钮 ──► shell.overlay 树状图面板（current/queue/help/history/roster）     │
-                        │   ├─ 设置页「MyGO 编排」（内置 8 工种绑定五字段 + persona 覆盖 + 角色 CRUD               │
+                        │   ├─ 设置页「MyGO 编排」（内置 9 张卡绑定五字段 + persona 覆盖 + 角色 CRUD               │
                         │   │   导入导出 + 工具屏蔽双列表 + 全卡片手风琴）                                         │
                         │   ├─ tisitan.15 拆分：panel-tree / settings-core / roles-editor /                        │
-                        │   │   tool-mask-editor / client-constants（client.js 82 行装配层）                       │
+                        │   │   tool-mask-editor / client-constants（client.js 265 行装配层）                      │
                         │   └─ 600ms 轮询 ──┐                                                                      │
                         │                   ▼ RPC call('/dsh-my-go', endpoint)                                     │
-                        │  【host 半】lib/index.js（profile bundle，global 层注册；632 行零编排面）              │
+                        │  【host 半】lib/index.js（profile bundle，global 层注册；721 行零编排面）              │
                         │   ├─ webServer.register('/dsh-my-go')                                              │
                         │   │    ├─ snapshot ──► 读 Symbol.for('dsh-my-go.snapshot') 全局桥 ──────────┐            │
                         │   │    │                  （桥不在 = preset 未装配 → 降级空态               │            │
@@ -30,47 +30,50 @@
                         │   ├─ Orchestration 状态机（编排真源）                                      │             │
                         │   │    currentMap(单槽,≤500) / queue(FIFO) / helpRequests / history(≤200) │              │
                         │   │        ▲ 每次迁移 bump() ──► 发布 latestSnapshot 到 Symbol.for 全局桥 ──┘            │
-                        │   ├─ 6 工具：go_work / continue / need_help / forward /                                  │
-                        │   │   orchestration_status / list_subagents（preset 层注册；                             │
-                        │   │   tisitan.21 起编排唯一实现，lib 已无同名面）                                        │
+                        │   ├─ 10 工具：go_work / continue / need_help / forward /                                 │
+                        │   │   orchestration_status / list_subagents / report_submit / report_fetch /             │
+                        │   │   chain_start / chain_resolve（preset 层注册；报告与接力链两对                       │
+                        │   │   受各自总闸控制注册；tisitan.21 起编排唯一实现，lib 已无同名面）                    │
                         │   ├─ systemPrompt 注入：Sisyphus persona + 编排规则（主会话）；                          │
                         │   │   子代理 persona/toolFilter 走 spawn 官方通道（tisitan.14）                          │
                         │   ├─ 共享源 tisitan.15：import preset/shared/（状态机/失败分类/                          │
                         │   │   档案读取/名册路由/工种识别/台账养护；tisitan.21 起编排面                           │
-                        │   │   模块 broker 独有，lib 只引存储/面板面三模块）                                    │
+                        │   │   模块 broker 独有，lib 只引存储/面板面四模块）                                    │
                         │   ├─ agent/request waterfall：按工种绑定 provider/model/reasoningEffort                  │
                         │   ├─ agent/created：拓扑闸（子代理禁派生 + 邻接三件套）+ skill 隐藏                      │
                         │   └─ subagent/end：结论落账 + 队列推进；agent|session/disposed：状态回收                 │
                         │                   │                                                                      │
                         │                   ▼ ctx.subagents.startContinuable / queuePrompt/sendMessage             │
-                        │  【DSH 内核】subagents 服务 ──► continuable 子代理会话（内置七工种 + roles 自定义名册）  │
+                        │  【DSH 内核】subagents 服务 ──► continuable 子代理会话（内置八工种 + roles 自定义名册）  │
                         └──────────────────────────────────────────────────────────────────────────────────────────┘
 
- 工具可见性规则（tisitan.21 起）：编排六工具仅 preset 层（broker）注册——MyGO 会话
+ 工具可见性规则（tisitan.21 起）：编排十工具仅 preset 层（broker）注册——MyGO 会话
  独享；lib 半零编排工具面，其他会话不再有 fallback 编排工具。面板数据经快照桥单向流动：
  broker 发布 → lib RPC 消费（两半间唯一运行时通道）。
  防旁路加固批起，上游邻接消息三件套（`send_message` / `list_agents` /
  `interrupt_agent`）在 MyGO 会话的 Sisyphus 与子代理两侧都被 deny：**邻接消息
- 通道**收口为 broker 六件套，`need_help` 的上报走运行时 API，与工具名无关。
+ 通道**收口为 broker 十件套，`need_help` 的上报走运行时 API，与工具名无关。
  收口不含**派生**面——原生 `subagent` / `subagent_fork` / `workflow` / `ralph`
  在 Sisyphus 顶层保留为逃生舱（仅用户显式要求直派时用），只在子代理侧摘除。
 
- 共享源 preset/shared/ 九模块（健康度批后八模块；0.3.0-tisitan.12 再拆出 end-attribution；上图模块括注沿用早期六档口径）：
+ 共享源 preset/shared/ 十三模块（健康度批后八模块；0.3.0-tisitan.12 再拆出
+ end-attribution；0.5.0 线批次再补 board / paths / report-format / relay-chain）：
  constants（共享常量）/ failure（失败归一与备选分类器）/ archive（档案取证）/
  roles（名册与路由）/ orchestration（单线状态机）/ misc（台账修剪·展示串·工种
  识别·绑定合并）/ child-registry（子代理侧八张桥接登记表 + 跨表不变量）/
- adjacent（上游邻接消息面唯一耦合点，alpha.2/3 ↔ alpha.4 特性探测）。
- 铁律：零 @deepseek-ai、零 ctx；编排面五模块（orchestration / failure /
- archive / child-registry / adjacent）仅 broker 消费，lib 只引 constants /
- roles / misc 的存储面符号。
+ adjacent（上游邻接消息面唯一耦合点，alpha.2/3 ↔ alpha.4 特性探测）/
+ board（接力链报告板读写）/ paths（DSH_HOME 路径解析）/ report-format（报告
+ 格式条款与校验）/ relay-chain（接力链状态机纯函数）。
+ 铁律：零 @deepseek-ai、零 ctx；编排面模块仅 broker 消费，lib 只引 constants /
+ paths / roles / misc 的存储面符号。
 ```
 
 ## 二、文件目录（fork 现状）
 
 ```
 dsh-my-go/
-├── package.json              # 包声明；版本 0.5.0-tisitan.0；test = 构建 bundle +
-│                             #   dist 新鲜度冒烟 + node --test 通配 20 档（不再手写清单）
+├── package.json              # 包声明；版本 0.5.0-tisitan.3；test = 构建 bundle +
+│                             #   dist 新鲜度冒烟 + node --test 通配 42 档（不再手写清单）
 ├── package-lock.json         # **已入库**（D-14）：CI 走 npm ci，本地/CI/发布同一棵树
 ├── .nvmrc                    # 22.15 = CI 的 Node 版本单一来源（engines 同源）
 ├── cordis.patch.yml          # bundle patch：dsh plugin add 后自动把 lib 挂进 profile（global 层）
@@ -79,35 +82,52 @@ dsh-my-go/
 │
 ├── lib/
 │   └── index.js              # 【host 半】settings 命名空间 + revision 围栏 + RPC 桥 + preset 同步器
-│                             #   （632 行；tisitan.21 起零编排面——fallback 编排
+│                             #   （721 行；tisitan.21 起零编排面——fallback 编排
 │                             #     已整体切除，编排唯一归属 broker 半）
 │
 ├── preset/                   # agent preset「MyGO!!!!! 模式」（被同步到 ~/.dsh/.agent-presets/）
 │   ├── preset.yml            #   preset 元信息（名称/排序）
-│   ├── agent.cordis.yml      #   agent 平面组合：DSH 官方工具行 + 本地 broker 行 + tool-mask 行
-│   ├── tool-mask.mjs         #   工具屏蔽：三源并集解析（config.deny ∪
-│   │                         #     settings toolMask.deny ∪ 空 DEFAULT_DENY，
-│   │                         #     去重保序互不覆盖），挂载时读一次、只对新
-│   │                         #     会话生效；现含上游邻接消息三件套；汇总行只数
-│   │                         #     实际屏蔽成功的名字，未注册名并表点名
+│   ├── agent.cordis.yml      #   agent 平面组合：DSH 官方工具行 + 本地 broker 行
 │   ├── shared/               #   【共享源 tisitan.15】constants / failure / archive /
 │   │                         #     roles / orchestration / misc / child-registry /
-│   │                         #     adjacent 共八模块；0.3.0-tisitan.12 起共九模块（+
-│   │                         #     end-attribution，end 归因决策纯函数）；铁律：零
-│   │                         #     @deepseek-ai、零 ctx（readFailure 由调用方注入例外）
-│   │                         #     tisitan.21 起编排面模块（orchestration/failure/
-│   │                         #     archive/child-registry/adjacent）仅 broker 消费，
-│   │                         #     lib 只引 constants/roles/misc 的存储面符号
+│   │                         #     adjacent / end-attribution；0.5.0 线批次再补 board /
+│   │                         #     paths / report-format / relay-chain，现共十三模块；
+│   │                         #     铁律：零 @deepseek-ai、零 ctx（readFailure 由调用方
+│   │                         #     注入例外）；tisitan.21 起编排面模块仅 broker 消费，
+│   │                         #     lib 只引 constants/paths/roles/misc 的存储面符号
 │   └── tools/
-│       └── broker.mjs        #   【agent 半 · 编排真源】6 工具 + prompt 注入 + 模型绑定
-│                             #     + 拓扑闸 + 快照桥发布（状态机/失败取证/子代理登记表
-│                             #     /上游邻接契约/end 归因决策均已抽 shared/）。本文件
-│                             #     只剩策略调用 + 两组共用件：continue/forward 投递链
-│                             #     五件（resolveContinueTarget / tryFacadeSteer /
-│                             #     interruptForAbort / deliverWithQueueFallback /
-│                             #     rearmAfterDelivery）与 subagent/end dispatcher
+│       ├── broker.mjs                #   【agent 半 · 编排真源 · 接线骨架】活状态与 config
+│       │                             #     常量、settings 块、快照枢纽 bump、各簇实例化与
+│       │                             #     接线、生命周期 handlers、agent/request waterfall。
+│       │                             #     批次 5 拆分后 10 工具注册体 / 模型能力 / 调度核 /
+│       │                             #     end 管线 / 投递链 / 缓冲兜底等实现本体各在同级
+│       │                             #     broker-*.mjs（工厂 + deps 显式注入，簇零回引本体、
+│       │                             #     簇间零互引），导出面与调用点逐名不变；状态机/
+│       │                             #     失败取证/子代理登记表/上游邻接契约/end 归因决策
+│       │                             #     仍抽 shared/
+│       ├── metrics.mjs               #   观测埋点（config.metrics 总闸；events.jsonl 追加写）
+│       ├── broker-ledger.mjs         #   5.1 台账持久化（history 落盘/读回、tmp+rename 原子
+│       │                             #     写、冷记录兜底查找）
+│       ├── broker-notify.mjs         #   5.1 父会话补充通知（notifyParent / notifyOwner /
+│       │                             #     resolveParentAgent / notifyClearedHelp）
+│       ├── broker-capability.mjs     #   5.1 模型能力缓存（modelExists / supportedEfforts /
+│       │                             #     invalidateCaches）
+│       ├── broker-dispose.mjs        #   5.2 disposed 宽限期兜底（活记录挂 grace 定时器 +
+│       │                             #     超时三连落账解冻；墓碑由本体立）
+│       ├── broker-endbuffer.mjs      #   5.2 E2 end 缓冲重放（暂存 / 真 id 认领 / 超时落档）
+│       ├── broker-delivery.mjs       #   5.2 continue/forward 投递链五件共用件（同步段 await
+│       │                             #     次数与原分支逐一对应）
+│       ├── broker-relay.mjs          #   5.3 接力链 dispatcher（链 patch/ops 写回、hop 反查表）
+│       ├── broker-bootstrap.mjs      #   5.3 persona 装配 / prompts 读盘缓存 / DSV4P0813
+│       │                             #     两段式 bootstrap
+│       ├── broker-tools.mjs          #   5.3 编排十具注册体 + agent/created 双侧 deny 闸
+│       ├── broker-scheduler.mjs      #   5.4 调度核（spawnChild / dispatchWork / advanceQueue
+│       │                             #     互递归环内聚 + 名册路由薄壳 + 停摆可观测）
+│       └── broker-ending.mjs         #   5.4 end 管线（processEnd / finalizeEnd / 备选重派 /
+│                                     #     报告补发链）
 │
-├── prompts/                  # 8 个工种 persona（broker.mjs 运行时读取并注入）
+├── prompts/                  # 9 个工种 persona（broker 半运行时读取并注入——5.3 波
+│                             #   起读盘/缓存/装配本体在 ./broker-bootstrap.mjs）
 │   ├── sisyphus.md           #   总调度+质检官（persona 段进 deployment:persona，
 │   │                         #     「## 编排规则」之后进 dsh-my-go:orchestration section）
 │   ├── hermes.md             #   快速执行（指令明确的体力活）
@@ -115,11 +135,12 @@ dsh-my-go/
 │   ├── librarian.md          #   文档查询
 │   ├── looker.md             #   多模态识别
 │   ├── hephaestus.md         #   代码编写
-│   ├── prometheus.md         #   需求规划（流程开始一次）
+│   ├── prometheus.md         #   拆解素材分析（只交素材，流程开始一次）
+│   ├── apelles.md            #   可视化画师（结构图/流程图/海报 + UI 视觉稿）
 │   └── oracle.md             #   疑难/极端复杂兜底
 │
 ├── src/
-│   ├── client.js             # 【client 半装配层】82 行：接线五模块 + 注册 DSH slots +
+│   ├── client.js             # 【client 半装配层】265 行：接线两模块 + 注册 DSH slots +
 │   │                         #   宿主服务缺席时真降级（0.3.0-tisitan.8 E2/A-01）
 │   ├── client-constants.js   # client 共享常量（色板/标签/intent 文案，零 React）
 │   ├── panel-tree.js         # 树状图面板 + 快照轮询（in-flight 门 / 失败退避 /
@@ -129,9 +150,7 @@ dsh-my-go/
 │   ├── settings-guard.js     # 未保存与并发写守卫纯函数（load/save 结果归一 +
 │   │                         #   beforeunload 挂钩，Node 侧可直测，0.3.0-tisitan.9）
 │   ├── roles-editor.js       # 自定义角色区（CRUD / persona 覆盖 / JSON 导入导出）
-│   ├── tool-mask-editor.js   # 工具屏蔽双列表编辑器
 │   ├── chain-rows.js         # 模型优先级列表编辑器纯函数（node --test 与 bundle 内联同源，tisitan.19）
-│   ├── tool-mask-rows.js     # 工具屏蔽双列表编辑器纯函数（同上，tisitan.13）
 │   ├── roster-rows.js        # 自定义角色纯函数（同上；卡摘要/导入导出/persona 覆盖）
 │   └── panel-format.js       # 面板格式化纯函数（同上）
 ├── scripts/
@@ -214,10 +233,6 @@ dsh-my-go/
 │   ├── chain-rows.test.mjs   # 模型优先级列表编辑器纯函数 11 例（tisitan.19；
 │   │                         #   stripEmptyFallbackRows 保存边界，tisitan.20 D1）
 │   ├── panel-format.test.mjs # 面板格式化纯函数 9 例（tisitan.12；徽章行首锚定 0.2.3-tisitan.20 D6）
-│   ├── tool-mask.test.mjs    # 工具屏蔽三源并集解析 9 例（tisitan.13；并集与
-│   │                         #   config.deny 邻接三件套 pin 自防旁路加固批；
-│   │                         #   unknown 名降噪 + 计数口径自 0.3.0-tisitan.6 日志卫生批）
-│   ├── tool-mask-rows.test.mjs# 屏蔽双列表编辑器纯函数 7 例（tisitan.13）
 │   ├── dump-session.test.mjs # 取证 CLI 9 例（摘要规则/多帧行为面/childId 搜索，tisitan.16）
 │   ├── failure-notice.test.mjs# 失败通知真空期三件套 11 例（名册简报段 + 同步预告
 │   │                         #   e2e + 分类器否决终局，tisitan.18）
@@ -265,24 +280,52 @@ dsh-my-go/
 
 ## 三、机制映射（什么功能 → 哪个文件 → 怎么实现）
 
+### 批次 5 簇归属速查（`broker.mjs` → 11 个同级 `broker-*.mjs`）
+
+批次 5 拆分后，编排实现本体按族住在 `preset/tools/broker-*.mjs`，`broker.mjs` 只剩
+活状态、config、settings 块、快照枢纽、接线与挂载点。簇模块一律「工厂 + deps 显式
+注入」，零回引本体、簇间零互引（跨簇协作全在本体接线段穿包壳闭包），导出面逐名不变。
+函数级原理见后面各分区；下表是「机制 → 簇 → 出口符号」的速查。
+
+| 波次 | 簇模块（工厂） | 出口符号 | 主要消费方 |
+|---|---|---|---|
+| 5.1 | `broker-ledger.mjs`（`createLedgerOps`） | `loadLedger` / `scheduleLedgerSave` / `findRecordWithLedgerFallback` / `closeLedger`（+ 簇内 `ledgerPayload` / `writeLedgerSync`） | 本体挂载与落账点、delivery / relay 簇（经注入） |
+| 5.1 | `broker-notify.mjs`（`createNotifyOps`） | `notifyParent` / `resolveParentAgent` / `notifyOwner` / `notifyClearedHelp` | scheduler / ending / delivery / relay / tools 五簇（经注入） |
+| 5.1 | `broker-capability.mjs`（`createCapabilityOps`） | `supportedEfforts` / `modelExists` / `invalidateCaches` | 本体 `agent/request` waterfall、scheduler 与 ending 簇 |
+| 5.2 | `broker-dispose.mjs`（`createDisposeFallbackOps`） | `scheduleDisposeFallback` / `cancelDisposeFallback` / `clearDisposeFallbackTimers` | 本体 `agent/disposed`（挂兜底）与 `session/disposed`（同点撤）、ending 簇（end 入口自撤） |
+| 5.2 | `broker-endbuffer.mjs`（`createEndBufferOps`） | `bufferEnd` / `claimBufferedEnd` / `auditStaleSpawningPlaceholders`（簇内自调） / `clearEndBuffer` | scheduler 簇（直派认领）、ending 簇（缓冲闸 + 重派认领） |
+| 5.2 | `broker-delivery.mjs`（`createDeliveryOps`） | `resolveContinueTarget` / `tryFacadeSteer` / `interruptForAbort` / `deliverWithQueueFallback` / `rearmAfterDelivery` | tools 簇 continue/forward 两具 + ending 簇补发链 |
+| 5.3 | `broker-relay.mjs`（`createRelayOps`） | `relayChainOnEnd` / `runChainTransition` / `chainDeclarationError` / `resolveChainFallback` / `backfillHopOnArrival` / `handleQueueWorkDropped` / `releaseHopHolds` / `clearChainHops` | tools 簇 `chain_*` 两具、ending 簇、scheduler 簇、本体 `session/disposed` |
+| 5.3 | `broker-bootstrap.mjs`（`createBootstrapOps`） | `promptCache` / `loadPrompt`（三段 section 注册、DSV4P0813 两段晋升在簇内，碰 ctx 的动作经 `effect` / `registerSection` / `getSectionOrder` / `on` 回调注入） | 本体挂载、scheduler 簇（人设文本与内置岗位名册路由） |
+| 5.3 | `broker-tools.mjs`（`registerAllTools`） | 十具注册体 + `agent/created` 双侧 deny 闸（无出口，挂载即注册） | 本体接线（服务面四件包回调、五簇工厂产物转注） |
+| 5.4 | `broker-scheduler.mjs`（`createSchedulerOps`） | `dispatchWork` / `advanceQueue` / `spawnChild` / `rosterKeys` / `liveToolNames` / `buildStallNotice` / `clearQueueRetryTimers` / `cancelQueueRetryTimer`（`scheduleQueueRetry` / `stallHolder` / `rolePersona` / `resolveRoleToolFilter` 簇内私有） | tools 簇、ending 簇、dispose / endbuffer / relay 三簇 |
+| 5.4 | `broker-ending.mjs`（`createEndingOps`） | `processEnd`（`finalizeEnd` / `attemptFallbackRedeploy` / `attemptReportRepair` / `readTurnFailure` / `pickFallbackEntry` 簇内私有） | 本体 `ctx.on('subagent/end')` 挂载点 |
+
+**留守本体不随簇迁出的件**（5.4 裁决）：`orchestrations` 活状态 Map 与
+`childRegistry` 句柄、config 常量与 settings 块、`bump` 快照枢纽与
+`Symbol.for('dsh-my-go.snapshot')` 发布、`orchFor` / `orchOfChild` /
+`findRecordEverywhere` / `findHelpEverywhere` / `persistReportBoard` /
+`isSubAgent` / `canOrchestrate`、`agent/disposed` / `session/disposed` /
+`agent/request` 三个钩子体与 `subagent/end` 的事件注册。
+
 ### 调度与编排
 
 | 功能 | 实现位置 | 原理 |
 |---|---|---|
-| 派发子代理（go_work） | `preset/tools/broker.mjs` `dispatchWork()` → `spawnChild()` | 检查属主会话实例的 `isBusy()` → 忙则 `enqueue()` 排队（返回 `work-*` 占位 id）；闲则 `beginSpawning()` 占位占锁（同步原子）→ `spawnChild()`（persona/toolFilter 组装 + `ctx.subagents.startContinuable()`，与备选重派**共用同一实现**）创建持久子会话 → `bindChild()` 绑定真实 childId 并登记 `childOwner` 属主映射 |
+| 派发子代理（go_work） | `broker-tools.mjs` go_work 工具体 → `broker-scheduler.mjs` `dispatchWork()` → `spawnChild()` | 检查属主会话实例的 `isBusy()` → 忙则 `enqueue()` 排队（返回 `work-*` 占位 id）；闲则 `beginSpawning()` 占位占锁（同步原子）→ `spawnChild()`（persona/toolFilter 组装 + `ctx.subagents.startContinuable()`，与备选重派**共用同一实现**）创建持久子会话 → `bindChild()` 绑定真实 childId 并登记 `childOwner` 属主映射 |
 | 单线阻塞（tisitan.10 起按会话隔离） | `broker.mjs` `orchestrations: Map<会话id, Orchestration>` | 每个 Sisyphus 会话惰性建独立流水线（current/queue/history 各自为政，互不排队）；`childOwner` 路由表把子代理事件精准路由回属主流水线；会话销毁时整条回收。单槽内 `isBusy()` 到 `beginSpawning()` 之间无 await，Node 单线程下天然原子 |
-| 派发与复活共用体（健康度批） | `broker.mjs` `spawnChild()` + `childRegistry.rearmChild()` | 直派（`dispatchWork`）与备选重派（`attemptFallbackRedeploy`）的 spawn 组合子合一：persona/toolFilter 解析 + `SubagentStartRequest` 组装 + 门面 `startContinuable`，差异全部参数化（agentOptions 来源、label、signal）；continue 与 forward 的复活登记（工种 + 备选覆盖守卫 + 属主回填，**外加两张一次性表清零**，tisitan.7 N5）也合一（`orch.revive` 是台账动作，留在调用方）。台账动作（`beginSpawning`/`bindChild`/`revive`）与通知仍留在各调用方——两路占槽语义不同，强行合并会改行为 |
-| 队列推进 | `broker.mjs` `advanceQueue(orch)` | 属主实例的 `subagent/end` 或 spawn 失败时触发：dequeue 队首 → 按 `work.parentId` 重解析父会话 → dispatch；**失败自动 `requeueHead()` 回补**（fork 修复：任务不再蒸发） |
-| 求助挂起（need_help） | `broker.mjs` need_help 工具 | `suspend()` 标记 waiting + `reportToParent` 适配层（`shared/adjacent.mjs`）把求助单注入 Sisyphus（alpha.4 sendMessage，被拒兜底 `parent.inject`；alpha.2-3 reportFrom）。求助单的 `agentType` 经 `typeOfAgent` 取证（活登记优先、label 兜底，tisitan.7 N13）——竞态归随/墓碑期/冷恢复这些「活登记已失而记录仍在槽」的形态下裸查 `sessionTypes` 会落成 undefined，面板按工种上色直接落空。注：台账层挂起，无强制 interrupt（评估结论见第五节） |
-| 驳回/追问（continue） | `broker.mjs` continue 工具 | **先经 `deliverToAdjacent`（`shared/adjacent.mjs`）投递成功，后落账**（fork 修复时序病）；三档一律走 subagents 门面：queued 真 FIFO（alpha.4 internal 队列符号 / alpha.2-3 followup），steer 走 alpha.4 的 `sendMessage`（next-step 边界，不再直调 `Agent.steer`；被拒则 warn + 回落 queued），无排队通路时 queued 退化 steer 并如实回报 mode；目标 waiting 则 resolveHelp+resume；目标已结束则 `revive()` 重新入册 + 恢复 sessionTypes 登记（fork 修复：结论不再丢失、单线不再被打破）。两处门槛（tisitan.7）：**abort 档掐断前认活体**——alpha.4 的 `interrupt` 对缺席目标是 accepted no-op（不抛错），旧写法把 `abortExpected` 护航登记在一次什么都没掐断的回合上、随后吞掉真那一轮的 end；拿不到活体就跳过 interrupt、降级 queued 并留痕。护航端侧同步收紧为**只吞非 completed 终局**（interrupt 只是同步受理，被掐轮完全可能跑到 completed——那是真结论）。**spawning 占位记录直接结构化拒绝**：真身未 resolve 时投给谁都不存在，旧路径照样走完落账并回 `accepted:true` |
-| 转发（forward） | `broker.mjs` forward 工具 | 同上「先投递后销账」：`deliverToAdjacent` queued 档 + `canQueueAdjacent` 探测，塌档时 warn 且返回体 `mode` 如实回报（终审 U2）；target 为工种名时等效 go_work，为 childId 时等效 continue |
-| 结论回流 | DSH 内核通知 + `broker.mjs` `subagent/end` + `shared/end-attribution.mjs` | 子会话结束时内核通知父会话（broker 不重复注入）；broker 的 handler 自 0.3.0-tisitan.12 起是**纯 dispatcher**：取表状态快照 → `attributeEnd()` 出 `{decision, ops, notices, facts}` → 照单落 ops（bindChild / childOwner.set / 两张一次性表 / retireTypeRecords）→ 发 notices → `fallback-evaluation` 时 `void attemptFallbackRedeploy(...)`、`finalize` 时 `finalizeEnd(...)` → 末尾按 `facts.advance` 单点决定是否 `advanceQueue(orch)`。`finalizeEnd` 自身永不推进队列（R3/R4 把这条从注释协议变成返回值字段）。快速死亡的子会话（resolve 前就 end）归因到唯一 spawning 占位记录（fork 修复竞态冻结），归因后即视为在册（否则会把刚入册的记录误判成迟到 end） |
+| 派发与复活共用体（健康度批） | `broker-scheduler.mjs` `spawnChild()` + `childRegistry.rearmChild()`（复活登记的调用点在 `broker-delivery.mjs` 的 `rearmAfterDelivery`） | 直派（`dispatchWork`）与备选重派（`attemptFallbackRedeploy`）的 spawn 组合子合一：persona/toolFilter 解析 + `SubagentStartRequest` 组装 + 门面 `startContinuable`，差异全部参数化（agentOptions 来源、label、signal）；continue 与 forward 的复活登记（工种 + 备选覆盖守卫 + 属主回填，**外加两张一次性表清零**，tisitan.7 N5）也合一（`orch.revive` 是台账动作，留在调用方）。台账动作（`beginSpawning`/`bindChild`/`revive`）与通知仍留在各调用方——两路占槽语义不同，强行合并会改行为 |
+| 队列推进 | `broker-scheduler.mjs` `advanceQueue(orch)`（与 `dispatchWork` / `scheduleQueueRetry` 的互递归环同簇内聚） | 属主实例的 `subagent/end` 或 spawn 失败时触发：dequeue 队首 → 按 `work.parentId` 重解析父会话 → dispatch；**失败自动 `requeueHead()` 回补**（fork 修复：任务不再蒸发） |
+| 求助挂起（need_help） | `broker-tools.mjs` need_help 工具体（权限件 `canOrchestrate()` 由 `broker.mjs` 注入） | `suspend()` 标记 waiting + `reportToParent` 适配层（`shared/adjacent.mjs`）把求助单注入 Sisyphus（alpha.4 sendMessage，被拒兜底 `parent.inject`；alpha.2-3 reportFrom）。求助单的 `agentType` 经 `typeOfAgent` 取证（活登记优先、label 兜底，tisitan.7 N13）——竞态归随/墓碑期/冷恢复这些「活登记已失而记录仍在槽」的形态下裸查 `sessionTypes` 会落成 undefined，面板按工种上色直接落空。注：台账层挂起，无强制 interrupt（评估结论见第五节） |
+| 驳回/追问（continue） | `broker-tools.mjs` continue 工具体 → `broker-delivery.mjs` 投递链共用件 | **先经 `deliverToAdjacent`（`shared/adjacent.mjs`）投递成功，后落账**（fork 修复时序病）；三档一律走 subagents 门面：queued 真 FIFO（alpha.4 internal 队列符号 / alpha.2-3 followup），steer 走 alpha.4 的 `sendMessage`（next-step 边界，不再直调 `Agent.steer`；被拒则 warn + 回落 queued），无排队通路时 queued 退化 steer 并如实回报 mode；目标 waiting 则 resolveHelp+resume；目标已结束则 `revive()` 重新入册 + 恢复 sessionTypes 登记（fork 修复：结论不再丢失、单线不再被打破）。两处门槛（tisitan.7）：**abort 档掐断前认活体**——alpha.4 的 `interrupt` 对缺席目标是 accepted no-op（不抛错），旧写法把 `abortExpected` 护航登记在一次什么都没掐断的回合上、随后吞掉真那一轮的 end；拿不到活体就跳过 interrupt、降级 queued 并留痕。护航端侧同步收紧为**只吞非 completed 终局**（interrupt 只是同步受理，被掐轮完全可能跑到 completed——那是真结论）。**spawning 占位记录直接结构化拒绝**：真身未 resolve 时投给谁都不存在，旧路径照样走完落账并回 `accepted:true` |
+| 转发（forward） | `broker-tools.mjs` forward 工具体 → `broker-delivery.mjs` 投递链共用件（target 为工种名时转 `broker-scheduler.mjs` `dispatchWork`） | 同上「先投递后销账」：`deliverToAdjacent` queued 档 + `canQueueAdjacent` 探测，塌档时 warn 且返回体 `mode` 如实回报（终审 U2）；target 为工种名时等效 go_work，为 childId 时等效 continue |
+| 结论回流 | DSH 内核通知 + `broker.mjs` `ctx.on('subagent/end')` 挂载点 → `broker-ending.mjs` `processEnd()` + `shared/end-attribution.mjs` | 子会话结束时内核通知父会话（broker 不重复注入）；broker 的 handler 自 0.3.0-tisitan.12 起是**纯 dispatcher**：取表状态快照 → `attributeEnd()` 出 `{decision, ops, notices, facts}` → 照单落 ops（bindChild / childOwner.set / 两张一次性表 / retireTypeRecords）→ 发 notices → `fallback-evaluation` 时 `void attemptFallbackRedeploy(...)`、`finalize` 时 `finalizeEnd(...)` → 末尾按 `facts.advance` 单点决定是否 `advanceQueue(orch)`。`finalizeEnd` 自身永不推进队列（R3/R4 把这条从注释协议变成返回值字段）。快速死亡的子会话（spawn resolve 前就 end）**不再猜归因**：类型与台账双缺席先进 `broker-endbuffer.mjs` 的 E2 缓冲暂存，等 `broker-scheduler.mjs` / `broker-ending.mjs` 的登记同步段按**真 id 精确认领**后重放全量归因管线，超时才按「无从归属」显式落档（0.4.0 线 2.4 方案 A，取代旧的「归因到唯一 spawning 占位记录」兜底） |
 | 附因档案兜底搜索（tisitan.16） | `preset/shared/archive.mjs` `findArchivedLogByChildId()` | `readArchivedTurnFailure` 默认按 `projectKey(process.cwd())` 定位项目目录——宿主进程 cwd≠用户工作区时永远找不到档案；默认路径不可读时枚举 sessions 根下全部项目目录按 childId 检测 `session.jsonl.zstd` 存在性，多命中取 mtime 最新，命中/零命中均 warn 留痕。修复生产上「未读到附因」从未成功 |
-| 失败通知真空期消灭（tisitan.18） | broker `subagent/end` 同步段 + `attemptFallbackRedeploy` 终局分支；`shared/roles.mjs` `renderRosterBriefing()`；`prompts/sisyphus.md`「失败与备选通知协议」（tisitan.21 前为双半镜像，现 broker 单边） | harness 原生 failed 通知（硬编码模板不可抑制）settle 瞬间同步唤醒主流程，broker 失败处置异步晚到——真空期主流程不知备选存在。修=三件套：①名册简报系统提示段（`dsh-my-go:roster`，order=10，函数态 text 现渲、儿童门控空串、键排序字节稳定）；②提示词协议（failed 先到是常态，有链静默等 broker、禁止自行报死/手动重派，重派通知新 childId 接管一切）；③end 处理器同步 inject 零延迟预告（有链「备选评估中（n 条）」/ 无链「无备选链，取证中」/ 有链非 error 终局「不进入备选评估，取证中」），终局分支显式通知（分类器否决 / 链尽 / 无法重派均「按失败终局落账」）；成功 end 零预告，同步段零 await |
-| 状态回收 | `broker.mjs` `agent/disposed` / `session/disposed` 钩子 | 子代理被销毁但错过 end 事件：`childRegistry.tombstoneType()` 立墓碑（工种移入、备选覆盖同点摘、超容 FIFO 驱逐）+ 宽限期兜底清槽防队列冻结；**兜底掐断走 `retireChild`**（tisitan.7 N14）而非手删 `childOwner`——类型侧三表同点翻篇，真迟到的那条 end 不再经残留墓碑报「conclusion dropped」这种无中生有的误报；Sisyphus 会话被删：丢弃其排队任务 |
+| 失败通知真空期消灭（tisitan.18） | `broker-ending.mjs` `processEnd` 同步段 + `attemptFallbackRedeploy` 终局分支；`shared/roles.mjs` `renderRosterBriefing()`（段注册在 `broker-bootstrap.mjs`）；`prompts/sisyphus.md`「失败与备选通知协议」（tisitan.21 前为双半镜像，现 broker 单边） | harness 原生 failed 通知（硬编码模板不可抑制）settle 瞬间同步唤醒主流程，broker 失败处置异步晚到——真空期主流程不知备选存在。修=三件套：①名册简报系统提示段（`dsh-my-go:roster`，order=10，函数态 text 现渲、儿童门控空串、键排序字节稳定）；②提示词协议（failed 先到是常态，有链静默等 broker、禁止自行报死/手动重派，重派通知新 childId 接管一切）；③end 处理器同步 inject 零延迟预告（有链「备选评估中（n 条）」/ 无链「无备选链，取证中」/ 有链非 error 终局「不进入备选评估，取证中」），终局分支显式通知（分类器否决 / 链尽 / 无法重派均「按失败终局落账」）；成功 end 零预告，同步段零 await |
+| 状态回收 | `broker.mjs` `agent/disposed` / `session/disposed` 钩子（留守）+ `broker-dispose.mjs` `scheduleDisposeFallback` | 子代理被销毁但错过 end 事件：`childRegistry.tombstoneType()` 立墓碑（工种移入、备选覆盖同点摘、超容 FIFO 驱逐）+ 宽限期兜底清槽防队列冻结；**兜底掐断走 `retireChild`**（tisitan.7 N14）而非手删 `childOwner`——类型侧三表同点翻篇，真迟到的那条 end 不再经残留墓碑报「conclusion dropped」这种无中生有的误报；Sisyphus 会话被删：丢弃其排队任务 |
 | 子代理侧状态登记（健康度批） | `preset/shared/child-registry.mjs`（`createChildRegistry()`） | 八张桥接表（工种活登记/墓碑/属主路由/备选覆盖/spawn 前临时备选/abort 护航/备选 once-guard/模型清单缓存）与它们的**跨表不变量**同处一模块：`tombstoneType`/`retireChild`/`retireTypeRecords`/`promoteFallback`/`rearmChild`/`fallbackOverrideFor`。broker 解构出表名做单表读写，多表动作一律经显式方法——历史上漏清一张表不报错，只在下次 end 归因时静默串号。`rearmChild`（复活）除回填三张表外**同点清两张一次性表**（tisitan.7 N5）：`fallbackDecided` 的条目在 end 入口登记（早于重派的三个早退分支）且全仓无 `.delete`，带着它复活，复活轮正常完工的 end 会被「评估在飞」分支吞掉 → 记录永挂 running → `advanceQueue` 被 `isBusy` 堵死 → 该流水线永久冻结（唯一救援 disposed 宽限期兜底又已被 end 入口的 `cancelDisposeFallback` 自撤）。`reportSubmitted`（提交成功事实）自「复活轮报告误判」修复批改**有界 FIFO 跨终局保留**：登记走 `markSubmitted`（`REPORT_SUBMITTED_CAP=200` 超容驱逐最旧，防无界增长），`retireChild`/`retireTypeRecords` 一律不清它——这才兑现「含历史轮、复活轮不重交也视为已交付」的字面承诺（childId 全局唯一 uuid，保留条目不会与后代际串号） |
-| continue/forward 投递链共用件（0.3.0-tisitan.12 B4） | `broker.mjs` 五件 helper | 两工具原本各抄一遍「定位 → steer → abort → queued 投递 → 投递后复籍」，差异全靠行号相邻的注释维持。合一后：**同步段 await 次数与原分支逐一对应**（1/1/0/1/0），abort 护航登记（`abortExpected.add` + `notifyParent`）留在 interrupt 成功与 queued 投递之间的同步段；两工具 `followupPrompt` 的时序差异（continue 在复籍后、forward 在复籍前）用 `ledgerFirst` 参数显式保留，不静默改台账顺序。continue 注册块 151 → 89 行（execute 体 123 → 62）、forward 注册块 90 → 72，最大嵌套 6 → 3 |
-| end 归因决策（0.3.0-tisitan.12 B5） | `preset/shared/end-attribution.mjs` `attributeEnd()` | 八条出口的纯决策（表状态进、`{decision, ops, notices, facts}` 出）；broker 的 dispatcher 只落 ops、发 notices、起执行链。队列推进时机从「finalizeEnd 的注释协议」升为 `facts.advance`（now/no/if-owned，漏登记即不推进）；abort 护航的无条件消费以 op 显式返回；`readFailure` 惰性注入（早退分支一次都不读盘） |
+| continue/forward 投递链共用件（0.3.0-tisitan.12 B4） | `broker-delivery.mjs` 五件 helper（5.2 波随簇自 `broker.mjs` 抽出） | 两工具原本各抄一遍「定位 → steer → abort → queued 投递 → 投递后复籍」，差异全靠行号相邻的注释维持。合一后：**同步段 await 次数与原分支逐一对应**（1/1/0/1/0），abort 护航登记（`abortExpected.add` + `notifyParent`）留在 interrupt 成功与 queued 投递之间的同步段；两工具 `followupPrompt` 的时序差异（continue 在复籍后、forward 在复籍前）用 `ledgerFirst` 参数显式保留，不静默改台账顺序。continue 注册块 151 → 89 行（execute 体 123 → 62）、forward 注册块 90 → 72，最大嵌套 6 → 3 |
+| end 归因决策（0.3.0-tisitan.12 B5） | `preset/shared/end-attribution.mjs` `attributeEnd()` | 八条出口的纯决策（表状态进、`{decision, ops, notices, facts}` 出）；`broker-ending.mjs` 的 dispatcher（5.4 波随簇）只落 ops、发 notices、起执行链。队列推进时机从「finalizeEnd 的注释协议」升为 `facts.advance`（now/no/if-owned，漏登记即不推进）；abort 护航的无条件消费以 op 显式返回；`readFailure` 惰性注入（早退分支一次都不读盘） |
 | 上游邻接消息契约（tisitan.22；健康度批独立；0.3.0-tisitan.12 N15 路由合一） | `preset/shared/adjacent.mjs` | fork 与上游「邻接消息面」的唯一耦合点：`sessionEvents`（events getter → snapshotEvents）、**`planAdjacentDelivery`（路由单一出处：route ∈ queue / steer / legacy / unavailable + invoke）**、`canQueueAdjacent`（plan 薄壳，queue/legacy 即真排队可达）、`deliverToAdjacent`（取 plan → 无通路抛错 → 委托 invoke；queued/steer 两档，alpha.4 真 FIFO 靠 `Symbol.for('dsh.subagent.queuePrompt')` 直取）、`reportToParent`（reportFrom 已删，sendMessage + inject 兜底）。按方法存在性特性探测分界，升级顺序无关；宿主版本不符时 compat 套件的契约哨兵自动 skip |
 | 共享源（tisitan.15；tisitan.21 起编排面 broker 独有） | `preset/shared/*`（constants / failure / archive / roles / orchestration / misc / child-registry / adjacent / **end-attribution**） | 两半 import 同一 ESM 实例（净消 1,251 行镜像双写）；铁律零 `@deepseek-ai/*`、零 ctx，依赖显式注入。tisitan.21 起 orchestration/failure/archive 仅 broker 消费（健康度批加 child-registry/adjacent，0.3.0-tisitan.12 加 end-attribution），lib 只引 constants/roles/misc 的存储/面板面符号且不再 re-export 编排面符号（消费方直引 preset/shared/）；promptCache 双根成为历史（仅 broker 消费 loadPrompt） |
 
@@ -290,21 +333,21 @@ dsh-my-go/
 
 | 功能 | 实现位置 | 原理 |
 |---|---|---|
-| 按工种绑模型 | `broker.mjs` `dispatchWork()`（创建时 `agentOptions`）+ `agent/request` waterfall（请求时兜底） | 创建前 `modelExists()` 用 `llm.listModels` 验证模型真实存在才应用。缓存三态（tisitan.7 N9）：**列举成功即结论**（含空清单/模型不在，缓存之，坏 provider 不再每请求被重拉）；抛错或服务缺席是「不知道」（不缓存，留待重试）；回写前比对 `modelCacheEpoch`——热更（`settings/updated` 清缓存并自增）之后**在飞的陈旧响应不许回写**，否则刚失效的缓存被一次迟到拉取无声复活 |
+| 按工种绑模型 | `broker-scheduler.mjs` `spawnChild()`（创建时 `agentOptions`）+ `broker.mjs` `agent/request` waterfall 挂载点（请求时兜底；能力判定在 `broker-capability.mjs`） | 创建前 `modelExists()` 用 `llm.listModels` 验证模型真实存在才应用。缓存三态（tisitan.7 N9）：**列举成功即结论**（含空清单/模型不在，缓存之，坏 provider 不再每请求被重拉）；抛错或服务缺席是「不知道」（不缓存，留待重试）；回写前比对 `modelCacheEpoch`——热更（`settings/updated` 清缓存并自增）之后**在飞的陈旧响应不许回写**，否则刚失效的缓存被一次迟到拉取无声复活 |
 | 备选重派防回跳（tisitan.16/17） | `shared/child-registry.mjs` `activeFallback`/`pendingFallbackByLabel` + `shared/misc.mjs` `resolveEffectiveBinding()`（tisitan.21 前为双半镜像，现 broker 单边） | spawn 注入的备选 agentOptions 只管首帧；重派成功经 `promoteFallback()` 把 label 临时登记**同点转正**为 childId 永久覆盖 + 工种登记（拆开写会留下回跳空档），waterfall 每请求经 `fallbackOverrideFor()` 合并出有效绑定——只换 provider/model，工种 reasoningEffort/fallbacks 等其余字段保留，返回新对象不污染共享绑定表；tombstone/finalizeEnd/重派换键/end 无属主兜底等五类清理点镜像清除。tisitan.17 起备选条目本体 `record.fallbackEntry` 与 fallbackAttempt 同点入账、随台账 v2 落盘，continue/forward 复活（含 cold-resume 后的台账 revive）在重建 sessionTypes 的同点回填覆盖表，复活后不再回跳主模型；链上下一跳重派时新占位记录携带新条目，天然覆盖上一跳 |
-| reasoningEffort | `broker.mjs` `supportedEfforts()` | 查 DSH 模型目录 `llm.resolveModelInfo`，**仅当模型实际支持该档位才设置**，否则留空走适配器默认（拒绝硬映射）。能力表缓存同 N9 纪律（tisitan.7 N10）：非空档位才算结论，`null`（未知）不入表；并随 `settings/updated` 整体作废——此前它无任何清理点，一次拉取的结果在本进程内永挂，改好能力表后 effort 绑定仍静默不生效 |
+| reasoningEffort | `broker-capability.mjs` `supportedEfforts()`（消费点 `broker.mjs` `agent/request` waterfall） | 查 DSH 模型目录 `llm.resolveModelInfo`，**仅当模型实际支持该档位才设置**，否则留空走适配器默认（拒绝硬映射）。能力表缓存同 N9 纪律（tisitan.7 N10）：非空档位才算结论，`null`（未知）不入表；并随 `settings/updated` 整体作废——此前它无任何清理点，一次拉取的结果在本进程内永挂，改好能力表后 effort 绑定仍静默不生效 |
 | 工种识别 typeOfAgent（tisitan.15） | `shared/misc.mjs` 单一源（tisitan.21 起仅 broker 消费） | sessionTypes 活登记优先 + 会话 label（`dsh-my-go:<type>` 前缀）正则兜底；`agent/request` 绑定覆盖与 DSV4P0813 assemble 识别同走此函数——修复 cold-resumed 子代理（活登记已失）模型绑定静默失效；双侧契约：角色键名 `^[a-z][a-z-]*$` 与 label 正则同构，任意名册角色都可从 label 还原 |
-| Sisyphus persona/规则 | `broker.mjs` 三个 `systemPrompt.section` | 读 `prompts/sisyphus.md`，按 `## 编排规则` 切两半：前段进 `deployment:persona`、后段进 `dsh-my-go:orchestration`；子代理会话返回空串（靠 parentSession 判定）。tisitan.18 起第三个段 `dsh-my-go:roster`（order=10）向根会话现渲名册简报 |
-| 子代理 persona / toolFilter | `broker.mjs` `dispatchWork()` | 经 `SubagentStartRequest.persona/toolFilter` 官方 spawn 通道注入（descriptor v2 持久化、冷恢复原样重放；tisitan.14 起 `<system-reminder>` 包装退役，prompt 保持纯任务）；toolFilter 缺名派发前按活目录过滤降级（warn），allow 全缺名时回落全量目录。**人设档案缓存随挂载建立、失败不记账**（tisitan.7 N11）：此前缓存壳住模块作用域且失败写 null，首读撞上 `ensurePresetInstalled` 的后台拷贝竞态就把本进程所有挂载的人设一起钉死（儿童永久带「无 persona」上岗、无从自愈） |
-| DSV4P0813 两阶段 | `broker.mjs` `system-prompt/assemble` 监听 + `session/event` 监听 | 开启该开关的工种：phase-1 只放行 persona section + 白名单工具（`bash/pwsh/read/write/edit/glob/grep`，fork 已修正为 DSH 真实工具名）；**按事件自身类型**判晋升——收到 `tool/call` 或 `turn/end` 即放开全部（tisitan.7 N7：宿主 `append` 先 push 再 notify，旧「从数组末位倒扫到上一个 step/end」在真机上恒 break，toolCalled 永假，phase-1 的重压形态会压满整个第一轮；直判同时省掉每 step 一次全量事件快照重建） |
-| skill 隐藏 | `broker.mjs` `agent/created` | 主会话 `tools.restrict({ deny: ['skill'] })`，使 skill catalog 注入守门失效，节省主会话上下文；子代理保留 |
+| Sisyphus persona/规则 | `broker-bootstrap.mjs` 三个 `systemPrompt.section`（注册经 `registerSection` 回调，`ctx` 动作留守本体） | 读 `prompts/sisyphus.md`，按 `## 编排规则` 切两半：前段进 `deployment:persona`、后段进 `dsh-my-go:orchestration`；子代理会话返回空串（靠 parentSession 判定）。tisitan.18 起第三个段 `dsh-my-go:roster`（order=10）向根会话现渲名册简报 |
+| 子代理 persona / toolFilter | `broker-scheduler.mjs` `dispatchWork()`（人设文本经注入的 `promptCache` / `loadPrompt` 取，本体在 `broker-bootstrap.mjs`） | 经 `SubagentStartRequest.persona/toolFilter` 官方 spawn 通道注入（descriptor v2 持久化、冷恢复原样重放；tisitan.14 起 `<system-reminder>` 包装退役，prompt 保持纯任务）；toolFilter 缺名派发前按活目录过滤降级（warn），allow 全缺名时回落全量目录。**人设档案缓存随挂载建立、失败不记账**（tisitan.7 N11）：此前缓存壳住模块作用域且失败写 null，首读撞上 `ensurePresetInstalled` 的后台拷贝竞态就把本进程所有挂载的人设一起钉死（儿童永久带「无 persona」上岗、无从自愈） |
+| DSV4P0813 两阶段 | `broker-bootstrap.mjs` `system-prompt/assemble` 监听 + `session/event` 监听（`on` 经回调注入） | 开启该开关的工种：phase-1 只放行 persona section + 白名单工具（`bash/pwsh/read/write/edit/glob/grep`，fork 已修正为 DSH 真实工具名）；**按事件自身类型**判晋升——收到 `tool/call` 或 `turn/end` 即放开全部（tisitan.7 N7：宿主 `append` 先 push 再 notify，旧「从数组末位倒扫到上一个 step/end」在真机上恒 break，toolCalled 永假，phase-1 的重压形态会压满整个第一轮；直判同时省掉每 step 一次全量事件快照重建） |
+| skill 隐藏 | `broker-tools.mjs` `agent/created` 闸（编排者支路） | 主会话 `tools.restrict({ deny: ['skill'] })`，使 skill catalog 注入守门失效，节省主会话上下文；子代理保留 |
 
 ### 安全与边界
 
 | 功能 | 实现位置 | 原理 |
 |---|---|---|
-| 编排权限 | `broker.mjs` `canOrchestrate()` | go_work/continue/forward 仅「无 parentSession 的会话」可调（工具层强制，不靠 prompt 自觉）；need_help 仅被跟踪的子代理可调 |
-| 星型拓扑闸（fork 新增） | `broker.mjs` `agent/created`（tisitan.3 起 lib 不再挂钩——global 层会误伤非 MyGO 会话） | 子代理在工具目录层被摘除 `subagent/subagent_fork/workflow/ralph/go_work/continue/forward`——无法私自派生孙代，也无法直接调度（与运行时守卫双保险） |
+| 编排权限 | `broker.mjs` `canOrchestrate()`（定义留守本体）→ 注入 `broker-tools.mjs` 各工具体消费 | go_work/continue/forward 仅「无 parentSession 的会话」可调（工具层强制，不靠 prompt 自觉）；need_help 仅被跟踪的子代理可调 |
+| 星型拓扑闸（fork 新增） | `broker-tools.mjs` `agent/created` 双侧闸（子代理支路；tisitan.3 起 lib 不再挂钩——global 层会误伤非 MyGO 会话） | 子代理在工具目录层被摘除 `subagent/subagent_fork/workflow/ralph/go_work/continue/forward`——无法私自派生孙代，也无法直接调度（与运行时守卫双保险） |
 | 沙箱外执行通道 | need_help `intent=execute` | 子代理把被拒命令发给 Sisyphus 代执行。注意：这是设计的权限提升通道，缓解靠 Sisyphus 的质检 prompt |
 
 ### UI 与配置
@@ -315,12 +358,12 @@ dsh-my-go/
 | 客户端服务降级 | `src/client.js` `apply()` | `sessions` / `timer` 有意不进 `inject`（拿不到就降级，不炸挂载）。0.3.0-tisitan.8 起降级不再静默：timer 缺席回落 `globalThis.setInterval` 自管 disposer（一次性 warn，unapply 清零，不留孤儿轮询）；sessions 缺席一次性 warn，快照照常刷新、只关跳转与自动跟随。旧写法 `timer && timer.interval` 短路 = 面板永不刷新且从不说明原因 |
 | 快照桥（fork 新增；两半间唯一运行时通道） | `broker.mjs` 发布 → `lib/index.js` RPC 消费（单向） | broker 把 `() => latestSnapshot` 挂到 `globalThis[Symbol.for('dsh-my-go.snapshot')]`；lib 的 RPC handler 实时读取（零副本）。tisitan.21 起 lib 已无自身状态机：桥不在 = preset 未装配（lib-only 降级形态）→ 空态 `{ seq: 0, parents: {} }` + roster / rosterLines 常驻（0.3.0-tisitan.9 A-05 起 roster 是结构化主字段）。tisitan.10 起形状为 `{ seq, parents: { [会话id]: { current, queue, helpRequests, history } } }`（多会话聚合）。0.3.0-tisitan.8 起端点自带 try（桥抛错回 `ok:false + internal`，不再抛穿 RPC），并在出口裁剪：每桶 history 末 8 条 + current/queue/history 剔 `prompt`（面板零消费的最贵字段），helpRequests.content 保留；broker 侧实况对象零改写 |
 | 自动跳转 | `src/panel-tree.js` 定时器 | 子代理 running → `sessions.openSubagent()` 跟跳子会话；结束后 `sessions.open(parentSessionId)` 跳回。tisitan.10 起加**会话门禁**：只跟随当前打开的会话（`sessions.list.getSnapshot().current`），多会话并行时绝不把用户拽去别的会话（定时器本体经 `createOrchestrationPanel` 由 `client.js` 装配注入，见 `src/client.js:65`）|
-| 设置页 | `src/settings-core.js` + `roles-editor.js` / `tool-mask-editor.js` ↔ `lib/index.js` RPC | 内置 8 工种 × 5 字段（provider/model/reasoningEffort/dsv4p0813/fallbacks）+ 工具屏蔽双列表编辑器（tisitan.13，`listTools` RPC 拉花名册、`toolMask.deny` 读写）+ 自定义角色 CRUD 卡片区（tisitan.14，roles dict 读写，纯函数在 `src/roster-rows.js`）+ 内置角色 persona 覆盖与角色卡 JSON 导入导出（tisitan.15，`withPersonaOverride`/`buildRoleCardJson`/`parseRoleCardJson`，导入 8 类拒绝分支白名单剥离）+ 全卡片手风琴折叠（tisitan.15，纯视图态）+ 主选/备选合并为单一模型优先级列表（tisitan.19，纯 UI 投影：`src/chain-rows.js` compose 投影/decompose 写回，#1 主选带徽章、跨边界 ↑↓ 一键扶正、删除守卫链长 ≥1，存储 schema 零变更）；loadSettings 失败时 `draft=null` 禁止保存（fork 修复：不再一键清空配置），0.3.0-tisitan.8 起 host 侧读盘异常改回 `ok:false + unavailable`（旧写法回 ok:true+{} = 把「没读到」渲染成干净空表单，用户点保存就洗掉未读到的真配置；现在前端既有 loadError 横幅零改动即亮）；saveSettings 全字段显式携带才写（tisitan.15 修复部分行误清）、空值 unset、显式 false 可表达，0.3.0-tisitan.8 起 `draft.roles` 键先过 `ROLE_KEY_PATTERN` 再生成 ops（脏键 fail-closed 丢弃——mutate 整批原子，一枚脏键曾毒杀整次保存）；lib 半所有 `ok:false` 分支带 `details:{}`（宿主 ConnectionRpcFailure 三字段契约）；`settings.register` 与「读盘 + 热更监听」分两个 try 且各自 `console.error`（注册抛错曾连带吞掉 settings/updated，此后 WebUI 改绑定全部无声失效）；`rpc.handle` 按 `Function.length >= 3` 探测是否附 `{authority:'loopback'}`（宿主版本漂移；0.5.0-tisitan.2 起该探测随 `rpc.handle` 一起退役，改由本半直接 `webServer.register` 一条 prefix 路由并在 handler 内手工鉴权 + 封信封） |
-| 设置页并发写围栏（0.3.0-tisitan.9 E6/A-03） | `src/settings-core.js` + `src/settings-guard.js` ↔ `lib/index.js` loadSettings/saveSettings | loadSettings 额外回带 `revision`（真源 = 宿主 `settings.describe()` 的 descriptor.revision，宿主不暴露时回落本半进程内计数、由 `settings/updated` 驱动）；设置页把它当**不透明凭据**存着并在保存时带回。版本号不符 → `ok:false + conflict`（details 带 `{expected, actual}`）**且一次写都不发**；宿主 `mutate` 支持第三参时把围栏交给它在命名空间写队列内执行（检查与写入之间无 TOCTOU 窗），`SETTINGS_CONFLICT` 稳定错误码映射回同一形态。保存成功回带**新版本号**（不 adopt 会让用户下一次保存自撞假冲突）；缺凭据（旧前端/脚本直调）= 无条件写，绝不发明 0 当版本。前端冲突后锁死两枚保存按钮 + 亮「他处已修改，请重新加载」，唯一出路是显式重载（本地凭据作废） |
+| 设置页 | `src/settings-core.js` + `roles-editor.js` ↔ 宿主 `settingsScope`（0.5.0-tisitan.3 起写通道；旧 `lib/index.js` RPC 的 loadSettings / saveSettings / listModels 三私有端点已退役，工具屏蔽双列表编辑器随 tool-mask 迁 dsh-tool-guard 整体拆除） | 内置 8 工种 × 5 字段（provider/model/reasoningEffort/dsv4p0813/fallbacks）+ 自定义角色 CRUD 卡片区（tisitan.14，roles dict 读写，纯函数在 `src/roster-rows.js`）+ 内置角色 persona 覆盖与角色卡 JSON 导入导出（tisitan.15，`withPersonaOverride`/`buildRoleCardJson`/`parseRoleCardJson`，导入 8 类拒绝分支白名单剥离）+ 全卡片手风琴折叠（tisitan.15，纯视图态）+ 主选/备选合并为单一模型优先级列表（tisitan.19，纯 UI 投影：`src/chain-rows.js` compose 投影/decompose 写回，#1 主选带徽章、跨边界 ↑↓ 一键扶正、删除守卫链长 ≥1，存储 schema 零变更）；旧 loadSettings 端点失败时 `draft=null` 禁止保存（fork 修复：不再一键清空配置），0.3.0-tisitan.8 起 host 侧读盘异常改回 `ok:false + unavailable`（旧写法回 ok:true+{} = 把「没读到」渲染成干净空表单，用户点保存就洗掉未读到的真配置；现在前端既有 loadError 横幅零改动即亮）；saveSettings 全字段显式携带才写（tisitan.15 修复部分行误清）、空值 unset、显式 false 可表达（0.5.0-tisitan.3 起该 ops 编译面住 `src/settings-ops.js`，写通道走宿主 `settingsScope`），0.3.0-tisitan.8 起 `draft.roles` 键先过 `ROLE_KEY_PATTERN` 再生成 ops（脏键 fail-closed 丢弃——mutate 整批原子，一枚脏键曾毒杀整次保存）；lib 半所有 `ok:false` 分支带 `details:{}`（宿主 ConnectionRpcFailure 三字段契约）；`settings.register` 与「读盘 + 热更监听」分两个 try 且各自 `console.error`（注册抛错曾连带吞掉 settings/updated，此后 WebUI 改绑定全部无声失效）；`rpc.handle` 按 `Function.length >= 3` 探测是否附 `{authority:'loopback'}`（宿主版本漂移；0.5.0-tisitan.2 起该探测随 `rpc.handle` 一起退役，改由本半直接 `webServer.register` 一条 prefix 路由并在 handler 内手工鉴权 + 封信封） |
+| 设置页并发写围栏（0.3.0-tisitan.9 E6/A-03 立规；0.5.0-tisitan.3 起围栏整体交宿主） | `src/settings-core.js` + `src/settings-guard.js` ↔ 宿主 `settingsScope`（`scope.mutate(ops, fence)`，版本号唯一真源 = 宿主 `describe()`；旧 `lib/index.js` loadSettings/saveSettings 端点已退役） | 旧 RPC 时代 loadSettings 额外回带 `revision`（真源 = 宿主 `settings.describe()` 的 descriptor.revision，宿主不暴露时回落本半进程内计数、由 `settings/updated` 驱动）；设置页把它当**不透明凭据**存着并在保存时带回，现围栏作为 `scope.mutate` 的第三参交宿主在命名空间写队列内执行（检查与写入之间无 TOCTOU 窗），版本号不符 → `ok:false + conflict`（details 带 `{expected, actual}`）**且一次写都不发**；`SETTINGS_CONFLICT` 稳定错误码映射回同一形态。保存成功回带**新版本号**（不 adopt 会让用户下一次保存自撞假冲突）；缺凭据（旧前端/脚本直调）= 无条件写，绝不发明 0 当版本。前端冲突后锁死两枚保存按钮 + 亮「他处已修改，请重新加载」，唯一出路是显式重载（本地凭据作废） |
 | 设置页未保存防线（0.3.0-tisitan.9 E6/A-03） | `src/settings-core.js` `mutateDraft` / `attachBeforeUnloadGuard` | 所有草稿变更（含 roles-editor 经 `deps.setDraft` 的写，dep 名不变换实现）汇聚到 `mutateDraft` 一处置 dirty；dirty 期间挂 beforeunload（宿主 `settings.section` 只给 `close`，无 onClose/卸载时机——已核实 `SettingsSectionOwnerProps`），保存行挂「● 未保存」角标与「保存并关闭」（保存失败/冲突绝不关页，close 从此不再是收下就扔的死参数）。守卫结果归一在 `settings-guard.js`（无 React 无 DOM，Node 侧直测） |
 | 模型选择可手填（0.3.0-tisitan.9 A-06） | `src/settings-core.js` `makeCombobox` + `lib/index.js` listModels | 渠道/模型两栏从裸 `<select>` 改 input + datalist（与 roles-editor 工具名输入同模式）：清单在场点选照旧，拉不到或没上报时直接键入——此前页面文案一直许诺「也可以直接输入自定义值」而控件根本不给输。`listModels` 逐渠道 `Promise.allSettled` **并行**（旧串行 await = N 渠道 N 倍首屏），失败渠道不再删键而是 `models[pid] = []` + `errors[pid] = 原因`，设置页据此在链行下挂行内提示，「清单读取失败」与「该渠道真的没模型」从此可分 |
 | settings 合并 | `broker.mjs` / `lib/index.js` | 永远从 `baseBindings`（默认值+插件 config）起算合并 stored（fork 修复：WebUI 取消配置可回落）；`||` 语义统一（空串=未设置） |
-| preset 同步 | `lib/index.js` `ensurePresetInstalled({packageRoot, dshHome})` | marker 文件 `.dsh-my-go-version` 记 **`<版本>+<preset/prompts 内容摘要>`**（0.3.0-tisitan.8）：版本与内容同时一致才跳过——装机侧手改在同版本同内容下继续存活（旧语义保留），而包内任何一次内容改动（含同版本热修）都换摘要并重拷，不再需要 bump 版本解锁。同步语义：`preset/` 逐文件字节比对只重写变化者（写窗口从整树缩到实际改动文件），`prompts/` 先删净再拷（资源镜像，上游退役人设不留孤儿）；拷贝失败只 `console.error` 吞掉不阻断挂载，且**不写 marker**（下次必重试）。参数化 + `config.installPreset === false` 让测试真短路，不再与后台拷贝抢文件；tisitan.15 起校验 `preset/shared/` 存在性——broker 相对 import shared 八模块（健康度批 +child-registry/+adjacent），同步必须整树覆盖 |
+| preset 同步 | `lib/index.js` `ensurePresetInstalled({packageRoot, dshHome})` | marker 文件 `.dsh-my-go-version` 记 **`<版本>+<preset/prompts 内容摘要>`**（0.3.0-tisitan.8）：版本与内容同时一致才跳过——装机侧手改在同版本同内容下继续存活（旧语义保留），而包内任何一次内容改动（含同版本热修）都换摘要并重拷，不再需要 bump 版本解锁。同步语义：`preset/` 逐文件字节比对只重写变化者（写窗口从整树缩到实际改动文件），`prompts/` 先删净再拷（资源镜像，上游退役人设不留孤儿）；拷贝失败只 `console.error` 吞掉不阻断挂载，且**不写 marker**（下次必重试）。参数化 + `config.installPreset === false` 让测试真短路，不再与后台拷贝抢文件；tisitan.15 起校验 `preset/shared/` 存在性——broker 相对 import shared 十三模块（健康度批 +child-registry/+adjacent，0.5.0 线批次再补 board/paths/report-format/relay-chain），同步必须整树覆盖 |
 | 面板花名册常驻区（tisitan.15；0.3.0-tisitan.9 结构化） | `src/panel-tree.js` + snapshot `roster` | snapshot RPC 恒附 `roster`：`{seq, parents, roster:[{role, builtin, provider, model, modelText, chain[], toolFilterText, personaSource}], rosterLines}`，行语义由 `shared/roles.mjs` 的 `rosterEntries` 单一源产出（与 `orchestration_status` 尾部、Sisyphus 系统提示简报三处共用同一份条目），表头文案/计数/徽章由面板自持。`rosterLines` 是同数据的 **deprecated 文本镜像**（兼容期保留，供旧 dist 与取证脚本），面板不再按「首行必为表头」的位置约定取数；桥未就绪（无编排会话）也产出 |
 
 ### 测试

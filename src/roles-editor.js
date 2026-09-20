@@ -1,273 +1,287 @@
 /**
- * dsh-my-go — custom roles editor (tisitan.15 split).
+ * dsh-my-go — role detail pane (0.5.0-tisitan.3).
  *
- * Pure render function for the settings-page custom roles section
- * (tisitan.14/tisitan.15): role cards (model priority chain + persona +
- * tool lists), create-by-key input, JSON import/export buttons. All state
- * (draft, card open-map, new-key input, tool-name drafts, import error) is
- * injected by settings-core via the explicit `deps` object — this module
- * holds no state. Row mutations go through the roster-rows.js pure functions;
- * writes land in draft.roles with built-in keys passed through untouched.
+ * The right-hand column of the 模型与角色 block: everything you can change about
+ * the *selected* role. Built-in and custom roles share the pane; a custom row
+ * additionally gets the tool allow/deny lists, the card JSON export/overwrite and
+ * the delete, because those fields only exist on custom rows of the roles dict.
+ *
+ * Pure render function: no state, no draft knowledge beyond what it is handed.
+ * Every mutation leaves through a callback the page owns (which is what stamps
+ * the draft and its revision fence), and row math stays in roster-rows.js /
+ * chain-rows.js.
  */
 
 import * as React from 'react'
 
-import {
-  isValidRoleKey,
-  normalizeRoleRows,
-  mergeRoleRowsIntoRoles,
-  addRoleRow,
-  removeRoleRow,
-  updateRoleRow,
-  addRoleToolEntry,
-  removeRoleToolEntry,
-  roleSummaryText,
-  buildRoleCardJson,
-  parseRoleCardJson,
-} from './roster-rows.js'
-import { AGENT_TYPES, MONO_FONT } from './client-constants.js'
+import { addChainEntry, composeChain, moveChainEntry, removeChainEntry, updateChainEntry } from './chain-rows.js'
+import { personaOverrideSource } from './roster-rows.js'
 
-export function renderRolesEditor(deps) {
+const el = React.createElement
+
+const EFFORTS = ['', 'low', 'high', 'max']
+export const effortLabel = (value) => (value === ''
+  ? '跟随模型默认（不单独指定）'
+  : { low: '低（low）', high: '高（high）', max: '最高（max）' }[value] ?? value)
+
+/**
+ * @param deps.role - `{ key, label, builtin }`, the selected row.
+ * @param deps.current - the page draft (promoted shape).
+ * @param deps.writable - false disables every control and every callback.
+ * @param deps.catalog - `{ providers, models, errors }` model-catalog snapshot.
+ * @param deps.tools - the host tool roster (datalist suggestions only).
+ * @returns the pane tree.
+ */
+export function renderRolesPane(deps) {
   const {
-    draft,
-    setDraft,
-    newRoleKey,
-    setNewRoleKey,
-    roleToolDrafts,
-    setRoleToolDrafts,
+    role,
+    current,
+    writable,
+    catalog,
+    tools = [],
+    toolDrafts = {},
+    setToolDrafts,
     importError,
-    setImportError,
-    openCards,
-    setOpenCards,
-    EFFORTS,
-    effortLabel,
-    makeSelect,
-    renderChainEditor,
-    styles,
+    personaFileErr = {},
+    rosterFailed = false,
+    setBinding,
+    setChain,
+    setPersona,
+    setToolFilter,
+    loadBuiltinPersona,
+    onExportRole,
+    onImportOverwrite,
+    onDeleteRole,
+    onRenameRole,
+    onRefreshTools,
   } = deps
-  const { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle, rowStyle } = styles
-
-  // ── 自定义角色（tisitan.14）：rows 视图为编辑期唯一真源 ────────────────
-  // normalizeRoleRows 过滤内置键与脏数据；行操作全部走 roster-rows 纯函数，
-  // 写回时内置键透传、自定义部分整体重建（删除角色=键从 draft.roles 消失，
-  // 保存时 host 半按「draft 提供了 roles dict」语义整键 unset）。
-  const roleRows = normalizeRoleRows(draft?.roles, AGENT_TYPES)
-  // roles dict 重建走 roster-rows 纯函数 mergeRoleRowsIntoRoles（tisitan.20
-  // Z2'）：内置键部分行透传、未触碰脏行原样保留、投影行重建
-  const applyRoleRows = (nextRows) => {
-    setDraft((prev) => {
-      if (!prev) return prev
-      return { ...prev, roles: mergeRoleRowsIntoRoles(prev.roles, nextRows, AGENT_TYPES) }
-    })
+  const key = role.key
+  const builtin = role.builtin === true
+  const row = builtin ? (current[key] ?? {}) : (current.roles?.[key] ?? {})
+  const disabled = !writable
+  const providers = Array.isArray(catalog.providers) ? catalog.providers : []
+  const modelMap = catalog.models && typeof catalog.models === 'object' ? catalog.models : {}
+  const modelsFor = (providerId) => (providerId
+    ? (Array.isArray(modelMap[providerId]) ? modelMap[providerId] : [])
+    : [...new Set(Object.values(modelMap).flat())].filter((id) => typeof id === 'string' && id !== ''))
+  // 渠道级失败标记：清单读取失败与「该渠道真的没有模型」必须可分——否则用户只
+  // 能对着一张空下拉猜 provider 是不是坏了。
+  const listErrorFor = (providerId) => {
+    if (!providerId) return ''
+    const errors = catalog.errors && typeof catalog.errors === 'object' ? catalog.errors : {}
+    const detail = errors[providerId]
+    return typeof detail === 'string' && detail !== '' ? detail : ''
   }
-  const editRole = (key, mutate) => {
-    if (!draft) return
-    applyRoleRows(mutate(roleRows))
-  }
-  // 创建守卫（tisitan.20 Z4）：内置键名（含 sisyphus）与导入路径同口径拒收
-  // ——normalizeRoleRows 会把内置键滤出 rows，入库后 UI 不可见不可删
-  const createRole = () => {
-    if (!draft) return
-    const key = newRoleKey.trim()
-    if (!isValidRoleKey(key)) return
-    if (AGENT_TYPES.includes(key)) return
-    if (roleRows.some((row) => row.key === key)) return
-    if (draft?.roles && typeof draft.roles === 'object' && draft.roles[key]) return
-    applyRoleRows(addRoleRow(roleRows, key))
-    setNewRoleKey('')
-    setOpenCards((prev) => ({ ...prev, [key]: true }))
-  }
-  const roleToolDraft = (key, side) => roleToolDrafts?.[key]?.[side] ?? ''
-  const setRoleToolDraft = (key, side, value) => {
-    setRoleToolDrafts((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: value } }))
-  }
-  const exportRole = async (row) => {
-    const json = buildRoleCardJson(row)
-    try {
-      await navigator.clipboard.writeText(json)
-    } catch {
-      window.prompt('剪贴板不可用，请手动复制该角色 JSON：', json)
-    }
-  }
-  const importRole = () => {
-    if (!draft) return
-    const text = window.prompt('粘贴角色 JSON（可先在别处导出，改 key 后导入）：')
-    if (text === null || text.trim() === '') return
-    const existingKeys = [...AGENT_TYPES, ...roleRows.map((row) => row.key)]
-    const parsed = parseRoleCardJson(text, existingKeys)
-    if (!parsed.ok) {
-      setImportError(parsed.error)
-      return
-    }
-    setImportError('')
-    applyRoleRows([...roleRows, parsed.row])
-  }
-
-  // 角色 toolFilter 名单编辑器（allow/deny 各一）：datalist 挂 listTools
-  // 花名册快选，同时支持手填花名册外的未连接工具名（MCP 动态面）
-  const renderRoleToolList = (row, side) => {
-    const names = row[side]
-    const draftValue = roleToolDraft(row.key, side)
-    const listId = `role-tf-${row.key}-${side}`
-    return React.createElement('div', null,
-      React.createElement('div', { style: labelStyle }, side === 'allow' ? '工具白名单（allow）' : '工具黑名单（deny）'),
+  const filter = row.toolFilter && typeof row.toolFilter === 'object' ? row.toolFilter : {}
+  const namesOf = (side) => (Array.isArray(filter[side]) ? filter[side].map(String) : [])
+  const toolList = (side) => {
+    const names = namesOf(side)
+    const pending = toolDrafts?.[key]?.[side] ?? ''
+    const listId = `mygo-tf-${key}-${side}`
+    const write = (next) => setToolFilter(key, { allow: side === 'allow' ? next : namesOf('allow'), deny: side === 'deny' ? next : namesOf('deny') })
+    return el('div', { className: 'mygo-field' },
+      el('label', { className: 'mygo-label' }, side === 'allow' ? '工具白名单（allow）' : '工具黑名单（deny）'),
       names.length === 0
-        ? React.createElement('div', { style: hintStyle }, side === 'allow' ? '（空 = 全量，除全局掩码）' : '（空 = 不额外屏蔽）')
-        : React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 } },
-            names.map((name, i) => React.createElement('span', {
-              key: `${row.key}-${side}-${name}`,
-              title: name,
-              style: { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontFamily: MONO_FONT, padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.07)', color: '#bbb' },
-            },
-              React.createElement('span', { style: { overflowWrap: 'anywhere' } }, name),
-              React.createElement('span', {
-                role: 'button',
-                title: '移除',
-                style: { cursor: draft ? 'pointer' : 'not-allowed', color: '#e57373' },
-                onClick: () => { if (draft) editRole(row.key, (rows) => removeRoleToolEntry(rows, row.key, side, i)) },
-              }, '×'),
-            )),
-        ),
-      React.createElement('div', { style: { display: 'flex', gap: 6 } },
-        React.createElement('input', {
-          value: draftValue,
+        ? el('div', { className: 'mygo-hint' }, side === 'allow' ? '（空 = 全量，除全局掩码）' : '（空 = 不额外屏蔽）')
+        : el('div', { className: 'mygo-chips' }, names.map((name, index) => el('span', { key: `${side}-${name}-${index}`, title: name, className: 'mygo-chip' },
+          el('span', { className: 'mygo-chipName' }, name),
+          el('span', {
+            role: 'button',
+            className: 'mygo-chipKill',
+            title: '移除',
+            'aria-label': `移除 ${name}`,
+            onClick: () => { if (!disabled) write(names.filter((_, at) => at !== index)) },
+          }, '×'),
+        ))),
+      el('div', { className: 'mygo-colFoot' },
+        el('input', {
+          className: 'mygo-input mygo-inputMono',
+          value: pending,
           list: listId,
-          placeholder: '工具名（花名册可点选，也可手填未连接工具）…',
-          disabled: !draft,
-          onChange: (e) => setRoleToolDraft(row.key, side, e.target.value),
-          onKeyDown: (e) => {
-            if (e.key === 'Enter' && draftValue.trim() !== '') {
-              editRole(row.key, (rows) => addRoleToolEntry(rows, row.key, side, draftValue.trim()))
-              setRoleToolDraft(row.key, side, '')
-            }
+          placeholder: '工具名（可点选，也可手填未连接工具）',
+          disabled,
+          spellCheck: false,
+          onChange: (event) => setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: event.target.value } })),
+          onKeyDown: (event) => {
+            if (event.key === 'Enter' && pending.trim() !== '' && !disabled) add()
           },
-          style: { ...selectStyle, fontFamily: MONO_FONT },
         }),
-        React.createElement('datalist', { id: listId },
-          deps.roster.map((name) => React.createElement('option', { key: name, value: name })),
-        ),
-        React.createElement('button', {
-          style: miniBtnStyle,
-          disabled: !draft || draftValue.trim() === '',
+        el('datalist', { id: listId }, tools.filter((name) => !names.includes(name)).map((name) => el('option', { key: name, value: name }))),
+        el('button', {
+          className: 'mygo-btn mygo-btnMini',
+          disabled: disabled || pending.trim() === '',
           title: '加入名单',
-          onClick: () => {
-            editRole(row.key, (rows) => addRoleToolEntry(rows, row.key, side, draftValue.trim()))
-            setRoleToolDraft(row.key, side, '')
-          },
+          onClick: add,
         }, '+ 添加'),
       ),
     )
+
+    function add() {
+      const name = pending.trim()
+      if (name === '' || names.includes(name)) {
+        setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: '' } }))
+        return
+      }
+      write([...names, name])
+      setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: '' } }))
+    }
   }
 
-  const toggleCard = (id) => setOpenCards((prev) => ({ ...prev, [id]: !prev[id] }))
-  const cardOpen = (id) => openCards[id] === true
+  return el('div', { className: 'mygo-col', 'data-pane': 'role' },
+    el('div', { className: 'mygo-colHead' },
+      el('span', { className: 'mygo-label' }, `正在编辑：${role.label}`),
+      builtin ? null : el('span', { className: 'mygo-rowBadge' }, '自定义'),
+    ),
 
-  return React.createElement('div', { style: cardStyle },
-    React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 8 } },
-      React.createElement('span', { style: { fontWeight: 600 } }, '自定义角色（Custom Roles）'),
-      React.createElement('span', { style: { fontSize: 12, color: 'var(--text-secondary, #888)' } }, '可被 go_work 派发的自建角色：独立人设与工具面，经 spawn 正统通道注入'),
+    renderChainEditor(row, providers, modelsFor, listErrorFor, disabled, (shape) => setChain(key, shape)),
+
+    el('div', { className: 'mygo-fields' },
+      el('div', { className: 'mygo-field' },
+        el('label', { className: 'mygo-label' }, '思考档位（Reasoning Effort）'),
+        el('select', {
+          className: 'mygo-select',
+          value: row.reasoningEffort ?? '',
+          disabled,
+          onChange: (event) => setBinding(key, 'reasoningEffort', event.target.value),
+        }, EFFORTS.map((option) => el('option', { key: option, value: option }, effortLabel(option)))),
+        el('div', { className: 'mygo-hint' }, '推理强度：越高越聪明，也越贵。'),
+      ),
+      el('div', { className: 'mygo-field' },
+        el('label', { className: 'mygo-label' }, 'DSV4P0813 补丁'),
+        el('label', { className: 'mygo-check' },
+          el('input', {
+            type: 'checkbox',
+            checked: row.dsv4p0813 === true,
+            disabled: disabled || key === 'sisyphus',
+            onChange: (event) => setBinding(key, 'dsv4p0813', event.target.checked),
+          }),
+          '启用',
+        ),
+        el('div', { className: 'mygo-hint' }, key === 'sisyphus'
+          ? 'Sisyphus 会话不经过 DSV4P0813 注入识别面，勾选对其不生效，已置灰锁定。'
+          : '两阶段锚定上下文注入，专为 DeepSeek V4 Pro 0813 调校，其他模型勿开；只对 MyGO preset 派发的子代理会话生效。'),
+      ),
+
+      key === 'sisyphus'
+        ? el('div', { className: 'mygo-field mygo-fieldWide' },
+          el('div', { className: 'mygo-hint' }, 'Sisyphus 的编排纪律人设不提供面板覆盖；总调度只认对话框所选模型，此处配置为兜底/补丁位（仅当插件配置 bindSisyphus 开启时生效）。'),
+        )
+        : el('div', { className: 'mygo-field mygo-fieldWide' },
+          el('label', { className: 'mygo-label' }, '人设覆盖（Persona）'),
+          el('div', { className: 'mygo-hint' }, `当前来源：${personaOverrideSource(current.roles?.[key])}；留空保存 = 恢复 prompts/${key}.md 文件默认`),
+          el('textarea', {
+            className: 'mygo-textarea',
+            value: current.roles?.[key]?.persona ?? '',
+            rows: 3,
+            disabled,
+            placeholder: `留空 = 使用 prompts/${key}.md 文件默认人设`,
+            onChange: (event) => setPersona(key, event.target.value),
+          }),
+          el('div', { className: 'mygo-colFoot' },
+            builtin
+              ? el('button', {
+                className: 'mygo-btn mygo-btnMini',
+                disabled,
+                title: `读取 prompts/${key}.md 原文填入上方编辑框（草稿态，点保存才生效）`,
+                onClick: () => loadBuiltinPersona(key),
+              }, '载入文件默认')
+              : null,
+            personaFileErr[key] ? el('span', { className: 'mygo-statusError' }, personaFileErr[key]) : null,
+          ),
+        ),
     ),
-    React.createElement('div', { style: { ...hintStyle, marginBottom: 8 } },
-      '人设留空 = 子代理仅带部署基础人设；工具面留空 = 全量（除全局掩码）。名字创建后不可改（删除重建即可）；内置八工种（含 sisyphus）不在此列，用上方卡片配置。',
-    ),
-    roleRows.length === 0
-      ? React.createElement('div', { style: { fontSize: 12, color: 'var(--text-secondary, #888)', marginBottom: 8 } }, '还没有自定义角色')
-      : roleRows.map((row) => {
-          const open = cardOpen(`role-${row.key}`)
-          return React.createElement('div', { key: `role-${row.key}`, style: { border: '1px solid var(--separator, #333)', borderRadius: 6, padding: 10, marginBottom: 8 } },
-            React.createElement('div', {
-              style: { cursor: 'pointer', marginBottom: open ? 8 : 0 },
-              onClick: () => toggleCard(`role-${row.key}`),
-            },
-              React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' } },
-                React.createElement('span', { style: glyphStyle }, open ? '▾' : '▸'),
-                React.createElement('span', { style: { fontWeight: 600, fontFamily: MONO_FONT } }, row.key),
-                React.createElement('button', {
-                  style: { ...miniBtnStyle, marginLeft: 'auto' },
-                  title: `导出角色 ${row.key} 为 JSON 并复制到剪贴板`,
-                  onClick: (e) => { e.stopPropagation(); void exportRole(row) },
-                }, '导出'),
-                React.createElement('button', {
-                  style: miniBtnStyle,
-                  title: `删除角色 ${row.key}（保存后生效）`,
-                  disabled: !draft,
-                  onClick: (e) => { e.stopPropagation(); editRole(row.key, (rows) => removeRoleRow(rows, row.key)) },
-                }, '删除'),
-              ),
-              React.createElement('div', { style: summaryStyle }, roleSummaryText(row)),
-            ),
-            open ? React.createElement(React.Fragment, null,
-              // 模型优先级列表（tisitan.19）：主选（#1）与备选链合并编辑，
-              // 与内置工种卡共用 renderChainEditor；写回经 roster-rows 纯函数
-              // （fallbacks 整组替换 → provider（重置 model）→ model 定序写入）
-              renderChainEditor(`role-${row.key}`, row, ({ provider, model, fallbacks }) =>
-                editRole(row.key, (rs) => updateRoleRow(updateRoleRow(updateRoleRow(rs, row.key, 'fallbacks', fallbacks), row.key, 'provider', provider), row.key, 'model', model)), !draft),
-              React.createElement('div', { style: rowStyle },
-                React.createElement('div', null,
-                  React.createElement('div', { style: labelStyle }, '思考档位（Reasoning Effort）'),
-                  makeSelect(row.reasoningEffort, EFFORTS, effortLabel, (v) => editRole(row.key, (rows) => updateRoleRow(rows, row.key, 'reasoningEffort', v)), !draft),
-                ),
-                React.createElement('div', null,
-                  React.createElement('div', { style: labelStyle }, 'DSV4P0813 补丁'),
-                  React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, cursor: draft ? 'pointer' : 'not-allowed', fontSize: 13, paddingTop: 2 } },
-                    React.createElement('input', { type: 'checkbox', checked: row.dsv4p0813 === true, disabled: !draft, onChange: (e) => editRole(row.key, (rows) => updateRoleRow(rows, row.key, 'dsv4p0813', e.target.checked)) }),
-                    '启用',
-                  ),
-                  React.createElement('div', { style: hintStyle }, '两阶段锚定上下文注入，专为 DeepSeek V4 Pro 0813 调校，其他模型勿开'),
-                ),
-              ),
-              React.createElement('div', { style: { marginBottom: 8 } },
-                React.createElement('div', { style: labelStyle }, '人设（Persona）'),
-                React.createElement('div', { style: hintStyle, marginBottom: 4 }, '经 spawn 通道注入子代理系统提示，首行作为角色摘要展示'),
-                React.createElement('textarea', {
-                  value: row.persona,
-                  disabled: !draft,
-                  rows: 3,
-                  placeholder: '留空 = 跟随部署基础人设',
-                  onChange: (e) => editRole(row.key, (rows) => updateRoleRow(rows, row.key, 'persona', e.target.value)),
-                  style: { ...selectStyle, resize: 'vertical', fontFamily: 'inherit' },
-                }),
-              ),
-              React.createElement('div', { style: rowStyle },
-                renderRoleToolList(row, 'allow'),
-                renderRoleToolList(row, 'deny'),
-              ),
-            ) : null,
-          )
-        }),
-    React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-      React.createElement('input', {
-        value: newRoleKey,
-        placeholder: '新角色名（小写字母开头，仅小写与连字符，如 coder-x）…',
-        disabled: !draft,
-        onChange: (e) => setNewRoleKey(e.target.value),
-        onKeyDown: (e) => { if (e.key === 'Enter') createRole() },
-        style: { ...selectStyle, fontFamily: MONO_FONT },
+
+    builtin ? null : el('div', { className: 'mygo-fields' }, toolList('allow'), toolList('deny')),
+
+    builtin ? null : el('div', { className: 'mygo-field' },
+      el('label', { className: 'mygo-label' }, '角色键名'),
+      el('input', {
+        className: 'mygo-input mygo-inputMono',
+        value: key,
+        disabled,
+        spellCheck: false,
+        onBlur: (event) => {
+          const next = event.target.value.trim()
+          if (!disabled && next !== '' && next !== key) onRenameRole?.(key, next)
+        },
+        title: '改名请直接在角色清单里新建 + 删除；这里失焦即尝试重命名',
       }),
-      React.createElement('button', {
-        style: miniBtnStyle,
-        disabled: !draft || !isValidRoleKey(newRoleKey.trim()) || AGENT_TYPES.includes(newRoleKey.trim()) || newRoleKey.trim() !== '' && (roleRows.some((row) => row.key === newRoleKey.trim()) || (draft?.roles && typeof draft.roles === 'object' && Boolean(draft.roles[newRoleKey.trim()]))),
-        title: '创建自定义角色',
-        onClick: createRole,
-      }, '+ 新建角色'),
-      React.createElement('button', {
-        style: miniBtnStyle,
-        disabled: !draft,
-        title: '从粘贴的角色 JSON 导入（key 不可与内置工种或已有角色重名）',
-        onClick: importRole,
-      }, '导入 JSON'),
     ),
-    importError !== ''
-      ? React.createElement('div', { style: { fontSize: 12, color: '#f44336', marginTop: 4 } }, `导入失败：${importError}`)
-      : null,
-    newRoleKey.trim() !== '' && !isValidRoleKey(newRoleKey.trim())
-      ? React.createElement('div', { style: { fontSize: 12, color: '#f44336', marginTop: 4 } }, '名字不合法：须小写字母开头，只含小写字母与连字符（大写 / 数字 / 下划线都会被保存端 schema 拒绝）')
-      : null,
-    newRoleKey.trim() !== '' && isValidRoleKey(newRoleKey.trim()) && AGENT_TYPES.includes(newRoleKey.trim())
-      ? React.createElement('div', { style: { fontSize: 12, color: '#f44336', marginTop: 4 } }, `「${newRoleKey.trim()}」是内置工种名，不可用作自定义角色——请用上方对应卡片配置`)
-      : null,
-    newRoleKey.trim() !== '' && isValidRoleKey(newRoleKey.trim()) && !AGENT_TYPES.includes(newRoleKey.trim()) && (roleRows.some((row) => row.key === newRoleKey.trim()) || (draft?.roles && typeof draft.roles === 'object' && Boolean(draft.roles[newRoleKey.trim()])))
-      ? React.createElement('div', { style: { fontSize: 12, color: '#f44336', marginTop: 4 } }, '该名字已存在')
-      : null,
+
+    builtin ? null : el('div', { className: 'mygo-colFoot' },
+      el('button', { className: 'mygo-btn mygo-btnMini', disabled, title: '把该角色的完整 JSON 复制到剪贴板', onClick: () => onExportRole?.(key) }, '导出 JSON'),
+      el('button', { className: 'mygo-btn mygo-btnMini', disabled, title: '粘贴 JSON 覆盖该角色', onClick: () => onImportOverwrite?.(key) }, '从 JSON 覆盖'),
+      el('button', {
+        className: 'mygo-btn mygo-btnMini',
+        disabled,
+        onClick: () => onDeleteRole?.(key),
+        title: '从草稿里删掉这个角色（保存后整键从 roles 字典移除）',
+      }, `删除「${key}」`),
+      importError ? el('span', { className: 'mygo-statusError' }, importError) : null,
+    ),
+
+    builtin ? null : el('div', { className: 'mygo-colFoot' },
+      rosterFailed
+        ? el('span', { className: 'mygo-hint' }, '工具花名册拉取失败：名单只是不给提示，手填照常。')
+        : el('span', { className: 'mygo-hint' }, `宿主花名册 ${tools.length} 个工具可点选。`),
+      el('button', { className: 'mygo-btn mygo-btnMini', onClick: () => onRefreshTools?.(), title: 'MCP 刚连上新工具时重拉一次名单' }, '刷新花名册'),
+    ),
+  )
+}
+
+/** 模型优先级编辑器（内置与自定义共用）：#1 主选 + #2..N 备选链。 */
+function renderChainEditor(row, providers, modelsFor, listErrorFor, disabled, onChange) {
+  const chain = composeChain(row)
+  // 交给页面的是链本体（不是分解后的形状）：provider/model/fallbacks 的拆分
+  // 只有写面需要，收在一处才不会两处各拆一遍再各错一遍。
+  const apply = (next) => onChange(next)
+  return el('div', { className: 'mygo-field' },
+    el('div', { className: 'mygo-label' }, '模型优先级（主选 + 备选链）'),
+    el('div', { className: 'mygo-hint' }, '#1 为主选；主模型失败（限流重试耗尽后）按序自动切换后续条目。备选 ↑ 到顶 = 一键扶正为主选；删除 #1 则 #2 自动扶正。'),
+    el('div', { className: 'mygo-chain' }, chain.map((entry, index) => {
+      const listError = listErrorFor(entry.provider)
+      return el(React.Fragment, { key: `mygo-chain-${index}` },
+        el('div', { className: 'mygo-chainRow' },
+          el('span', { className: 'mygo-chainIndex' },
+            `#${index + 1}`,
+            index === 0 ? el('span', { className: 'mygo-rowBadge', 'data-tone': 'on' }, '主选') : null,
+          ),
+          combobox(entry.provider, providers, `mygo-chain-providers-${index}`,
+            index === 0 ? '跟随 Sisyphus（点选或手填渠道）' : '（渠道：点选或手填）',
+            disabled,
+            (value) => apply(updateChainEntry(chain, index, 'provider', value))),
+          combobox(entry.model, modelsFor(entry.provider), `mygo-chain-models-${index}`,
+            index === 0 ? '跟随 Sisyphus（点选或手填模型）' : '（模型：点选或手填）',
+            disabled,
+            (value) => apply(updateChainEntry(chain, index, 'model', value))),
+          el('div', { className: 'mygo-chainActors' },
+            el('button', { className: 'mygo-btn mygo-btnMini', disabled: disabled || index === 0, title: '上移（#2 到顶即扶正为主选）', onClick: () => apply(moveChainEntry(chain, index, -1)) }, '↑'),
+            el('button', { className: 'mygo-btn mygo-btnMini', disabled: disabled || index === chain.length - 1, title: '下移（更后尝试）', onClick: () => apply(moveChainEntry(chain, index, 1)) }, '↓'),
+            el('button', { className: 'mygo-btn mygo-btnMini', disabled: disabled || chain.length <= 1, title: '删除该行（至少保留主选位；删 #1 则 #2 扶正）', onClick: () => apply(removeChainEntry(chain, index)) }, '×'),
+          ),
+        ),
+        listError
+          ? el('div', { className: 'mygo-hint' }, `⚠ 渠道 ${entry.provider} 的模型清单读取失败：${listError}（可直接手填模型名，不影响保存）`)
+          : null,
+      )
+    })),
+    el('div', { className: 'mygo-colFoot' },
+      el('button', { className: 'mygo-btn mygo-btnMini', disabled, onClick: () => apply(addChainEntry(chain, { provider: '', model: '' })) }, '+ 添加条目'),
+    ),
+  )
+}
+
+function combobox(value, options, listId, placeholder, disabled, onChange) {
+  return el('div', { className: 'mygo-field' },
+    el('input', {
+      className: 'mygo-input mygo-inputMono',
+      value: value ?? '',
+      list: listId,
+      placeholder,
+      disabled,
+      spellCheck: false,
+      onChange: (event) => onChange(event.target.value),
+    }),
+    el('datalist', { id: listId }, options.filter((option) => option !== '').map((option) => el('option', { key: option, value: option }))),
   )
 }

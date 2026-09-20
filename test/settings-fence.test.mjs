@@ -82,151 +82,152 @@ function withBridge(replace) {
   }
 }
 
-// ── E6/A-03：读面下发凭据 ──────────────────────────────────────────────────
+// ── 0.5.0-tisitan.3 改判：设置面写通道整体迁宿主 settingsScope ──────────────
+// 本半不再自造 revision（loadSettings / saveSettings / listModels 三个端点退役，
+// 判据搬到 test/settings-ops.test.mjs 与 test/client-card.test.mjs）。此处只留
+// 宿主半还剩的真东西：命名空间以 installSection 挂 composition base、老宿主回落、
+// 活源热更驱动 bindings，以及「本半不再 mint 版本号」这条负向。
 
-test('loadSettings 回带 revision：宿主 describe 在场时透其单调版本号', async () => {
-  const settings = settingsMock({ stored: { roles: { hermes: { provider: 'p1', model: 'm1' } } }, revision: 7 })
-  const { ctx, rpc } = mockHostCtx({ settings: settings.service })
-  await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'loadSettings', {})
-  assert.equal(res.ok, true)
-  assert.equal(res.value.revision, 7, 'revision 即宿主 describe 的 dsh-my-go 版本号')
-  assert.deepEqual(res.value.hermes, { provider: 'p1', model: 'm1' }, '既有提升形状不受新键影响')
-  assert.ok(!('revision' in res.value.roles), 'revision 只挂顶级，不渗进 roles 行')
-})
-
-test('loadSettings：宿主 describe 缺席时回落进程内计数器，settings/updated 每次推进一格', async () => {
-  const legacyService = {
-    register: () => ({}),
-    get: () => ({ roles: {} }),
+test('installSection 在册：行 config 的 settings 形状部分挂成 composition base', async () => {
+  const calls = []
+  const settings = {
+    installSection: (_owner, ns, schema, entry, hooks) => {
+      calls.push({ ns, entry, hasSchema: typeof schema === 'function', hooks: Object.keys(hooks ?? {}).sort() })
+      hooks.setSource(() => ({ roles: { hermes: { provider: 'from-host', model: 'm' } } }))
+      hooks.onChange(() => {})
+    },
+    get: () => undefined,
     mutate: async () => {},
   }
-  const { ctx, listeners, rpc } = mockHostCtx({ settings: legacyService })
-  await host.apply(ctx, NO_INSTALL)
-  assert.equal((await rpc('/dsh-my-go', 'loadSettings', {})).value.revision, 0, '起点 0')
-  listeners.get('settings/updated')('dsh-my-go')
-  listeners.get('settings/updated')('dsh-my-go')
-  listeners.get('settings/updated')('other-ns')
-  assert.equal((await rpc('/dsh-my-go', 'loadSettings', {})).value.revision, 2, '只数本命名空间的变更，外部命名空间不算')
+  const { ctx } = mockHostCtx({ settings })
+  await host.apply(ctx, { installPreset: false, usagePrices: { 'a/b': { input: 1, output: 2 } } })
+  assert.deepEqual(calls.map((c) => c.ns), ['dsh-my-go'], '命名空间经 installSection 注册一次')
+  assert.deepEqual(calls[0].entry, { usagePrices: { 'a/b': { input: 1, output: 2 } } }, 'base = 行 config 的 settings 形状部分')
+  assert.deepEqual(calls[0].hooks, ['onChange', 'setSource', 'validate'].filter((k) => k === 'onChange' || k === 'setSource'), 'hooks 只交 setSource/onChange（校验归页面）')
+  assert.equal(calls[0].hasSchema, true, 'schema 是可调用的')
 })
 
-// ── E6/A-03：写面围栏 ──────────────────────────────────────────────────────
-
-test('saveSettings：凭据过期就地拒绝，且一次写都不发（后写覆盖前写的老路被堵死）', async () => {
-  const settings = settingsMock({ stored: { roles: {} }, revision: 5 })
-  const { ctx, rpc } = mockHostCtx({ settings: settings.service })
-  await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'saveSettings', { revision: 3, hermes: { model: 'm-stale' } })
-  assert.equal(res.ok, false)
-  assert.equal(res.error.code, 'conflict')
-  assert.deepEqual(res.error.details, { expected: 3, actual: 5 }, 'details 带两侧版本号，前端能报「他处已改到 r5」')
-  assert.equal(settings.calls.length, 0, '预检失败不得惊动存储')
-})
-
-test('saveSettings：凭据新鲜时把 expectedRevision 交给宿主执行，成功后回带新版本号', async () => {
-  const settings = settingsMock({ stored: { roles: {} }, revision: 5 })
-  const { ctx, rpc } = mockHostCtx({ settings: settings.service })
-  await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'saveSettings', { revision: 5, hermes: { model: 'm-new' } })
-  assert.equal(res.ok, true, JSON.stringify(res))
-  assert.equal(res.value.revision, 6, '保存即推进版本：不 adopt 会让用户下一处保存自撞假冲突')
-  assert.equal(settings.calls.at(-1).expectedRevision, 5, '围栏交给宿主在写队列内执行（检查与写入之间无 TOCTOU 窗）')
-})
-
-test('saveSettings：宿主自己抛 SettingsConflictError 也映射为 conflict（预检与提交间的竞态不逃逸）', async () => {
-  const settings = settingsMock({ stored: { roles: {} }, revision: 5 })
-  const { ctx, rpc } = mockHostCtx({ settings: settings.service })
-  await host.apply(ctx, NO_INSTALL)
-  settings.moveStoreOnly(9) // describe 仍报 r5，真实存储已走 r9：预检放行、宿主拒绝
-  const res = await rpc('/dsh-my-go', 'saveSettings', { revision: 5, hermes: { model: 'x' } })
-  assert.equal(res.ok, false)
-  assert.equal(res.error.code, 'conflict', '不能退化成 settings-rejected：前端要据此区分「该重新加载」与「配置本身有问题」')
-  assert.deepEqual(res.error.details, { expected: 5, actual: 9 })
-})
-
-test('saveSettings：draft 不带 revision（旧前端 / 脚本直调）保持无条件写，也不塞假第三参', async () => {
-  const settings = settingsMock({ stored: { roles: {} }, revision: 4 })
-  const { ctx, rpc } = mockHostCtx({ settings: settings.service })
-  await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'saveSettings', { hermes: { model: 'm1' } })
-  assert.equal(res.ok, true, JSON.stringify(res))
-  assert.equal(settings.calls.at(-1).expectedRevision, undefined, '缺凭据 = 不围栏，绝不发明 0 之类的假版本')
-})
-
-test('saveSettings：旧宿主 mutate 两参时不越签名传第三参', async () => {
+test('installSection 缺席的老宿主：回落 register(ns, schema, {base})，语义不退化', async () => {
   const calls = []
-  const legacyService = {
-    register: () => ({}),
-    get: () => ({ roles: {} }),
-    describe: () => [{ ns: 'dsh-my-go', revision: 2 }],
-    async mutate(ns, ops) {
-      // arguments.length 才是「调用方到底传了几参」的证据：多塞一枚 undefined
-      // 对严格校验第三参的宿主就是越界实参，mock 的形参个数证明不了这件事
-      calls.push({ ns, ops, received: arguments.length })
+  const settings = {
+    register: (ns, schema, options) => { calls.push({ ns, options }) },
+    get: () => ({ roles: { hermes: { provider: 'p1', model: 'm1' } } }),
+    mutate: async () => {},
+  }
+  const { ctx, rpc } = mockHostCtx({ settings })
+  await host.apply(ctx, { installPreset: false, bindings: undefined })
+  assert.equal(calls.length, 1, '老宿主仍注册命名空间（否则 WebUI 根本没有这一层）')
+  assert.equal(calls[0].ns, 'dsh-my-go')
+  assert.deepEqual(calls[0].options, { base: {} }, '行 config 无 settings 形状键时 base 为空对象')
+  const snap = await rpc('/dsh-my-go', 'snapshot', {})
+  assert.ok(snap.value.roster.some((entry) => entry.role === 'hermes' && entry.modelText?.includes('p1')), '回落路径的读面与 bindings 照常工作')
+})
+
+test('活源热更：installSection 的 onChange 驱动 bindings 重建（provider 被摘也不炸）', async () => {
+  let notify = null
+  let source = () => ({ roles: { hermes: { provider: 'p-a', model: 'm-a' } } })
+  const settings = {
+    installSection: (_owner, _ns, _schema, _entry, hooks) => {
+      hooks.setSource(() => source())
+      notify = hooks.onChange
+    },
+    get: () => undefined,
+    mutate: async () => {},
+  }
+  const { ctx, rpc } = mockHostCtx({ settings })
+  await host.apply(ctx, NO_INSTALL)
+  const before = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((entry) => entry.role === 'hermes')
+  assert.match(before.modelText, /p-a/, '初始读面来自活源')
+  source = () => ({ roles: { hermes: { provider: 'p-b', model: 'm-b' } } })
+  notify()
+  const after = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((entry) => entry.role === 'hermes')
+  assert.match(after.modelText, /p-b/, 'onChange 一次即重建 bindings')
+  source = () => { throw new Error('provider detached') }
+  assert.doesNotThrow(() => notify(), '读面抛错只留痕，绝不炸穿宿主回调')
+  const kept = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((entry) => entry.role === 'hermes')
+  assert.match(kept.modelText, /p-b/, '失败时保留上一份 bindings，名册仍可渲染')
+})
+
+test('本半不再自造版本号：revision 唯一真源是宿主 describe（两处真相必然漂移）', async () => {
+  const hostSrc = await import('node:fs').then((fs) => fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf-8'))
+  assert.equal(hostSrc.includes('localRevision'), false, '进程内计数器不得复活')
+  assert.equal(hostSrc.includes('function currentRevision'), false, '自造 revision 出口不得复活')
+  assert.equal(hostSrc.includes('hostTakesExpectedRevision'), false, 'mutate arity 探测随围栏上移一起退役')
+})
+
+// ── A-06 改判：模型目录来自宿主官方面，逐渠道失败显式化的形状锁在客户端 ──────
+
+test('目录装配：groups/failures → providers/models/errors，失败渠道键不缺席', async () => {
+  const { createCatalogStore } = await import('../src/client.js')
+  const remote = {
+    session: {
+      modelCatalog: async () => ({
+        ok: true,
+        value: {
+          routableProviders: ['deepseek', 'minimax'],
+          groups: [
+            { id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }] },
+          ],
+          failures: [{ id: 'minimax', name: 'MiniMax', message: 'HTTP_401 unauthorized' }],
+        },
+      }),
     },
   }
-  const { ctx, rpc } = mockHostCtx({ settings: legacyService })
-  await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'saveSettings', { revision: 2, hermes: { model: 'm' } })
-  assert.equal(res.ok, true, JSON.stringify(res))
-  assert.equal(calls.at(-1).received, 2, '探测结论是「旧宿主两参」时就该只发两参')
+  const store = createCatalogStore(remote)
+  let ticks = 0
+  const off = store.subscribe(() => { ticks += 1 })
+  await store.load()
+  const state = store.get()
+  assert.equal(state.status, 'ready')
+  assert.deepEqual(state.providers, ['deepseek', 'minimax'], 'routableProviders 为准：读失败的渠道仍在')
+  assert.deepEqual(state.models.deepseek, ['deepseek-chat', 'deepseek-reasoner'])
+  assert.deepEqual(state.models.minimax, [], '失败渠道的键不缺席（与「该渠道真没模型」区分的前提）')
+  assert.equal(state.errors.minimax, 'HTTP_401 unauthorized', '缺席一律进 errors，前端按渠道行内提示')
+  assert.ok(ticks >= 2, 'loading → ready 各广播一次')
+  off()
 })
 
-// ── A-06：listModels 并行 + 失败显式化 ─────────────────────────────────────
-
-function deferred() {
-  let resolve
-  let reject
-  const promise = new Promise((res, rej) => { resolve = res; reject = rej })
-  return { promise, resolve, reject }
-}
-
-test('listModels：各渠道并行列举（串行 await 时 N 个渠道就是 N 倍首屏）', async () => {
-  const gates = { p1: deferred(), p2: deferred(), p3: deferred() }
-  const started = []
-  const llm = {
-    listProviders: async () => [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }],
-    listModels: async (pid) => { started.push(pid); return gates[pid].promise },
-  }
-  const { ctx, rpc } = mockHostCtx({ llm })
-  await host.apply(ctx, NO_INSTALL)
-  const inflight = rpc('/dsh-my-go', 'listModels', {})
-  await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(started.slice().sort(), ['p1', 'p2', 'p3'], '三个渠道在同一 tick 内全部发起')
-  gates.p1.resolve([{ id: 'm1' }])
-  gates.p2.resolve([{ id: 'm2' }])
-  gates.p3.resolve([])
-  const res = await inflight
-  assert.deepEqual(res.value.models, { p1: ['m1'], p2: ['m2'], p3: [] })
-  assert.deepEqual(res.value.errors, {}, '全部成功时 errors 是空字典（前端无须特判缺席）')
-})
-
-test('listModels：单渠道失败只脏自己——键不缺席、原因进 errors、他渠道照常', async () => {
-  const llm = {
-    listProviders: async () => [{ id: 'good' }, { id: 'bad' }],
-    listModels: async (pid) => {
-      if (pid === 'bad') throw new Error('HTTP_429 rate limited')
-      return [{ id: 'm-ok' }]
+test('目录装配：并发只认最后一次、缺席服务回 error、load 幂等而 invalidate 重拉', async () => {
+  const { createCatalogStore } = await import('../src/client.js')
+  const answers = ['stale', 'fresh']
+  const resolvers = []
+  const slow = {
+    session: {
+      modelCatalog: () => new Promise((resolve) => {
+        const id = answers.shift() ?? 'fresh'
+        resolvers.push(() => resolve({ ok: true, value: { routableProviders: [id], groups: [], failures: [] } }))
+      }),
     },
   }
-  const { ctx, rpc } = mockHostCtx({ llm })
-  await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'listModels', {})
-  assert.equal(res.ok, true)
-  assert.deepEqual(res.value.models.bad, [], '失败渠道给空数组而非删键（旧写法的「键缺席」与「真的没模型」同形）')
-  assert.match(res.value.errors.bad, /HTTP_429 rate limited/, '原因原样回报，供设置页行内提示')
-  assert.deepEqual(res.value.models.good, ['m-ok'], '一个渠道炸不掉整页')
-  assert.equal(res.value.errors.good, undefined)
+  const store = createCatalogStore(slow)
+  const first = store.load()
+  const second = store.invalidate()
+  for (const settle of resolvers.splice(0)) settle()
+  await Promise.all([first, second])
+  assert.deepEqual(store.get().providers, ['fresh'], '慢回来的旧响应不得覆盖新代次')
+  const absent = createCatalogStore({})
+  await absent.load()
+  assert.equal(absent.get().status, 'error', '宿主没给 modelCatalog 就是失败，不许假装空清单是「没配模型」')
+  let calls = 0
+  const counted = createCatalogStore({ session: { modelCatalog: async () => { calls += 1; return { ok: true, value: { groups: [], failures: [], routableProviders: [] } } } } })
+  await counted.load()
+  await counted.load()
+  assert.equal(calls, 1, 'load 幂等（每次挂载都重拉会让下拉清单抖动）')
+  await counted.invalidate()
+  assert.equal(calls, 2, 'invalidate 才真重拉')
+  counted.reset()
+  await counted.load()
+  assert.equal(calls, 3, '连接重代后 reset 让下一次挂载重新拉')
 })
 
-test('listModels：llm 服务缺席仍是空清单形状，errors 一并给空字典', async () => {
-  const { ctx, rpc } = mockHostCtx({})
-  await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'listModels', {})
-  assert.deepEqual(res.value, { providers: [], models: {}, errors: {} })
+test('目录装配：宿主回 ok:false 也是 error，不静默清空', async () => {
+  const { createCatalogStore } = await import('../src/client.js')
+  const store = createCatalogStore({ session: { modelCatalog: async () => ({ ok: false, error: { code: 'unavailable' } }) } })
+  await store.load()
+  assert.equal(store.get().status, 'error')
 })
 
-// ── A-05：结构化 roster 与三处同源 ─────────────────────────────────────────
+// ── A-05：结构化名册（不变）───────────────────────────────────────────────
 
 const FENCE_BINDINGS = {
   hermes: { provider: 'p1', model: 'm1', fallbacks: [{ provider: 'p2', model: 'm2' }, { provider: 'p3', model: 'm3' }] },
@@ -259,7 +260,7 @@ test('snapshot.roster：结构化字段齐备，表头/计数不再由 host 代�
 test('A-05 同源锁：同一 bindings 下 lib 文本镜像、shared 简报、结构化条目三者语义一致', () => {
   const entries = rosterEntries(FENCE_BINDINGS)
   const hermes = entries.find((e) => e.role === 'hermes')
-  assert.equal(formatRosterRow(hermes), '- hermes | p1·m1 | 备选2 | 全量（除全局掩码） | 内置文件')
+  assert.equal(formatRosterRow(hermes), '- hermes | p1·m1 | 备选2 | 全量 | 内置文件')
   const briefing = renderRosterBriefing(FENCE_BINDINGS)
   assert.ok(briefing.includes('hermes → p1·m1 → 备选链 2 条（p2·m2 → p3·m3）'), '简报读的是同一份 modelText/chain')
   assert.ok(briefing.includes('custom-x → ?·mx → 无备选链 → 工具: 仅 read；除 write → 人设: 自定义人设'), 'toolFilter 与人设摘要同样同源')
@@ -269,7 +270,7 @@ test('A-05 防御面：bindings 形状漂移（非数组 fallbacks / 脏 toolFil
   const entries = rosterEntries({ hermes: { fallbacks: 'nope', toolFilter: 'nope' }, 'odd-role': null })
   const hermes = entries.find((e) => e.role === 'hermes')
   assert.deepEqual(hermes.chain, [], '非数组 fallbacks 归空')
-  assert.equal(hermes.toolFilterText, '全量（除全局掩码）')
+  assert.equal(hermes.toolFilterText, '全量')
   const odd = entries.find((e) => e.role === 'odd-role')
   assert.equal(odd.modelText, '跟随环境')
   assert.equal(odd.personaSource, '无（跟随环境）')

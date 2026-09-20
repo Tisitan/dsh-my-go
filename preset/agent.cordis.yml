@@ -126,8 +126,8 @@
         toolName: subagent_fork
         backgroundMode: continuable
 
-    - id: workflow-worker-thread
-      name: '@deepseek-ai/dsh-workflow-worker-thread'
+    - id: workflow-ptc
+      name: '@deepseek-ai/dsh-workflow-ptc'
       config:
         provider: spawn
 
@@ -157,10 +157,13 @@
     reportExternalization: true
 
     # 读平面并行池（0.4.0 线二期，D5/D7/D8/D9）：读平面 = explore/librarian，
-    # 写平面（Hermes/Hephaestus/Prometheus/Oracle/Looker/自定义角色）恒单线。
+    # 写平面（Hermes/Hephaestus/Prometheus/Oracle/Looker/Apelles/自定义角色）恒单线。
     # 1 = 关闭 = 全局单线现状；2~3 = 读平面并发上限（>3 钳制 3，非法值回落 1）。
     # 挂载期读一次，不做运行时切换。缺省（`?? 1`）= 关闭。
-    readPoolSize: 2
+    # 装机口径：保守起步的 2 已扩到上限 3（2026-09-18 扩池批）。同步 preset 会
+    # 覆盖本行，改完记得保留本键且值必须为 3——防回潮哨兵
+    # test/report-clause.test.mjs 的 readPoolSize pin 站岗，被改回 2/1 即红。
+    readPoolSize: 3
 
     # 接力链总闸（0.4.0 线三期，D21~D29）：开 → chain_start/chain_resolve 注册。
     # 依赖 reportExternalization=true（D23 fail-fast：总闸关则 chain_start 直接
@@ -183,30 +186,3 @@
     fetch: false
     searchTimeoutMs: 60000
 
-# ── tool mask ────────────────────────────────────────────────────────────────
-# Hides tools from this preset's catalog — applies to Sisyphus and every
-# sub-agent on the preset. The deny list resolves as the UNION of (0.2.3-tisitan.13,
-# union semantics since the 防旁路加固批):
-#   1. `config.deny` on this row — what the fork itself requires masked;
-#   2. settings namespace 'dsh-my-go' key `toolMask.deny` (WebUI 设置页
-#      「工具屏蔽」双列表编辑器);
-#   3. DEFAULT_DENY in ./tool-mask.mjs — empty by default.
-# No source overrides another: the fork-shipped security entries below must
-# not erase the user's own list, and the user's list cannot un-mask them.
-# Only names the scope can see are restrictable (tools.restrict filters
-# *inherited* registrations), so this row masks host-bundle tools such as the
-# adjacent-messaging trio below — the fork's own preset-plane tools
-# (go_work/continue/…) are instead denied per agent by the broker's
-# `agent/created` gate. An absent tool is skipped per name (warn) so the mount
-# never fails because of the mask. Mask changes take effect on NEW sessions only.
-- id: tool-mask
-  name: ./tool-mask.mjs
-  config:
-    # 防旁路加固（R1/R3）：上游邻接消息三件套对 MyGO 会话整体下线——编排只走
-    # broker 的六件套（go_work/continue/forward/need_help/orchestration_status/
-    # list_subagents）。broker 的 agent/created 闸对同三名另做一道 agent-scope
-    # deny（双保险，且不依赖宿主 bundle 是否全局注册它们）。
-    deny:
-      - send_message
-      - list_agents
-      - interrupt_agent

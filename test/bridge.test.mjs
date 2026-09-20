@@ -1104,6 +1104,41 @@ test('forward 信封化：help.content 包进 forwarded-help 并转义，</need_
   assert.ok(env.startsWith('[dsh-my-go]') && env.includes('转发结束'), '包装前后各有系统语气说明')
 })
 
+// ── need_help consult 档（v2 人设批前置：施工层方案冲突请示）──────────────────
+
+test('need_help consult：枚举追加 + 语义描述在册 + 通用挂起上报路径（无特殊分支、不计失败）', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const followups = []
+  const { ctx, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: {
+      reportFrom: async () => 'delivered',
+      followup: async (_p, childId, blocks) => { followups.push({ childId, text: blocks[0]?.text }); return 'msg-c' },
+    },
+  })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
+  const tool = tools.get('need_help')
+  assert.ok(tool.parameters.properties.intent.enum.includes('consult'), '枚举只增不改（stable contract）')
+  assert.match(tool.description, /consult = 方案冲突请示/)
+  assert.match(tool.parameters.properties.intent.description, /not counted as failure/)
+  await tools.get('go_work').execute({ agent: 'hephaestus', prompt: '改闸门' }, execOf(parent))
+  const childExec = { agent: { id: 'sess-1', session: { header: { parentSession: 'parent-1' } } }, signal: new AbortController().signal }
+  const r = await tools.get('need_help').execute({ intent: 'consult', content: '派工假设写集只含 broker.mjs，实际牵连 shared——请改方案' }, childExec)
+  assert.equal(r.suspended, true, '挂起语义与其余 intent 同径')
+  const help = snapOf('parent-1').helpRequests[0]
+  assert.equal(help.intent, 'consult')
+  assert.equal(help.agentType, 'hephaestus', '求助单照常带工种')
+  assert.equal(currentOf('parent-1')?.status, 'waiting', '照常挂起等主编')
+  const fw = await tools.get('forward').execute({ from: r.helpRequestId, target: 'sess-1' }, execOf(parent))
+  assert.equal(fw.kind, 'continue', '转发命中通用 continue 分支（consult 无专属路由）')
+  assert.equal(followups.length, 1)
+  assert.ok(followups[0].text.includes('intent="consult"'), '信封头如实携带 consult')
+  assert.equal(snapOf('parent-1').helpRequests.length, 0, '求助单核销')
+  assert.equal(currentOf('parent-1')?.status, 'running', '请示不是失败：记录回 running')
+  assert.equal(snapOf('parent-1').history.length, 0, '零落史——不计失败的台账面证据')
+})
+
 // ── 0.2.3-tisitan.17：fallbackEntry 随编排记录持久化（复活/重启重建的落盘锚点）──
 
 test('0.2.3-tisitan.17 a: 重派记录携带 fallbackEntry，台账 v2 round-trip 后仍在', async () => {

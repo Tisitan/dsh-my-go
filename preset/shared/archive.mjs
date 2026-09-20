@@ -7,10 +7,10 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { zstdDecompressSync } from 'node:zlib'
 
 import { normalizeTurnFailure } from './failure.mjs'
+import { sessionsHome } from './paths.mjs'
 
 // ── 失败附因：持久化档案读取（0.2.3-tisitan.9）────────────────────────────────
 // 根因：continuable Activation 的销毁顺序（dsh-subagent/lib/types/continuation.js
@@ -154,7 +154,7 @@ export function findArchivedLogByChildId(root, childId) {
 // 错项目目录，档案永远找不到（生产上「未读到附因」从未成功过）。默认路径不可
 // 读时兜底按 childId 全局搜索 root 下各项目目录（多命中取 mtime 最新）。
 export function readArchivedTurnFailure(childId, options = {}) {
-  const root = options.root ?? join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions')
+  const root = options.root ?? sessionsHome()
   const cwd = options.cwd ?? process.cwd()
   let logFile = join(root, projectKey(cwd), encodeSegment(childId), 'session.jsonl.zstd')
   let buffer
@@ -220,7 +220,7 @@ export function readArchivedTurnFailure(childId, options = {}) {
 //              function never throws.
 export function readArchivedUsage(childId, fromSeq, options = {}) {
   const noEvents = { events: [], complete: false }
-  const root = options.root ?? join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions')
+  const root = options.root ?? sessionsHome()
   const cwd = options.cwd ?? process.cwd()
   let logFile = join(root, projectKey(cwd), encodeSegment(childId), 'session.jsonl.zstd')
   let buffer

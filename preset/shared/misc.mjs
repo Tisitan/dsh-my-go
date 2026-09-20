@@ -22,6 +22,7 @@ export function describeAgent(type, persona) {
     case 'hephaestus': return 'code writing: single-file refactor, module implementation, unit tests'
     case 'prometheus': return 'requirement planning: break vague requirements into executable steps (call once at flow start)'
     case 'oracle': return 'architecture debugging (last resort): cross-module analysis, deep bugs, complex review'
+    case 'apelles': return 'visual artist: diagrams/flowcharts/posters, UI mockups and structure demos'
     default: {
       const firstLine = String(persona ?? '').split('\n').map((s) => s.trim()).find(Boolean)
       return firstLine ? `custom role: ${firstLine.slice(0, 60)}` : 'custom role'
@@ -50,6 +51,7 @@ export function defaultBindings() {
     hephaestus: {},
     prometheus: {},
     oracle: {},
+    apelles: {},
   }
 }
 

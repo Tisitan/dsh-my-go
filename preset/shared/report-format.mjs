@@ -6,9 +6,11 @@
  * 「report_submit 一次交齐四字段 + broker 确定性合成回执」）。本模块持三件事：
  *   - REPORT_CLAUSE：追加到子代 prompt 尾部的提交条款（broker spawnChild 注入，
  *     唯一出处）；
- *   - validateReportArgs：四字段校验器（report_submit execute 消费）。evidence
- *     逐项按 EVIDENCE_LINE_PATTERN 校验，非法项返回带数组索引的错误清单；空数组
- *     或 ["无"] 归一化为「无」；
+ *   - validateReportArgs：四字段校验器（report_submit execute 消费，第二参收
+ *     { agentType }，缺席 = 不强制小节）。evidence 逐项按 EVIDENCE_LINE_PATTERN /
+ *     EVIDENCE_TYPED_LINE_PATTERN 校验，非法项返回带数组索引的错误清单；空数组
+ *     或 ["无"] 归一化为「无」；施工层工种（REPORT_SECTION_TYPES）的 report
+ *     正文另过 REPORT_SECTIONS 节标闸（机械闸，缺节即逐条拒收）；
  *   - buildOwnerSummary：主编回执合成——终局通知的摘要由 broker 从已校验字段
  *     拼装（conclusion 全文 + evidence 逐行 + open + 取阅指引），子代最后一条
  *     消息不再是解析对象，全文走 report_submit 落 board（1.1/1.3）。
@@ -57,15 +59,30 @@ export const REDISPATCH_RESUME_PREFIX = '[备选重派] 另一个模型曾接手
 // D2 中档行形态：路径部分任意非空白（容忍盘符/正斜杠/中文/路径内冒号），
 // 结尾必须 :数字——规格硬性要求正则含 :\d+；锚点实证（存在性/grep）不做。
 const EVIDENCE_LINE_PATTERN = /^\S+:\d+$/
+const EVIDENCE_TYPED_LINE_PATTERN = /^(?:test|image):\s*\S/
+
+const REPORT_SECTION_TYPES = new Set(['hermes', 'hephaestus'])
+const REPORT_SECTIONS = [
+  { label: '偏差记录', pattern: /偏差记录\s*[:：]/ },
+  { label: '未验项', pattern: /未验项\s*[:：]/ },
+]
 
 // report_submit 四字段校验（工具 execute 消费，唯一校验出处）。
 // 返回 { ok: true, value: { conclusion, evidence, open } } 或
 // { ok: false, errors }——errors 逐条可读、evidence 非法项携带数组索引，
 // 工具层原样回给子代原地修正重调。evidence 空数组或单项「无」归一化为「无」。
-export function validateReportArgs(args) {
+export function validateReportArgs(args, { agentType } = {}) {
   const errors = []
   const report = typeof args?.report === 'string' ? args.report.trim() : ''
-  if (report === '') errors.push('report: 检测到缺失或为空——请改用完整报告全文重调')
+  if (report === '') {
+    errors.push('report: 检测到缺失或为空——请改用完整报告全文重调')
+  } else if (REPORT_SECTION_TYPES.has(agentType)) {
+    for (const section of REPORT_SECTIONS) {
+      if (!section.pattern.test(report)) {
+        errors.push(`report: 检测到缺少「${section.label}」小节——请补上「${section.label}：」节标（内容写「无」也算合格）后原地重调`)
+      }
+    }
+  }
   const conclusion = typeof args?.conclusion === 'string' ? args.conclusion.trim() : ''
   if (conclusion === '') errors.push('conclusion: 检测到缺失或为空——请改用 2-4 句自包含完工结论重调')
   const open = typeof args?.open === 'string' ? args.open.trim() : ''
@@ -76,9 +93,9 @@ export function validateReportArgs(args) {
   }
   const lines = args.evidence.map((item) => (typeof item === 'string' ? item.trim() : ''))
   lines.forEach((line, index) => {
-    if (line === '' || (line !== '无' && !EVIDENCE_LINE_PATTERN.test(line))) {
+    if (line === '' || (line !== '无' && !EVIDENCE_LINE_PATTERN.test(line) && !EVIDENCE_TYPED_LINE_PATTERN.test(line))) {
       const raw = typeof args.evidence[index] === 'string' ? args.evidence[index] : String(args.evidence[index])
-      errors.push(`evidence[${index}]: 检测到非法证据项「${raw.slice(0, 80)}」——请改用裸「路径:行号」或「无」重调，禁止任何前后缀描述`)
+      errors.push(`evidence[${index}]: 检测到非法证据项「${raw.slice(0, 80)}」——请改用裸「路径:行号」、「test:」/「image:」前缀行或「无」重调，禁止其他前后缀描述`)
     }
   })
   if (errors.length > 0) return { ok: false, errors }

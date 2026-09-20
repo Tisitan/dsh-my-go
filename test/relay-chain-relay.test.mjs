@@ -6,6 +6,7 @@
 //   ① T2 auto 端到端（链自跑、主编上下文零全文注入）
 //   ② R7 注入探针（闭合串转义 + 数据块纪律，M2/M3 教训的写侧对称面）
 //   ③ R2 锁绕行探针（链 hop 与人派 work 竞争同 lane 不超容）
+//   ③b R2-p3 读池放开探针（pool=3 下链内仍一次一个 hop，与 ③ 正交）
 //   ④ R11 回填挪位探针（E2 抢跑 × 链的时序窗口，§4.2-①）
 // 外加 input-missing（§3.1 board 缺席挂起）、T14（队列放弃 → 链 failed）、
 // T11（D10 备选重派换绑）三条终局收口。
@@ -131,6 +132,79 @@ test('R2(锁绕行探针): readPoolSize=1 退化单线——链 hop 与人派 wo
     assert.equal(spawned.length, 2, '同刻在飞数 = 1（首跳已终局）+ 新上岗 1，链 hop 未绕过队列')
     assert.equal(snap.currentRecords.length, 1, '单线退化：currentMap 至多 1（绕锁直派即红）')
     assert.equal(snap.queue.length, 1, '落败方仍排队（不蒸发）')
+  } finally { await removeHomeWithRetry(home) }
+})
+
+// 扩池装机口径探针（2026-09-18，readPoolSize 显式 2→3）：读池放开的是**跨任务**
+// 并发，链内 hop 的串行性由状态机自身保证（上一 hop 终局才 enqueue 下一 hop，派发
+// 唯一通道 enqueue+advanceQueue）。断言形状：读池 3/3 满（hop + 两条人派读同时在
+// 飞，证明池真的开着）× 链内在飞 hop 恒 1（证明池放开不等于链内并行）。
+// 与 R2 正交：R2 显式 readPoolSize:1 咬「退化单线下 hop 与人派同队串行」，本例显式
+// 3 咬「满池并行下 hop 仍一次一个」。
+const DECL3 = [
+  { agent: 'explore', prompt: '任务A' },
+  { agent: 'librarian', prompt: '任务B' },
+  { agent: 'explore', prompt: '任务C' },
+]
+// 在飞 hop 识别：链 hop 的 record.prompt 是预写指令原文（直投数据块拼在其后），
+// 按声明首串前缀匹配即可把 hop 与人派 work 区分开（人派 prompt 不同源不碰撞）。
+const inFlightHops = (parent, decl) => snapshotNow().parents[parent.id]
+  .currentRecords.filter((r) => decl.some((h) => String(r?.prompt ?? '').startsWith(h.prompt)))
+// 占位换真身的末步谓词（README「等待口径」硬约定：谓词必须钉紧随其后那批断言真正
+// 读到的可观测量）。只等 `inFlightHops` 的 prompt 前缀命中会**自己制造竞态**：
+// beginSpawning 造的 `child-*` 占位记录一入槽就满足它，而链的 hopChildId 要等
+// spawn resolve 后的登记同步段（bindChild → reconcileHopDispatch）才回填——彼时
+// 读 `chains[0].hopChildId` 拿到 null，喂给 submitReport 当场报「only available to
+// sub-agents」。全量并发下 spawn resolve 被拖慢，这个窗口从微秒级放大到可观测，
+// R2-p3 因此约 1/5 概率翻红（单跑恒绿；加压诊断副本 100% 红，同一形态）。
+// 故本谓词同时钉两件事：hopChildId 已是真身 **且** 活槽里那条记录的 childId 就是它。
+const hopRealInFlight = (parent, promptHead) => {
+  const snap = snapshotNow().parents[parent.id]
+  const hopChildId = snap?.chains?.[0]?.hopChildId
+  return typeof hopChildId === 'string'
+    && snap.currentRecords.some((rec) => rec.childId === hopChildId && String(rec.prompt ?? '').startsWith(promptHead))
+    ? hopChildId
+    : null
+}
+
+test('R2-p3(读池放开探针): readPoolSize=3 下人派读任务可与 hop 同时在飞，但接力链仍一次只有一个 hop', async () => {
+  const { tools, spawned, PARENT, dispatch, home, submitReport } = await relayCtx({ readPoolSize: 3 })
+  try {
+    const r = await tools.get('chain_start').execute({ hops: DECL3 }, execOf(PARENT))
+    assert.equal(r.ok, true)
+    await waitFor(() => spawned.length === 1, { what: 'hop1 spawn' })
+    const g1 = spawned[0].childId
+    // 人派两条读任务：hop1 + 人派×2 = 读池 3/3 满（证明池确实开着，不是退化单线）
+    const p1 = await tools.get('go_work').execute({ agent: 'librarian', prompt: '人派读1' }, execOf(PARENT))
+    const p2 = await tools.get('go_work').execute({ agent: 'explore', prompt: '人派读2' }, execOf(PARENT))
+    assert.equal(p1.status, 'running', '读池 3 下人派读任务与 hop 同时在飞（池放开生效）')
+    assert.equal(p2.status, 'running', '第三条读任务仍上岗（3/3 满）')
+    assert.equal(inFlightHops(PARENT, DECL3).length, 1, '读池满时链内在飞 hop 仍只有 1——下一 hop 不因槽位充裕提前上岗')
+    // hop1 终局 → 链 T2 enqueue+advanceQueue 放行 hop2；人派两条读不动
+    await submitReport(g1)
+    await writeBoard(PARENT.id, g1, '上一棒完整报告正文（扩池探针）')
+    dispatch('subagent/end', { ...GOOD_END('跳1结论'), id: g1 })
+    await waitFor(() => hopRealInFlight(PARENT, '任务B') !== null, { what: 'hop2 真身上岗（占位换成真身且链 hopChildId 已回填）' })
+    let inFlight = inFlightHops(PARENT, DECL3)
+    assert.equal(inFlight.length, 1, 'hop2 顶上、hop1 已退场——链内至多一个在飞（读池放开 ≠ 链内并行）')
+    let snap = snapshotNow().parents[PARENT.id]
+    assert.equal(snap.currentRecords.length, 3, '读池 3/3 继续满负荷（人派读1/读2 + hop2 并存）')
+    assert.equal(snap.history.some((rec) => rec.childId === g1), true, 'hop1 已落史（终局先于下一 hop）')
+    assert.equal(snap.chains[0].cursor, 1)
+    assert.equal(snap.chains[0].state, 'running')
+    // 再走一跳：hop2 终局 → hop3 上岗，形状不变（三跳链全程串行）
+    // g2 走同一枚末步谓词现取（与上面 waitFor 钉的观测量同一件事），不从快照对象
+    // 里隔一步再摸一次 hopChildId——谓词与读取之间任何晚到的回填都不该被依赖。
+    const g2 = hopRealInFlight(PARENT, '任务B')
+    await submitReport(g2, '跳2结论')
+    await writeBoard(PARENT.id, g2, '第二棒完整报告正文（扩池探针）')
+    dispatch('subagent/end', { ...GOOD_END('跳2结论'), id: g2 })
+    await waitFor(() => hopRealInFlight(PARENT, '任务C') !== null, { what: 'hop3 真身上岗（占位换成真身且链 hopChildId 已回填）' })
+    inFlight = inFlightHops(PARENT, DECL3)
+    assert.equal(inFlight.length, 1, '第三跳同样一次一个（INV-1 通道不随读池容量放开）')
+    snap = snapshotNow().parents[PARENT.id]
+    assert.equal(snap.chains[0].cursor, 2)
+    assert.equal(snap.chains[0].state, 'running')
   } finally { await removeHomeWithRetry(home) }
 })
 

@@ -12,12 +12,12 @@
 // 退出码：档案找不到 / 帧扫描失败 / 解压全灭 → 非零 + stderr 明确报错。
 
 import { readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { homedir } from 'node:os'
+import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { zstdDecompressSync } from 'node:zlib'
 
 import { findArchivedLogByChildId, scanZstdFrameRanges } from '../preset/shared/archive.mjs'
+import { sessionsHome } from '../preset/shared/paths.mjs'
 
 // 摘要只打单行：折叠换行再截断，避免 failure.message 里的多行 JSON 冲垮行格式。
 function oneLine(text, limit) {
@@ -55,8 +55,9 @@ export function summarizeEvent(ev) {
   }
 }
 
-// locateArchive：childId 模式定位。root 可注入（测试用）；缺省按 DSH_HOME 惯例。
-export function locateArchive(childId, root = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions')) {
+// locateArchive：childId 模式定位。root 可注入（测试用）；缺省按 DSH_HOME 惯例
+// （shared/paths.mjs sessionsHome 单源）。
+export function locateArchive(childId, root = sessionsHome()) {
   return findArchivedLogByChildId(root, childId)
 }
 

@@ -10,7 +10,7 @@
  * constants only.
  */
 
-export const AGENT_TYPES = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
+export const AGENT_TYPES = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle', 'apelles']
 
 export const AGENT_TYPE_PREFIX = 'dsh-my-go:'
 
@@ -75,3 +75,34 @@ export const ADJACENT_BYPASS_TOOLS = ['send_message', 'list_agents', 'interrupt_
 //      restrict 批级拒绝 + 逐名兜底的「could not deny」查无此具噪音——与
 //      report_fetch / 链两件同款口径（闸的意图被「工具根本不存在」真空满足）。
 export const AGENT_TEAMS_TOOLS = ['spawn_teammate', 'wait_agent', 'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update']
+
+// ── settings 命名空间与面板 RPC 通道（同一身份的两种拼法）────────────────────
+// SETTINGS_NAMESPACE：settingsScope bind 的 namespace、config slot key、宿主半
+// settings.installSection 的注册名——三处一个身份。PANEL_RPC_CHANNEL：面板 RPC
+// 单通道名 = 命名空间的带斜杠形态（client.js「all one identity」注释的常量化），
+// lib 半注册、src 半调用两侧同源。两者必须同步改，派生式定义让漂移不可能。
+export const SETTINGS_NAMESPACE = 'dsh-my-go'
+export const PANEL_RPC_CHANNEL = `/${SETTINGS_NAMESPACE}`
+
+// 面板单通道分发的端点名全集（lib 半分发 ↔ src 半调用两侧同源）——端点改名
+// 一侧漂移即 404/静默失效，键值同形枚举把协议面钉在一处。
+export const PANEL_ENDPOINTS = Object.freeze({
+  snapshot: 'snapshot',
+  listTools: 'listTools',
+  getBuiltinPersona: 'getBuiltinPersona',
+  getUsage: 'getUsage',
+})
+
+// ── usage-price 四桶 ────────────────────────────────────────────────────────
+// 桶序是承诺：保存行的序列化键序、编辑器渲染序、聚合行序都按它走。
+// 前二必填（缺一整行 fail-closed 丢弃），后二可选（未定价 = 键省略）。
+export const PRICE_REQUIRED_BUCKETS = ['input', 'output']
+export const PRICE_OPTIONAL_BUCKETS = ['cacheRead', 'cacheWrite']
+export const PRICE_BUCKETS = [...PRICE_REQUIRED_BUCKETS, ...PRICE_OPTIONAL_BUCKETS]
+// 四桶的中文标签（设置页单价表渲染面），与桶序同源分发。
+export const PRICE_BUCKET_LABELS = Object.freeze({ input: '输入', output: '输出', cacheRead: '缓存读取', cacheWrite: '缓存写入' })
+
+// 台账 v1 兼容桶 id：broker 载入 v1 单 history 台账时把全部行放进 key 为本值
+// 的幽灵父区（无属主会话、current 恒空、点开无处可跳）。面板父区列表与 usage
+// 单父区借用判定都按名过滤它；跨重启的全局扫描兜底仍可命中这些记录。
+export const LEGACY_PARENT_ID = 'legacy'

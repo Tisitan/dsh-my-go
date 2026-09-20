@@ -19,43 +19,16 @@
  * E7/B-05 precedent).
  */
 
-import { PRICE_KEY_PATTERN } from '../preset/shared/constants.mjs'
+import {
+  PRICE_KEY_PATTERN,
+  PRICE_BUCKETS,
+  PRICE_REQUIRED_BUCKETS as REQUIRED_BUCKETS,
+  PRICE_OPTIONAL_BUCKETS as OPTIONAL_BUCKETS,
+} from '../preset/shared/constants.mjs'
 
-export { PRICE_KEY_PATTERN }
-
-export const REQUIRED_BUCKETS = ['input', 'output']
-export const OPTIONAL_BUCKETS = ['cacheRead', 'cacheWrite']
-export const PRICE_BUCKETS = [...REQUIRED_BUCKETS, ...OPTIONAL_BUCKETS]
-
-/**
- * Model-picker options for the create-key input (0.5.0 UX pass 2): flat
- * `provider/model` strings assembled from the listModels projection — the
- * exact PRICE_KEY_PATTERN key format, so a picked option IS a valid row key,
- * no re-formatting step that could drift from the pattern. Keys already in
- * the table are excluded (duplicate rows are guarded downstream too, but not
- * offering them is the honest UI). listModels order is preserved — same
- * presentation order as the chain editor's provider/model pickers. A missing
- * or malformed models map degrades to [] and the combobox stays hand-fillable.
- */
-export function priceKeyOptions(available, existingKeys) {
-  const existing = existingKeys instanceof Set ? existingKeys : new Set(Object.keys(existingKeys ?? {}))
-  const modelsMap = available?.models && typeof available.models === 'object' && !Array.isArray(available.models)
-    ? available.models
-    : {}
-  const out = []
-  const seen = new Set()
-  for (const [provider, models] of Object.entries(modelsMap)) {
-    if (typeof provider !== 'string' || provider === '' || !Array.isArray(models)) continue
-    for (const model of models) {
-      if (typeof model !== 'string' || model === '') continue
-      const key = `${provider}/${model}`
-      if (seen.has(key) || existing.has(key)) continue
-      seen.add(key)
-      out.push(key)
-    }
-  }
-  return out
-}
+// 桶常量单源在 preset/shared/constants.mjs，此处仅保持既有导出面（消费者与
+// 对拍测试经本模块引用同一数组实例）。
+export { PRICE_KEY_PATTERN, PRICE_BUCKETS, REQUIRED_BUCKETS, OPTIONAL_BUCKETS }
 
 const isRowMap = (value) => !!value && typeof value === 'object' && !Array.isArray(value)
 
@@ -125,31 +98,3 @@ export function priceKeyHint(key) {
   return null
 }
 
-/** Add an empty editable row under `key`; bad keys and duplicates are no-ops. */
-export function addPriceRow(rows, key) {
-  const trimmed = typeof key === 'string' ? key.trim() : ''
-  if (!PRICE_KEY_PATTERN.test(trimmed)) return isRowMap(rows) ? rows : {}
-  if (isRowMap(rows) && trimmed in rows) return rows
-  return { ...(isRowMap(rows) ? rows : {}), [trimmed]: {} }
-}
-
-/** Remove the row under `key`; unknown keys return the table unchanged. */
-export function removePriceRow(rows, key) {
-  const table = isRowMap(rows) ? { ...rows } : {}
-  delete table[key]
-  return table
-}
-
-/**
- * Patch one bucket of one row. Mid-state friendly: the row is kept as-is
- * (never normalized) so half-typed numbers survive re-renders; empty input
- * deletes the bucket so optional buckets can return to "unpriced".
- */
-export function updatePriceRow(rows, key, bucket, value) {
-  const table = isRowMap(rows) ? { ...rows } : {}
-  const row = isRowMap(table[key]) ? { ...table[key] } : {}
-  if (value === '' || value === undefined || value === null) delete row[bucket]
-  else row[bucket] = value
-  table[key] = row
-  return table
-}

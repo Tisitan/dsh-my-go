@@ -36,11 +36,29 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var client_exports = {};
 __export(client_exports, {
   apply: () => apply,
+  createCatalogStore: () => createCatalogStore,
   inject: () => inject,
   name: () => name
 });
 module.exports = __toCommonJS(client_exports);
-var React7 = __toESM(require("react"), 1);
+var React6 = __toESM(require("react"), 1);
+
+// preset/shared/constants.mjs
+var ROLE_KEY_PATTERN = /^[a-z][a-z-]*$/;
+var PRICE_KEY_PATTERN = /^[^/]+\/.+/;
+var SETTINGS_NAMESPACE = "dsh-my-go";
+var PANEL_RPC_CHANNEL = `/${SETTINGS_NAMESPACE}`;
+var PANEL_ENDPOINTS = Object.freeze({
+  snapshot: "snapshot",
+  listTools: "listTools",
+  getBuiltinPersona: "getBuiltinPersona",
+  getUsage: "getUsage"
+});
+var PRICE_REQUIRED_BUCKETS = ["input", "output"];
+var PRICE_OPTIONAL_BUCKETS = ["cacheRead", "cacheWrite"];
+var PRICE_BUCKETS = [...PRICE_REQUIRED_BUCKETS, ...PRICE_OPTIONAL_BUCKETS];
+var PRICE_BUCKET_LABELS = Object.freeze({ input: "\u8F93\u5165", output: "\u8F93\u51FA", cacheRead: "\u7F13\u5B58\u8BFB\u53D6", cacheWrite: "\u7F13\u5B58\u5199\u5165" });
+var LEGACY_PARENT_ID = "legacy";
 
 // src/panel-tree.js
 var React2 = __toESM(require("react"), 1);
@@ -85,7 +103,7 @@ function extractFallbackNote(conclusion) {
 var React = __toESM(require("react"), 1);
 
 // src/client-constants.js
-var AGENT_TYPES = ["sisyphus", "hermes", "explore", "librarian", "looker", "hephaestus", "prometheus", "oracle"];
+var AGENT_TYPES = ["sisyphus", "hermes", "explore", "librarian", "looker", "hephaestus", "prometheus", "oracle", "apelles"];
 var AGENT_LABELS = {
   sisyphus: "\u603B\u8C03\u5EA6\xB7\u8D28\u68C0 Sisyphus",
   hermes: "\u5FEB\u901F\u6267\u884C Hermes",
@@ -93,8 +111,9 @@ var AGENT_LABELS = {
   librarian: "\u6587\u6863\u67E5\u8BE2 Librarian",
   looker: "\u591A\u6A21\u6001\u770B\u56FE Looker",
   hephaestus: "\u4EE3\u7801\u7F16\u5199 Hephaestus",
-  prometheus: "\u9700\u6C42\u89C4\u5212 Prometheus",
-  oracle: "\u7591\u96BE/\u6781\u7AEF\u590D\u6742\u515C\u5E95 Oracle"
+  prometheus: "\u7D20\u6750\u5206\u6790 Prometheus",
+  oracle: "\u7591\u96BE/\u6781\u7AEF\u590D\u6742\u515C\u5E95 Oracle",
+  apelles: "\u53EF\u89C6\u5316\u753B\u5E08 Apelles"
 };
 var typeLabel = (t) => AGENT_LABELS[t] ?? String(t ?? "?");
 var AGENT_COLORS = {
@@ -105,17 +124,8 @@ var AGENT_COLORS = {
   looker: "#ba68c8",
   hephaestus: "#ffb74d",
   prometheus: "#7986cb",
-  oracle: "#e57373"
-};
-var AGENT_BLURBS = {
-  sisyphus: "\u63A5\u9700\u6C42\u3001\u6D3E\u6D3B\u3001\u9A8C\u6536\u628A\u5173",
-  hermes: "\u6307\u4EE4\u660E\u786E\u3001\u6B65\u9AA4\u5177\u4F53\u7684\u4F53\u529B\u6D3B",
-  explore: "grep\u3001\u8BFB\u6587\u4EF6\u3001\u5B9A\u4F4D\u7B26\u53F7",
-  librarian: "\u8BFB\u6587\u6863\u3001API \u53C2\u8003\u3001\u5386\u53F2\u8D44\u6599",
-  looker: "\u8BC6\u522B\u622A\u56FE\u3001\u8BBE\u8BA1\u7A3F\u3001\u56FE\u8868",
-  hephaestus: "\u5355\u6587\u4EF6\u91CD\u6784\u3001\u6A21\u5757\u5B9E\u73B0\u3001\u5199\u6D4B\u8BD5",
-  prometheus: "\u7406\u89E3\u6A21\u7CCA\u9700\u6C42\uFF0C\u62C6\u89E3\u6210\u6B65\u9AA4",
-  oracle: "\u5176\u4ED6\u5DE5\u79CD\u90FD\u641E\u4E0D\u5B9A\u65F6\u518D\u4E0A"
+  oracle: "#e57373",
+  apelles: "#f06292"
 };
 var typeName = (t) => {
   const s = String(t ?? "?");
@@ -126,7 +136,7 @@ var ACCENT_QUEUE = "#e6a23c";
 var ACCENT_HELP = "#ef5350";
 var ACCENT_FALLBACK = "#ce93d8";
 var MONO_FONT = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-var INTENT_LABELS = { explore: "\u68C0\u7D22", read_doc: "\u67E5\u6587\u6863", look_image: "\u770B\u56FE", replan: "\u8BF7\u6C42\u6362\u5DE5\u79CD", execute: "\u8BF7\u6C42\u4EE3\u6267\u884C", ask_user: "\u8BF7\u6C42\u95EE\u7528\u6237" };
+var INTENT_LABELS = { explore: "\u68C0\u7D22", read_doc: "\u67E5\u6587\u6863", look_image: "\u770B\u56FE", replan: "\u8BF7\u6C42\u6362\u5DE5\u79CD", execute: "\u8BF7\u6C42\u4EE3\u6267\u884C", ask_user: "\u8BF7\u6C42\u95EE\u7528\u6237", consult: "\u65B9\u6848\u51B2\u7A81\u8BF7\u793A" };
 var intentLabel = (i) => INTENT_LABELS[i] ?? String(i ?? "?");
 
 // src/usage-views.js
@@ -215,9 +225,9 @@ function formatFullTokens(n) {
   return typeof n === "number" && Number.isFinite(n) ? n.toLocaleString("en-US") : null;
 }
 function formatBucketCell(tokens, partial) {
-  const text = formatCompactTokens(tokens);
-  if (text === null) return "\u2014";
-  return partial ? `\u2265${text}` : text;
+  const text2 = formatCompactTokens(tokens);
+  if (text2 === null) return "\u2014";
+  return partial ? `\u2265${text2}` : text2;
 }
 function currencySymbol(currency) {
   return currency === "CNY" ? "\xA5" : "$";
@@ -229,7 +239,7 @@ function formatCost(cost, currency = "USD") {
 function usageSessionTarget(currentPid, parents) {
   if (typeof currentPid === "string" && currentPid !== "") return currentPid;
   const values = parents && typeof parents === "object" ? Object.values(parents) : [];
-  const real = values.filter((p) => p && typeof p.parentSessionId === "string" && p.parentSessionId !== "" && p.parentSessionId !== "legacy");
+  const real = values.filter((p) => p && typeof p.parentSessionId === "string" && p.parentSessionId !== "" && p.parentSessionId !== LEGACY_PARENT_ID);
   return real.length === 1 ? real[0].parentSessionId : null;
 }
 function sessionsListPhase(sessions) {
@@ -310,7 +320,7 @@ function UsageSection({ usage, open, onToggle }) {
   const costColumn = hasAnyPrice(report?.byModel);
   const partial = globalPartial(report);
   const toggleChild = (childId) => setExpanded((prev) => ({ ...prev, [childId]: !prev[childId] }));
-  const chip = (text, title, color) => React.createElement("span", {
+  const chip = (text2, title, color) => React.createElement("span", {
     title,
     style: {
       flexShrink: 0,
@@ -326,7 +336,7 @@ function UsageSection({ usage, open, onToggle }) {
       color: color ?? "#9e9e9e",
       background: color ? `${color}22` : "rgba(255,255,255,0.07)"
     }
-  }, text);
+  }, text2);
   const typeChip = (agentType) => chip(
     typeName(agentType),
     typeLabel(agentType),
@@ -346,7 +356,7 @@ function UsageSection({ usage, open, onToggle }) {
     }, formatBucketCell(tokens, rowPartial));
   };
   const costCell = (cost) => {
-    const text = formatCost(cost, report?.currency);
+    const text2 = formatCost(cost, report?.currency);
     return React.createElement("span", {
       title: cost ? `\u7CBE\u786E\u503C ${costSymbol}${cost.value.toFixed(6)}${cost.partial ? "\uFF08\u542B\u672A\u5B9A\u4EF7/\u672A\u4E0A\u62A5\u6876\uFF0C\u4E3A\u4E0B\u754C\uFF09" : ""}` : "\u672A\u5B9A\u4EF7\uFF08\u4E0D\u8BB0\u5F55\u6210\u672C\uFF09",
       style: {
@@ -354,20 +364,20 @@ function UsageSection({ usage, open, onToggle }) {
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
-        color: text === null ? "#666" : "#c8c8c8"
+        color: text2 === null ? "#666" : "#c8c8c8"
       }
-    }, text ?? "\u2014");
+    }, text2 ?? "\u2014");
   };
-  const nameCell = (text, title) => React.createElement("span", {
+  const nameCell = (text2, title) => React.createElement("span", {
     title,
     style: {
       minWidth: 0,
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
-      color: text === "\u672A\u77E5\u6A21\u578B" ? "#777" : "#c8c8c8"
+      color: text2 === "\u672A\u77E5\u6A21\u578B" ? "#777" : "#c8c8c8"
     }
-  }, text);
+  }, text2);
   const gridRow = (columns, key, opts = {}, ...children) => React.createElement("div", {
     key,
     onClick: opts.onClick,
@@ -665,7 +675,7 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
     }
     pollInFlight = true;
     try {
-      const res = await connection.rpc.call("/dsh-my-go", "snapshot", {});
+      const res = await connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.snapshot, {});
       if (res && res.ok) {
         const next = res.value;
         const firstFrame = !snapshotLoaded;
@@ -706,7 +716,7 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
         usage = { state: "loading", report: null, detail: "" };
         emit();
       }
-      const res = await connection.rpc.call("/dsh-my-go", "getUsage", { parentSessionId: pid });
+      const res = await connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.getUsage, { parentSessionId: pid });
       if (res && res.ok) {
         usage = { state: "ok", report: res.value, detail: "" };
       } else {
@@ -764,10 +774,10 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
     if (!panelOpen) return null;
     const s = snapshot;
     const parents = s.parents && typeof s.parents === "object" ? s.parents : {};
-    const parentList = Object.values(parents).filter((p) => p && p.parentSessionId !== "legacy");
+    const parentList = Object.values(parents).filter((p) => p && p.parentSessionId !== LEGACY_PARENT_ID);
     const multi = parentList.length > 1;
-    const chip = (text, full, color) => React2.createElement("span", {
-      title: full ?? text,
+    const chip = (text2, full, color) => React2.createElement("span", {
+      title: full ?? text2,
       style: {
         flexShrink: 0,
         maxWidth: 110,
@@ -782,7 +792,7 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
         color: color ?? "#9e9e9e",
         background: color ? `${color}22` : "rgba(255,255,255,0.07)"
       }
-    }, text);
+    }, text2);
     const typeChip = (t) => React2.createElement("span", {
       title: typeLabel(t),
       style: {
@@ -819,10 +829,10 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
       React2.createElement("span", { style: { flexShrink: 0, width: 14, textAlign: "center", color: opts.glyphColor } }, opts.glyph),
       ...cells
     );
-    const tail = (text, title) => React2.createElement("span", {
+    const tail = (text2, title) => React2.createElement("span", {
       title,
       style: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#a0a0a0", fontSize: 12 }
-    }, text);
+    }, text2);
     const jump = (childId, parentSessionId) => {
       if (sessions && typeof sessions.openSubagent === "function") {
         sessions.openSubagent({ parentSessionId: parentSessionId ?? "", childSessionId: childId, mode: "continuable" });
@@ -938,7 +948,7 @@ ${h.childId}` : intentLabel(h.intent)
         null,
         sectionHeader("\u5386\u53F2", Math.min(8, histories.length), "\u4EC5\u663E\u793A\u6700\u8FD1 8 \u6761\u7ED3\u8BBA"),
         histories.slice(-8).map((r, i) => {
-          const { note, text } = extractFallbackNote(r.conclusion);
+          const { note, text: text2 } = extractFallbackNote(r.conclusion);
           const rel = formatRelativeTime(r.updatedAt);
           const ts = Number(r.updatedAt);
           const abs = Number.isFinite(ts) && ts > 0 ? new Date(ts).toLocaleString() : null;
@@ -953,7 +963,7 @@ ${h.childId}` : intentLabel(h.intent)
             typeChip(r.agentType),
             suffixChip(r.parentSessionId),
             note ? chip(note, `${note}\uFF08\u5907\u9009\u94FE\u81EA\u52A8\u91CD\u6D3E\uFF09`, ACCENT_FALLBACK) : null,
-            tail(text, title),
+            tail(text2, title),
             rel ? React2.createElement("span", { style: { flexShrink: 0, color: "#777", fontSize: 11 } }, rel) : null
           );
         })
@@ -1094,7 +1104,7 @@ ${h.childId}` : intentLabel(h.intent)
 }
 
 // src/settings-core.js
-var React6 = __toESM(require("react"), 1);
+var React5 = __toESM(require("react"), 1);
 
 // src/chain-rows.js
 function normalizeChainRows(value) {
@@ -1173,8 +1183,338 @@ function updateChainEntry(chain, index, field, value) {
   });
 }
 
+// src/client-styles.js
+var SETTINGS_CSS = `
+.mygo-config {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary, #ddd);
+}
+.mygo-intro {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #999);
+  overflow-wrap: anywhere;
+}
+.mygo-notice,
+.mygo-blocked {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, #444);
+  background: var(--dsw-alias-bg-layer-1, #232323);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.mygo-noticeWarn {
+  border-color: rgba(230, 162, 60, 0.45);
+}
+.mygo-noticeError {
+  border-color: var(--dsw-alias-state-error-primary, #f44336);
+}
+.mygo-block {
+  border: 1px solid var(--dsw-alias-border-l1, #333);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--dsw-alias-bg-layer-1, #1f1f1f);
+}
+.mygo-blockHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.mygo-blockTitle {
+  font-size: 13px;
+  font-weight: 600;
+}
+.mygo-blockHint {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, #777);
+  overflow-wrap: anywhere;
+}
+.mygo-count {
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08));
+  color: var(--dsw-alias-label-secondary, #999);
+}
+.mygo-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.mygo-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.mygo-colHead,
+.mygo-colFoot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mygo-colFoot {
+  margin-top: 2px;
+}
+.mygo-list {
+  height: 252px;
+  overflow-y: auto;
+  border: 1px solid var(--dsw-alias-border-l1, #333);
+  border-radius: 6px;
+  padding: 2px;
+  background: var(--dsw-alias-bg-layer-2, #1a1a1a);
+}
+.mygo-listRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.mygo-listRow[data-selected='true'] {
+  background: var(--dsw-alias-interactive-bg-active, rgba(47, 111, 237, 0.18));
+}
+.mygo-rowName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.mygo-rowMeta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, #777);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mygo-rowBadge {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--dsw-alias-border-l2, #444);
+  color: var(--dsw-alias-label-secondary, #999);
+}
+.mygo-rowBadge[data-tone='on'] {
+  border-color: var(--dsw-alias-state-success-primary, #4caf50);
+  color: var(--dsw-alias-state-success-primary, #4caf50);
+}
+.mygo-rowBadge[data-tone='warn'] {
+  border-color: rgba(230, 162, 60, 0.6);
+  color: #e6a23c;
+}
+.mygo-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.mygo-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mygo-fieldWide {
+  grid-column: 1 / -1;
+}
+.mygo-label {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, #999);
+}
+.mygo-hint {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, #777);
+  overflow-wrap: anywhere;
+}
+.mygo-input,
+.mygo-select,
+.mygo-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--dsw-alias-border-l2, #444);
+  background: var(--dsw-alias-bg-layer-2, #161616);
+  color: var(--dsw-alias-label-primary, #ddd);
+  font-size: 12px;
+  font-family: inherit;
+}
+.mygo-inputMono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mygo-textarea {
+  min-height: 60px;
+  resize: vertical;
+}
+.mygo-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.mygo-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mygo-chainRow {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) minmax(0, 1fr) 70px;
+  gap: 6px;
+  align-items: center;
+}
+.mygo-chainIndex {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, #999);
+}
+.mygo-chainActors {
+  display: flex;
+  gap: 4px;
+}
+.mygo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mygo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.07));
+  color: var(--dsw-alias-label-secondary, #999);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.mygo-chipName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mygo-chipKill {
+  cursor: pointer;
+  color: var(--dsw-alias-state-error-primary, #e57373);
+  flex-shrink: 0;
+}
+.mygo-detail {
+  min-height: 62px;
+  max-height: 124px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px dashed var(--dsw-alias-border-l2, #444);
+  background: var(--dsw-alias-bg-layer-2, #1a1a1a);
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, #999);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mygo-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, #777);
+}
+.mygo-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mygo-btn,
+.mygo-btnPrimary {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 5px;
+  border: 1px solid var(--dsw-alias-border-l2, #444);
+  background: var(--dsw-alias-button-tool-bar-fill, transparent);
+  color: var(--dsw-alias-label-primary, #ddd);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.mygo-btnPrimary {
+  background: var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, #2f6fed));
+  border-color: transparent;
+  color: var(--dsw-alias-label-primary-foreground, #111);
+  font-weight: 600;
+}
+.mygo-btnMini {
+  height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+.mygo-btn:disabled,
+.mygo-btnPrimary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.mygo-status {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary, #777);
+  overflow-wrap: anywhere;
+}
+.mygo-statusOk {
+  font-size: 12px;
+  color: var(--dsw-alias-state-success-primary, #4caf50);
+  overflow-wrap: anywhere;
+}
+.mygo-statusError {
+  font-size: 12px;
+  color: var(--dsw-alias-state-error-primary, #f44336);
+  overflow-wrap: anywhere;
+}
+.mygo-summary {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #999);
+  overflow-wrap: anywhere;
+}
+`;
+var STYLE_TAG = "dsh-my-go/settings.css";
+function mountSettingsStyles() {
+  if (typeof document === "undefined" || typeof document.querySelector !== "function") return () => {
+  };
+  const existing = document.querySelector(`style[data-plugin-css="${STYLE_TAG}"]`);
+  if (existing !== null && existing !== void 0) return () => {
+  };
+  const tag = document.createElement("style");
+  tag.setAttribute("data-plugin", "dsh-my-go");
+  tag.setAttribute("data-plugin-css", STYLE_TAG);
+  tag.textContent = SETTINGS_CSS;
+  document.head.appendChild(tag);
+  return () => {
+    if (tag.isConnected === false) return;
+    tag.remove();
+  };
+}
+
 // src/roster-rows.js
-var ROLE_KEY_PATTERN = /^[a-z][a-z-]*$/;
 function isValidRoleKey(key) {
   return typeof key === "string" && ROLE_KEY_PATTERN.test(key);
 }
@@ -1204,100 +1544,9 @@ function normalizeRoleRows(value, builtinKeys = []) {
     deny: normalizeNameList(row.toolFilter?.deny)
   }));
 }
-function mergeRoleRowsIntoRoles(oldRoles, nextRows, builtinKeys = []) {
-  const source = oldRoles && typeof oldRoles === "object" ? oldRoles : {};
-  const builtin = new Set(Array.isArray(builtinKeys) ? builtinKeys : []);
-  const builtinPart = {};
-  for (const key of Object.keys(source)) {
-    if (builtin.has(key) && source[key] && typeof source[key] === "object") builtinPart[key] = source[key];
-  }
-  const touchedKeys = new Set(nextRows.map((row) => row.key));
-  const dirtyPart = {};
-  for (const key of Object.keys(source)) {
-    if (builtin.has(key) || touchedKeys.has(key)) continue;
-    if (isValidRoleKey(key) && source[key] !== null && typeof source[key] === "object") continue;
-    dirtyPart[key] = source[key];
-  }
-  const customPart = {};
-  for (const row of nextRows) {
-    customPart[row.key] = {
-      provider: row.provider,
-      model: row.model,
-      reasoningEffort: row.reasoningEffort,
-      dsv4p0813: row.dsv4p0813,
-      fallbacks: row.fallbacks,
-      persona: row.persona,
-      toolFilter: { allow: row.allow, deny: row.deny }
-    };
-  }
-  return { ...builtinPart, ...dirtyPart, ...customPart };
-}
-function addRoleRow(rows, key) {
-  if (!isValidRoleKey(key)) return rows;
-  if (rows.some((row) => row.key === key)) return rows;
-  return [...rows, { key, provider: "", model: "", reasoningEffort: "", dsv4p0813: false, fallbacks: [], persona: "", allow: [], deny: [] }];
-}
-function removeRoleRow(rows, key) {
-  return rows.filter((row) => row.key !== key);
-}
-var ROLE_FIELDS = /* @__PURE__ */ new Set(["provider", "model", "reasoningEffort", "dsv4p0813", "persona", "fallbacks", "allow", "deny"]);
-function updateRoleRow(rows, key, field, value) {
-  if (!ROLE_FIELDS.has(field)) return rows;
-  return rows.map((row) => {
-    if (row.key !== key) return row;
-    if (field === "provider") {
-      return { ...row, provider: typeof value === "string" ? value : "", model: "" };
-    }
-    if (field === "dsv4p0813") {
-      return { ...row, dsv4p0813: value === true };
-    }
-    if (field === "fallbacks" || field === "allow" || field === "deny") {
-      return { ...row, [field]: Array.isArray(value) ? value : [] };
-    }
-    return { ...row, [field]: typeof value === "string" ? value : "" };
-  });
-}
-function addRoleToolEntry(rows, key, side, name2) {
-  if (side !== "allow" && side !== "deny") return rows;
-  if (typeof name2 !== "string" || name2.trim() === "") return rows;
-  const clean = name2.trim();
-  return rows.map((row) => {
-    if (row.key !== key || row[side].includes(clean)) return row;
-    return { ...row, [side]: [...row[side], clean] };
-  });
-}
-function removeRoleToolEntry(rows, key, side, index) {
-  if (side !== "allow" && side !== "deny") return rows;
-  return rows.map((row) => {
-    if (row.key !== key || !Number.isInteger(index) || index < 0 || index >= row[side].length) return row;
-    return { ...row, [side]: row[side].filter((_, i) => i !== index) };
-  });
-}
-function roleSummaryText(row) {
-  const model = row.provider && row.model ? `${row.provider}\xB7${row.model}` : row.model ? `?\xB7${row.model}` : row.provider ? `${row.provider}\xB7\u8DDF\u968F\u73AF\u5883` : "\u8DDF\u968F\u73AF\u5883";
-  const chain = Array.isArray(row.fallbacks) ? row.fallbacks.length : 0;
-  let tf = "\u5168\u91CF\uFF08\u9664\u5168\u5C40\u63A9\u7801\uFF09";
-  if (row.allow.length > 0 || row.deny.length > 0) {
-    const parts = [];
-    if (row.allow.length > 0) parts.push(`\u4EC5 ${row.allow.join(", ")}`);
-    if (row.deny.length > 0) parts.push(`\u9664 ${row.deny.join(", ")}`);
-    tf = parts.join("\uFF1B");
-  }
-  const personaFirstLine = row.persona.split("\n").map((s) => s.trim()).find(Boolean) ?? "";
-  return `${model} | \u5907\u9009${chain} | ${tf}${personaFirstLine ? ` | ${personaFirstLine.slice(0, 60)}` : ""}`;
-}
-function builtinSummaryText(cfg) {
-  const row = cfg && typeof cfg === "object" ? cfg : {};
-  const provider = typeof row.provider === "string" ? row.provider : "";
-  const model = typeof row.model === "string" ? row.model : "";
-  const binding = provider && model ? `${provider}\xB7${model}` : provider ? `${provider}\xB7\u8DDF\u968F Sisyphus` : model ? `\u8DDF\u968F Sisyphus\xB7${model}` : "\u8DDF\u968F Sisyphus";
-  const effort = typeof row.reasoningEffort === "string" && row.reasoningEffort !== "" ? row.reasoningEffort : "\u8DDF\u968F\u6A21\u578B\u9ED8\u8BA4";
-  const chain = Array.isArray(row.fallbacks) ? row.fallbacks.length : 0;
-  return `${binding} | ${effort} | \u5907\u9009 ${chain} \u6761`;
-}
-function withPersonaOverride(existingRow, text) {
+function withPersonaOverride(existingRow, text2) {
   const base = existingRow && typeof existingRow === "object" && !Array.isArray(existingRow) ? existingRow : {};
-  return { ...base, persona: typeof text === "string" ? text : "" };
+  return { ...base, persona: typeof text2 === "string" ? text2 : "" };
 }
 function personaOverrideSource(existingRow) {
   const hasOverride = existingRow !== null && typeof existingRow === "object" && typeof existingRow.persona === "string" && existingRow.persona.length > 0;
@@ -1309,75 +1558,26 @@ function resolveBuiltinPersonaResult(res) {
   const message = typeof res?.error?.message === "string" && res.error.message !== "" ? res.error.message : "\u4EBA\u8BBE\u6587\u4EF6\u8BFB\u53D6\u5931\u8D25";
   return { ok: false, message };
 }
-function buildRoleCardJson(row) {
-  if (!row || typeof row !== "object") return "{}";
-  return JSON.stringify({
-    key: typeof row.key === "string" ? row.key : "",
-    provider: row.provider ?? "",
-    model: row.model ?? "",
-    reasoningEffort: row.reasoningEffort ?? "",
-    dsv4p0813: row.dsv4p0813 === true,
-    fallbacks: Array.isArray(row.fallbacks) ? row.fallbacks : [],
-    persona: row.persona ?? "",
-    toolFilter: { allow: Array.isArray(row.allow) ? row.allow : [], deny: Array.isArray(row.deny) ? row.deny : [] }
-  }, null, 2);
-}
-function parseRoleCardJson(text, existingKeys = []) {
-  const fail = (error) => ({ ok: false, error });
-  let raw;
-  try {
-    raw = JSON.parse(typeof text === "string" ? text : "");
-  } catch {
-    return fail("\u4E0D\u662F\u5408\u6CD5 JSON");
-  }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail("\u9876\u5C42\u5FC5\u987B\u662F JSON \u5BF9\u8C61");
-  const key = typeof raw.key === "string" ? raw.key : "";
-  if (!isValidRoleKey(key)) return fail(`key \u4E0D\u5408\u6CD5\uFF1A\u987B\u5C0F\u5199\u5B57\u6BCD\u5F00\u5934\u3001\u53EA\u542B\u5C0F\u5199\u4E0E\u8FDE\u5B57\u7B26\uFF08\u6536\u5230 ${JSON.stringify(raw.key ?? null)}\uFF09`);
-  if (existingKeys.includes(key)) return fail(`key\u300C${key}\u300D\u5DF2\u5B58\u5728\uFF08\u5185\u7F6E\u5DE5\u79CD\u6216\u5DF2\u6709\u81EA\u5B9A\u4E49\u89D2\u8272\u4E0D\u53EF\u8986\u76D6\uFF0C\u5148\u5220\u9664\u518D\u5BFC\u5165\uFF09`);
-  const fallbacks = Array.isArray(raw.fallbacks) ? raw.fallbacks.filter((e) => e !== null && typeof e === "object" && typeof e.provider === "string" && typeof e.model === "string") : [];
-  const filter = raw.toolFilter !== null && typeof raw.toolFilter === "object" ? raw.toolFilter : {};
-  const names = (v) => Array.isArray(v) ? [...new Set(v.filter((n) => typeof n === "string" && n !== ""))] : [];
-  return {
-    ok: true,
-    row: {
-      key,
-      provider: typeof raw.provider === "string" ? raw.provider : "",
-      model: typeof raw.model === "string" ? raw.model : "",
-      reasoningEffort: typeof raw.reasoningEffort === "string" ? raw.reasoningEffort : "",
-      dsv4p0813: raw.dsv4p0813 === true,
-      fallbacks,
-      persona: typeof raw.persona === "string" ? raw.persona : "",
-      allow: names(filter.allow),
-      deny: names(filter.deny)
-    }
-  };
-}
 
 // src/settings-guard.js
-function isConflictError(error) {
-  return !!error && (error.code === "conflict" || error.code === "SETTINGS_CONFLICT");
-}
-function interpretLoadResult(res) {
-  if (!res || res.ok !== true || !res.value || typeof res.value !== "object" || Array.isArray(res.value)) {
-    return { status: "failed", draft: null, revision: null };
+var LOADING_HINT = "\u6B63\u5728\u8BFB\u53D6\u5BBF\u4E3B\u91CC\u7684 dsh-my-go \u914D\u7F6E\u2026";
+var UNAVAILABLE_HINT = "dsh-my-go \u8BBE\u7F6E\u547D\u540D\u7A7A\u95F4\u4E0D\u53EF\u7528\uFF08\u63D2\u4EF6\u672A\u542F\u7528\u3001\u5BBF\u4E3B\u672A\u63D0\u4F9B\u8BBE\u7F6E\u670D\u52A1\uFF0C\u6216\u8BFB\u53D6\u5931\u8D25\uFF09\u3002";
+var MEMORY_HINT = "\u5F53\u524D\u9875\u9762\u6309\u8FDB\u7A0B\u5185\u5185\u5B58\u6863\u6253\u5F00\uFF08\u975E\u672C\u673A\u56DE\u73AF\u8BBF\u95EE\uFF09\uFF0C\u8BBE\u7F6E\u53EA\u8BFB\uFF1A\u8BF7\u6539\u7528 http://127.0.0.1 \u6253\u5F00\u5BBF\u4E3B\uFF0C\u6216\u76F4\u63A5\u7F16\u8F91 settings.yaml\u3002";
+function resolveCardView(snapshot) {
+  if (snapshot === null || snapshot === void 0 || snapshot.status === "loading") {
+    return { kind: "loading", hint: LOADING_HINT, retryable: false };
   }
-  const { revision, ...draft } = res.value;
+  if (snapshot.mode === "memory") return { kind: "unavailable", hint: MEMORY_HINT, retryable: false };
+  if (snapshot.status !== "ready") return { kind: "unavailable", hint: UNAVAILABLE_HINT, retryable: true };
+  return { kind: "ready", hint: "", retryable: false };
+}
+function describeSaveOutcome(landed, revision) {
+  const at = typeof revision === "number" ? ` \xB7 r${revision}` : "";
+  if (landed) return { ok: true, text: `\u5DF2\u4FDD\u5B58\uFF0C\u914D\u7F6E\u5373\u65F6\u751F\u6548${at}` };
   return {
-    status: "ok",
-    draft,
-    revision: typeof revision === "number" && Number.isFinite(revision) ? revision : null
+    ok: false,
+    text: `\u6CA1\u843D\u76D8\uFF1A\u5BBF\u4E3B\u62D2\u7EDD\u4E86\u8FD9\u6B21\u5199\u5165\uFF08\u6821\u9A8C\u4E0D\u8FC7\uFF0C\u6216\u4ED6\u5904\u521A\u6539\u8FC7\u8FD9\u4E00\u547D\u540D\u7A7A\u95F4\uFF09\uFF0C\u8BF7\u4E22\u5F03\u8349\u7A3F\u5E76\u91CD\u8BFB${at}`
   };
-}
-function interpretSaveResult(res) {
-  const revision = res && res.ok && res.value && typeof res.value === "object" && typeof res.value.revision === "number" ? res.value.revision : null;
-  if (res && res.ok) return { status: "saved", message: "\u5DF2\u4FDD\u5B58", revision };
-  const error = res && res.error ? res.error : null;
-  if (isConflictError(error)) {
-    const details = error.details && typeof error.details === "object" ? error.details : {};
-    const moved = typeof details.actual === "number" ? `\uFF08\u4ED6\u5904\u5DF2\u6539\u5230 r${details.actual}\uFF09` : "";
-    return { status: "conflict", message: `\u4ED6\u5904\u5DF2\u4FEE\u6539\uFF0C\u8BF7\u91CD\u65B0\u52A0\u8F7D${moved}`, revision: null };
-  }
-  return { status: "failed", message: "\u4FDD\u5B58\u5931\u8D25: " + (error && error.message || "\u672A\u77E5\u9519\u8BEF"), revision: null };
 }
 function attachBeforeUnloadGuard(win) {
   if (!win || typeof win.addEventListener !== "function") return () => {
@@ -1393,497 +1593,7 @@ function attachBeforeUnloadGuard(win) {
   };
 }
 
-// src/roles-editor.js
-var React3 = __toESM(require("react"), 1);
-function renderRolesEditor(deps) {
-  const {
-    draft,
-    setDraft,
-    newRoleKey,
-    setNewRoleKey,
-    roleToolDrafts,
-    setRoleToolDrafts,
-    importError,
-    setImportError,
-    openCards,
-    setOpenCards,
-    EFFORTS,
-    effortLabel,
-    makeSelect,
-    renderChainEditor,
-    styles
-  } = deps;
-  const { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle, rowStyle } = styles;
-  const roleRows = normalizeRoleRows(draft?.roles, AGENT_TYPES);
-  const applyRoleRows = (nextRows) => {
-    setDraft((prev) => {
-      if (!prev) return prev;
-      return { ...prev, roles: mergeRoleRowsIntoRoles(prev.roles, nextRows, AGENT_TYPES) };
-    });
-  };
-  const editRole = (key, mutate) => {
-    if (!draft) return;
-    applyRoleRows(mutate(roleRows));
-  };
-  const createRole = () => {
-    if (!draft) return;
-    const key = newRoleKey.trim();
-    if (!isValidRoleKey(key)) return;
-    if (AGENT_TYPES.includes(key)) return;
-    if (roleRows.some((row) => row.key === key)) return;
-    if (draft?.roles && typeof draft.roles === "object" && draft.roles[key]) return;
-    applyRoleRows(addRoleRow(roleRows, key));
-    setNewRoleKey("");
-    setOpenCards((prev) => ({ ...prev, [key]: true }));
-  };
-  const roleToolDraft = (key, side) => roleToolDrafts?.[key]?.[side] ?? "";
-  const setRoleToolDraft = (key, side, value) => {
-    setRoleToolDrafts((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: value } }));
-  };
-  const exportRole = async (row) => {
-    const json = buildRoleCardJson(row);
-    try {
-      await navigator.clipboard.writeText(json);
-    } catch {
-      window.prompt("\u526A\u8D34\u677F\u4E0D\u53EF\u7528\uFF0C\u8BF7\u624B\u52A8\u590D\u5236\u8BE5\u89D2\u8272 JSON\uFF1A", json);
-    }
-  };
-  const importRole = () => {
-    if (!draft) return;
-    const text = window.prompt("\u7C98\u8D34\u89D2\u8272 JSON\uFF08\u53EF\u5148\u5728\u522B\u5904\u5BFC\u51FA\uFF0C\u6539 key \u540E\u5BFC\u5165\uFF09\uFF1A");
-    if (text === null || text.trim() === "") return;
-    const existingKeys = [...AGENT_TYPES, ...roleRows.map((row) => row.key)];
-    const parsed = parseRoleCardJson(text, existingKeys);
-    if (!parsed.ok) {
-      setImportError(parsed.error);
-      return;
-    }
-    setImportError("");
-    applyRoleRows([...roleRows, parsed.row]);
-  };
-  const renderRoleToolList = (row, side) => {
-    const names = row[side];
-    const draftValue = roleToolDraft(row.key, side);
-    const listId = `role-tf-${row.key}-${side}`;
-    return React3.createElement(
-      "div",
-      null,
-      React3.createElement("div", { style: labelStyle }, side === "allow" ? "\u5DE5\u5177\u767D\u540D\u5355\uFF08allow\uFF09" : "\u5DE5\u5177\u9ED1\u540D\u5355\uFF08deny\uFF09"),
-      names.length === 0 ? React3.createElement("div", { style: hintStyle }, side === "allow" ? "\uFF08\u7A7A = \u5168\u91CF\uFF0C\u9664\u5168\u5C40\u63A9\u7801\uFF09" : "\uFF08\u7A7A = \u4E0D\u989D\u5916\u5C4F\u853D\uFF09") : React3.createElement(
-        "div",
-        { style: { display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 4 } },
-        names.map((name2, i) => React3.createElement(
-          "span",
-          {
-            key: `${row.key}-${side}-${name2}`,
-            title: name2,
-            style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontFamily: MONO_FONT, padding: "1px 6px", borderRadius: 4, background: "rgba(255,255,255,0.07)", color: "#bbb" }
-          },
-          React3.createElement("span", { style: { overflowWrap: "anywhere" } }, name2),
-          React3.createElement("span", {
-            role: "button",
-            title: "\u79FB\u9664",
-            style: { cursor: draft ? "pointer" : "not-allowed", color: "#e57373" },
-            onClick: () => {
-              if (draft) editRole(row.key, (rows) => removeRoleToolEntry(rows, row.key, side, i));
-            }
-          }, "\xD7")
-        ))
-      ),
-      React3.createElement(
-        "div",
-        { style: { display: "flex", gap: 6 } },
-        React3.createElement("input", {
-          value: draftValue,
-          list: listId,
-          placeholder: "\u5DE5\u5177\u540D\uFF08\u82B1\u540D\u518C\u53EF\u70B9\u9009\uFF0C\u4E5F\u53EF\u624B\u586B\u672A\u8FDE\u63A5\u5DE5\u5177\uFF09\u2026",
-          disabled: !draft,
-          onChange: (e) => setRoleToolDraft(row.key, side, e.target.value),
-          onKeyDown: (e) => {
-            if (e.key === "Enter" && draftValue.trim() !== "") {
-              editRole(row.key, (rows) => addRoleToolEntry(rows, row.key, side, draftValue.trim()));
-              setRoleToolDraft(row.key, side, "");
-            }
-          },
-          style: { ...selectStyle, fontFamily: MONO_FONT }
-        }),
-        React3.createElement(
-          "datalist",
-          { id: listId },
-          deps.roster.map((name2) => React3.createElement("option", { key: name2, value: name2 }))
-        ),
-        React3.createElement("button", {
-          style: miniBtnStyle,
-          disabled: !draft || draftValue.trim() === "",
-          title: "\u52A0\u5165\u540D\u5355",
-          onClick: () => {
-            editRole(row.key, (rows) => addRoleToolEntry(rows, row.key, side, draftValue.trim()));
-            setRoleToolDraft(row.key, side, "");
-          }
-        }, "+ \u6DFB\u52A0")
-      )
-    );
-  };
-  const toggleCard = (id) => setOpenCards((prev) => ({ ...prev, [id]: !prev[id] }));
-  const cardOpen = (id) => openCards[id] === true;
-  return React3.createElement(
-    "div",
-    { style: cardStyle },
-    React3.createElement(
-      "div",
-      { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 8 } },
-      React3.createElement("span", { style: { fontWeight: 600 } }, "\u81EA\u5B9A\u4E49\u89D2\u8272\uFF08Custom Roles\uFF09"),
-      React3.createElement("span", { style: { fontSize: 12, color: "var(--text-secondary, #888)" } }, "\u53EF\u88AB go_work \u6D3E\u53D1\u7684\u81EA\u5EFA\u89D2\u8272\uFF1A\u72EC\u7ACB\u4EBA\u8BBE\u4E0E\u5DE5\u5177\u9762\uFF0C\u7ECF spawn \u6B63\u7EDF\u901A\u9053\u6CE8\u5165")
-    ),
-    React3.createElement(
-      "div",
-      { style: { ...hintStyle, marginBottom: 8 } },
-      "\u4EBA\u8BBE\u7559\u7A7A = \u5B50\u4EE3\u7406\u4EC5\u5E26\u90E8\u7F72\u57FA\u7840\u4EBA\u8BBE\uFF1B\u5DE5\u5177\u9762\u7559\u7A7A = \u5168\u91CF\uFF08\u9664\u5168\u5C40\u63A9\u7801\uFF09\u3002\u540D\u5B57\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF08\u5220\u9664\u91CD\u5EFA\u5373\u53EF\uFF09\uFF1B\u5185\u7F6E\u516B\u5DE5\u79CD\uFF08\u542B sisyphus\uFF09\u4E0D\u5728\u6B64\u5217\uFF0C\u7528\u4E0A\u65B9\u5361\u7247\u914D\u7F6E\u3002"
-    ),
-    roleRows.length === 0 ? React3.createElement("div", { style: { fontSize: 12, color: "var(--text-secondary, #888)", marginBottom: 8 } }, "\u8FD8\u6CA1\u6709\u81EA\u5B9A\u4E49\u89D2\u8272") : roleRows.map((row) => {
-      const open = cardOpen(`role-${row.key}`);
-      return React3.createElement(
-        "div",
-        { key: `role-${row.key}`, style: { border: "1px solid var(--separator, #333)", borderRadius: 6, padding: 10, marginBottom: 8 } },
-        React3.createElement(
-          "div",
-          {
-            style: { cursor: "pointer", marginBottom: open ? 8 : 0 },
-            onClick: () => toggleCard(`role-${row.key}`)
-          },
-          React3.createElement(
-            "div",
-            { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } },
-            React3.createElement("span", { style: glyphStyle }, open ? "\u25BE" : "\u25B8"),
-            React3.createElement("span", { style: { fontWeight: 600, fontFamily: MONO_FONT } }, row.key),
-            React3.createElement("button", {
-              style: { ...miniBtnStyle, marginLeft: "auto" },
-              title: `\u5BFC\u51FA\u89D2\u8272 ${row.key} \u4E3A JSON \u5E76\u590D\u5236\u5230\u526A\u8D34\u677F`,
-              onClick: (e) => {
-                e.stopPropagation();
-                void exportRole(row);
-              }
-            }, "\u5BFC\u51FA"),
-            React3.createElement("button", {
-              style: miniBtnStyle,
-              title: `\u5220\u9664\u89D2\u8272 ${row.key}\uFF08\u4FDD\u5B58\u540E\u751F\u6548\uFF09`,
-              disabled: !draft,
-              onClick: (e) => {
-                e.stopPropagation();
-                editRole(row.key, (rows) => removeRoleRow(rows, row.key));
-              }
-            }, "\u5220\u9664")
-          ),
-          React3.createElement("div", { style: summaryStyle }, roleSummaryText(row))
-        ),
-        open ? React3.createElement(
-          React3.Fragment,
-          null,
-          // 模型优先级列表（tisitan.19）：主选（#1）与备选链合并编辑，
-          // 与内置工种卡共用 renderChainEditor；写回经 roster-rows 纯函数
-          // （fallbacks 整组替换 → provider（重置 model）→ model 定序写入）
-          renderChainEditor(`role-${row.key}`, row, ({ provider, model, fallbacks }) => editRole(row.key, (rs) => updateRoleRow(updateRoleRow(updateRoleRow(rs, row.key, "fallbacks", fallbacks), row.key, "provider", provider), row.key, "model", model)), !draft),
-          React3.createElement(
-            "div",
-            { style: rowStyle },
-            React3.createElement(
-              "div",
-              null,
-              React3.createElement("div", { style: labelStyle }, "\u601D\u8003\u6863\u4F4D\uFF08Reasoning Effort\uFF09"),
-              makeSelect(row.reasoningEffort, EFFORTS, effortLabel, (v) => editRole(row.key, (rows) => updateRoleRow(rows, row.key, "reasoningEffort", v)), !draft)
-            ),
-            React3.createElement(
-              "div",
-              null,
-              React3.createElement("div", { style: labelStyle }, "DSV4P0813 \u8865\u4E01"),
-              React3.createElement(
-                "label",
-                { style: { display: "flex", alignItems: "center", gap: 6, cursor: draft ? "pointer" : "not-allowed", fontSize: 13, paddingTop: 2 } },
-                React3.createElement("input", { type: "checkbox", checked: row.dsv4p0813 === true, disabled: !draft, onChange: (e) => editRole(row.key, (rows) => updateRoleRow(rows, row.key, "dsv4p0813", e.target.checked)) }),
-                "\u542F\u7528"
-              ),
-              React3.createElement("div", { style: hintStyle }, "\u4E24\u9636\u6BB5\u951A\u5B9A\u4E0A\u4E0B\u6587\u6CE8\u5165\uFF0C\u4E13\u4E3A DeepSeek V4 Pro 0813 \u8C03\u6821\uFF0C\u5176\u4ED6\u6A21\u578B\u52FF\u5F00")
-            )
-          ),
-          React3.createElement(
-            "div",
-            { style: { marginBottom: 8 } },
-            React3.createElement("div", { style: labelStyle }, "\u4EBA\u8BBE\uFF08Persona\uFF09"),
-            React3.createElement("div", { style: hintStyle, marginBottom: 4 }, "\u7ECF spawn \u901A\u9053\u6CE8\u5165\u5B50\u4EE3\u7406\u7CFB\u7EDF\u63D0\u793A\uFF0C\u9996\u884C\u4F5C\u4E3A\u89D2\u8272\u6458\u8981\u5C55\u793A"),
-            React3.createElement("textarea", {
-              value: row.persona,
-              disabled: !draft,
-              rows: 3,
-              placeholder: "\u7559\u7A7A = \u8DDF\u968F\u90E8\u7F72\u57FA\u7840\u4EBA\u8BBE",
-              onChange: (e) => editRole(row.key, (rows) => updateRoleRow(rows, row.key, "persona", e.target.value)),
-              style: { ...selectStyle, resize: "vertical", fontFamily: "inherit" }
-            })
-          ),
-          React3.createElement(
-            "div",
-            { style: rowStyle },
-            renderRoleToolList(row, "allow"),
-            renderRoleToolList(row, "deny")
-          )
-        ) : null
-      );
-    }),
-    React3.createElement(
-      "div",
-      { style: { display: "flex", gap: 8, alignItems: "center" } },
-      React3.createElement("input", {
-        value: newRoleKey,
-        placeholder: "\u65B0\u89D2\u8272\u540D\uFF08\u5C0F\u5199\u5B57\u6BCD\u5F00\u5934\uFF0C\u4EC5\u5C0F\u5199\u4E0E\u8FDE\u5B57\u7B26\uFF0C\u5982 coder-x\uFF09\u2026",
-        disabled: !draft,
-        onChange: (e) => setNewRoleKey(e.target.value),
-        onKeyDown: (e) => {
-          if (e.key === "Enter") createRole();
-        },
-        style: { ...selectStyle, fontFamily: MONO_FONT }
-      }),
-      React3.createElement("button", {
-        style: miniBtnStyle,
-        disabled: !draft || !isValidRoleKey(newRoleKey.trim()) || AGENT_TYPES.includes(newRoleKey.trim()) || newRoleKey.trim() !== "" && (roleRows.some((row) => row.key === newRoleKey.trim()) || draft?.roles && typeof draft.roles === "object" && Boolean(draft.roles[newRoleKey.trim()])),
-        title: "\u521B\u5EFA\u81EA\u5B9A\u4E49\u89D2\u8272",
-        onClick: createRole
-      }, "+ \u65B0\u5EFA\u89D2\u8272"),
-      React3.createElement("button", {
-        style: miniBtnStyle,
-        disabled: !draft,
-        title: "\u4ECE\u7C98\u8D34\u7684\u89D2\u8272 JSON \u5BFC\u5165\uFF08key \u4E0D\u53EF\u4E0E\u5185\u7F6E\u5DE5\u79CD\u6216\u5DF2\u6709\u89D2\u8272\u91CD\u540D\uFF09",
-        onClick: importRole
-      }, "\u5BFC\u5165 JSON")
-    ),
-    importError !== "" ? React3.createElement("div", { style: { fontSize: 12, color: "#f44336", marginTop: 4 } }, `\u5BFC\u5165\u5931\u8D25\uFF1A${importError}`) : null,
-    newRoleKey.trim() !== "" && !isValidRoleKey(newRoleKey.trim()) ? React3.createElement("div", { style: { fontSize: 12, color: "#f44336", marginTop: 4 } }, "\u540D\u5B57\u4E0D\u5408\u6CD5\uFF1A\u987B\u5C0F\u5199\u5B57\u6BCD\u5F00\u5934\uFF0C\u53EA\u542B\u5C0F\u5199\u5B57\u6BCD\u4E0E\u8FDE\u5B57\u7B26\uFF08\u5927\u5199 / \u6570\u5B57 / \u4E0B\u5212\u7EBF\u90FD\u4F1A\u88AB\u4FDD\u5B58\u7AEF schema \u62D2\u7EDD\uFF09") : null,
-    newRoleKey.trim() !== "" && isValidRoleKey(newRoleKey.trim()) && AGENT_TYPES.includes(newRoleKey.trim()) ? React3.createElement("div", { style: { fontSize: 12, color: "#f44336", marginTop: 4 } }, `\u300C${newRoleKey.trim()}\u300D\u662F\u5185\u7F6E\u5DE5\u79CD\u540D\uFF0C\u4E0D\u53EF\u7528\u4F5C\u81EA\u5B9A\u4E49\u89D2\u8272\u2014\u2014\u8BF7\u7528\u4E0A\u65B9\u5BF9\u5E94\u5361\u7247\u914D\u7F6E`) : null,
-    newRoleKey.trim() !== "" && isValidRoleKey(newRoleKey.trim()) && !AGENT_TYPES.includes(newRoleKey.trim()) && (roleRows.some((row) => row.key === newRoleKey.trim()) || draft?.roles && typeof draft.roles === "object" && Boolean(draft.roles[newRoleKey.trim()])) ? React3.createElement("div", { style: { fontSize: 12, color: "#f44336", marginTop: 4 } }, "\u8BE5\u540D\u5B57\u5DF2\u5B58\u5728") : null
-  );
-}
-
-// src/tool-mask-editor.js
-var React4 = __toESM(require("react"), 1);
-
-// src/tool-mask-rows.js
-function normalizeDenyList(value) {
-  if (!Array.isArray(value)) return [];
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const entry of value) {
-    if (typeof entry !== "string" || entry === "") continue;
-    if (seen.has(entry)) continue;
-    seen.add(entry);
-    out.push(entry);
-  }
-  return out;
-}
-function blockTool(deny, name2) {
-  const next = normalizeDenyList(deny);
-  if (typeof name2 !== "string" || name2 === "" || next.includes(name2)) return next;
-  return [...next, name2];
-}
-function unblockTool(deny, name2) {
-  return normalizeDenyList(deny).filter((entry) => entry !== name2);
-}
-function availableTools(roster, deny, filter) {
-  const blocked = new Set(normalizeDenyList(deny));
-  const needle = typeof filter === "string" ? filter.trim().toLowerCase() : "";
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const name2 of Array.isArray(roster) ? roster : []) {
-    if (typeof name2 !== "string" || name2 === "" || blocked.has(name2) || seen.has(name2)) continue;
-    if (needle !== "" && !name2.toLowerCase().includes(needle)) continue;
-    seen.add(name2);
-    out.push(name2);
-  }
-  return out;
-}
-function denyEntries(deny, roster) {
-  const known = new Set((Array.isArray(roster) ? roster : []).filter((n) => typeof n === "string"));
-  return normalizeDenyList(deny).map((name2) => ({ name: name2, connected: known.has(name2) }));
-}
-
-// src/tool-mask-editor.js
-function renderToolMaskEditor(deps) {
-  const {
-    draft,
-    roster,
-    maskFilter,
-    setMaskFilter,
-    maskSelL,
-    setMaskSelL,
-    maskSelR,
-    setMaskSelR,
-    maskManual,
-    setMaskManual,
-    setDeny,
-    cardOpen,
-    toggleCard,
-    styles
-  } = deps;
-  const { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle } = styles;
-  const denyList = normalizeDenyList(draft?.toolMask?.deny);
-  const availTools = availableTools(roster, denyList, maskFilter);
-  const maskedEntries = denyEntries(denyList, roster);
-  const maskListBoxStyle = { border: "1px solid var(--separator, #333)", borderRadius: 4, height: 150, overflowY: "auto", background: "var(--surface, #1e1e1e)", marginBottom: 4 };
-  const maskItemStyle = (selected) => ({
-    padding: "3px 8px",
-    fontSize: 12,
-    fontFamily: MONO_FONT,
-    cursor: "pointer",
-    wordBreak: "break-all",
-    background: selected ? "rgba(100,181,246,0.18)" : "transparent"
-  });
-  const maskBadge = (title) => React4.createElement("span", {
-    title,
-    style: { flexShrink: 0, fontSize: 10, lineHeight: "15px", padding: "0 5px", borderRadius: 4, color: "#9e9e9e", background: "rgba(255,255,255,0.07)" }
-  }, "\u672A\u8FDE\u63A5");
-  const blockSelected = () => {
-    if (!draft || !maskSelL) return;
-    setDeny(blockTool(denyList, maskSelL));
-    setMaskSelL(null);
-  };
-  const unblockSelected = () => {
-    if (!draft || !maskSelR) return;
-    setDeny(unblockTool(denyList, maskSelR));
-    setMaskSelR(null);
-  };
-  return React4.createElement(
-    "div",
-    { style: cardStyle },
-    React4.createElement(
-      "div",
-      {
-        style: { cursor: "pointer", marginBottom: cardOpen("tool-mask") ? 8 : 0 },
-        onClick: () => toggleCard("tool-mask")
-      },
-      React4.createElement(
-        "div",
-        { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } },
-        React4.createElement("span", { style: glyphStyle }, cardOpen("tool-mask") ? "\u25BE" : "\u25B8"),
-        React4.createElement("span", { style: { fontWeight: 600 } }, "\u5DE5\u5177\u5C4F\u853D\uFF08Tool Mask\uFF09"),
-        React4.createElement("span", { style: { fontSize: 12, color: "var(--text-secondary, #888)" } }, "\u4ECE MyGO \u4F1A\u8BDD\u76EE\u5F55\u85CF\u8D77\u6307\u5B9A\u5DE5\u5177\uFF08Sisyphus \u4E0E\u5168\u90E8\u5B50\u4EE3\u7406\uFF09")
-      ),
-      React4.createElement("div", { style: summaryStyle }, `\u5DF2\u5C4F\u853D ${denyList.length} \u9879`)
-    ),
-    cardOpen("tool-mask") ? React4.createElement(
-      React4.Fragment,
-      null,
-      React4.createElement(
-        "div",
-        { style: { ...hintStyle, marginBottom: 8 } },
-        "\u5C4F\u853D\u4EC5\u5BF9\u65B0\u4F1A\u8BDD\u751F\u6548\uFF0C\u5F53\u524D\u4F1A\u8BDD\u4E0D\u53D7\u5F71\u54CD\uFF1B\u4FDD\u7559\u5DE5\u5177\uFF08run_code \u7B49\uFF09\u4E0D\u53EF\u5C4F\u853D\uFF0C\u4E0D\u5728\u5DE6\u5217\u51FA\u73B0\u3002\u82B1\u540D\u518C\u662F\u5FEB\u7167\uFF1AMCP \u91CD\u8FDE\u540E\u91CD\u5F00\u8BBE\u7F6E\u9875\u5373\u53EF\u5237\u65B0\u3002"
-      ),
-      React4.createElement(
-        "div",
-        { style: { display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 8, alignItems: "start" } },
-        React4.createElement(
-          "div",
-          null,
-          React4.createElement("div", { style: labelStyle }, `\u5F53\u524D\u53EF\u7528\u5DE5\u5177\uFF08${availTools.length}\uFF09`),
-          React4.createElement("input", {
-            value: maskFilter,
-            placeholder: "\u6309\u540D\u79F0\u8FC7\u6EE4\u2026",
-            onChange: (e) => {
-              setMaskFilter(e.target.value);
-              setMaskSelL(null);
-            },
-            style: { ...selectStyle, marginBottom: 4 }
-          }),
-          React4.createElement(
-            "div",
-            { style: maskListBoxStyle },
-            availTools.length === 0 ? React4.createElement("div", { style: { padding: "6px 8px", fontSize: 12, color: "var(--text-secondary, #888)" } }, roster.length === 0 ? "\u82B1\u540D\u518C\u4E0D\u53EF\u7528\uFF08host \u672A\u5C31\u7EEA\uFF09\uFF1B\u53EF\u7528\u4E0B\u65B9\u624B\u586B\u6DFB\u52A0" : "\uFF08\u65E0\u5339\u914D\u9879\uFF09") : availTools.map((name2) => React4.createElement("div", {
-              key: name2,
-              title: name2,
-              style: maskItemStyle(maskSelL === name2),
-              onClick: () => setMaskSelL(maskSelL === name2 ? null : name2)
-            }, name2))
-          )
-        ),
-        React4.createElement(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: 6, paddingTop: 20 } },
-          React4.createElement("button", { style: miniBtnStyle, disabled: !maskSelL, title: "\u5C4F\u853D\u9009\u4E2D\u7684\u5DE5\u5177", onClick: blockSelected }, "\u5C4F\u853D \u2192"),
-          React4.createElement("button", { style: miniBtnStyle, disabled: !maskSelR, title: "\u53D6\u6D88\u5C4F\u853D\u9009\u4E2D\u7684\u6761\u76EE", onClick: unblockSelected }, "\u2190 \u89E3\u9664")
-        ),
-        React4.createElement(
-          "div",
-          null,
-          React4.createElement("div", { style: labelStyle }, `\u5DF2\u5C4F\u853D\uFF08${maskedEntries.length}\uFF09`),
-          React4.createElement(
-            "div",
-            { style: maskListBoxStyle },
-            maskedEntries.length === 0 ? React4.createElement("div", { style: { padding: "6px 8px", fontSize: 12, color: "var(--text-secondary, #888)" } }, "\u672A\u5C4F\u853D\u4EFB\u4F55\u5DE5\u5177") : maskedEntries.map((entry) => React4.createElement(
-              "div",
-              {
-                key: entry.name,
-                title: entry.name,
-                style: { ...maskItemStyle(maskSelR === entry.name), display: "flex", alignItems: "center", gap: 6 },
-                onClick: () => setMaskSelR(maskSelR === entry.name ? null : entry.name)
-              },
-              React4.createElement("span", { style: { flex: "1 1 auto", minWidth: 0, overflowWrap: "anywhere" } }, entry.name),
-              entry.connected ? null : maskBadge("\u4E0D\u5728\u5F53\u524D\u82B1\u540D\u518C\uFF08\u672A\u8FDE\u63A5\u6216\u5DF2\u4E0B\u7EBF\uFF09\uFF1B\u6761\u76EE\u4FDD\u7559\uFF0C\u91CD\u8FDE\u540E\u5373\u88AB\u5C4F\u853D")
-            ))
-          )
-        )
-      ),
-      React4.createElement(
-        "div",
-        { style: { display: "flex", gap: 6, alignItems: "center" } },
-        React4.createElement("input", {
-          value: maskManual,
-          placeholder: "\u624B\u586B\u5DE5\u5177\u540D\uFF08\u82B1\u540D\u518C\u5916\u7684\u672A\u8FDE\u63A5\u5DE5\u5177\uFF09\u2026",
-          onChange: (e) => setMaskManual(e.target.value),
-          onKeyDown: (e) => {
-            if (e.key === "Enter") {
-              setDeny(blockTool(denyList, maskManual.trim()));
-              setMaskManual("");
-            }
-          },
-          style: selectStyle
-        }),
-        React4.createElement("button", {
-          style: miniBtnStyle,
-          disabled: !draft || maskManual.trim() === "",
-          title: "\u52A0\u5165\u5DF2\u5C4F\u853D\u6E05\u5355",
-          onClick: () => {
-            setDeny(blockTool(denyList, maskManual.trim()));
-            setMaskManual("");
-          }
-        }, "+ \u6DFB\u52A0")
-      )
-    ) : null
-  );
-}
-
-// src/usage-prices-editor.js
-var React5 = __toESM(require("react"), 1);
-
-// preset/shared/constants.mjs
-var PRICE_KEY_PATTERN = /^[^/]+\/.+/;
-
 // src/usage-price-rows.js
-var REQUIRED_BUCKETS = ["input", "output"];
-var OPTIONAL_BUCKETS = ["cacheRead", "cacheWrite"];
-var PRICE_BUCKETS = [...REQUIRED_BUCKETS, ...OPTIONAL_BUCKETS];
-function priceKeyOptions(available, existingKeys) {
-  const existing = existingKeys instanceof Set ? existingKeys : new Set(Object.keys(existingKeys ?? {}));
-  const modelsMap = available?.models && typeof available.models === "object" && !Array.isArray(available.models) ? available.models : {};
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const [provider, models] of Object.entries(modelsMap)) {
-    if (typeof provider !== "string" || provider === "" || !Array.isArray(models)) continue;
-    for (const model of models) {
-      if (typeof model !== "string" || model === "") continue;
-      const key = `${provider}/${model}`;
-      if (seen.has(key) || existing.has(key)) continue;
-      seen.add(key);
-      out.push(key);
-    }
-  }
-  return out;
-}
 var isRowMap = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 function sanitizeBucket(value) {
   const num = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
@@ -1893,12 +1603,12 @@ function sanitizeBucket(value) {
 function sanitizePriceRow(row) {
   if (!isRowMap(row)) return null;
   const out = {};
-  for (const bucket of REQUIRED_BUCKETS) {
+  for (const bucket of PRICE_REQUIRED_BUCKETS) {
     const num = sanitizeBucket(row[bucket]);
     if (num === null) return null;
     out[bucket] = num;
   }
-  for (const bucket of OPTIONAL_BUCKETS) {
+  for (const bucket of PRICE_OPTIONAL_BUCKETS) {
     const num = sanitizeBucket(row[bucket]);
     if (num !== null) out[bucket] = num;
   }
@@ -1906,14 +1616,14 @@ function sanitizePriceRow(row) {
 }
 function validatePriceRow(row) {
   if (!isRowMap(row)) return "\u884C\u6570\u636E\u4E0D\u5408\u6CD5";
-  for (const bucket of REQUIRED_BUCKETS) {
+  for (const bucket of PRICE_REQUIRED_BUCKETS) {
     const raw = row[bucket];
     if (raw === void 0 || raw === null || typeof raw === "string" && raw.trim() === "") {
       return `\u300C${bucket}\u300D\u4E3A\u5FC5\u586B\u5355\u4EF7`;
     }
     if (sanitizeBucket(raw) === null) return `\u300C${bucket}\u300D\u987B\u4E3A\u975E\u8D1F\u6570\u5B57`;
   }
-  for (const bucket of OPTIONAL_BUCKETS) {
+  for (const bucket of PRICE_OPTIONAL_BUCKETS) {
     const raw = row[bucket];
     if (raw === void 0 || raw === null || typeof raw === "string" && raw.trim() === "") continue;
     if (sanitizeBucket(raw) === null) return `\u300C${bucket}\u300D\u987B\u4E3A\u975E\u8D1F\u6570\u5B57\u6216\u7559\u7A7A`;
@@ -1926,672 +1636,1175 @@ function priceKeyHint(key) {
   if (!PRICE_KEY_PATTERN.test(trimmed)) return "\u952E\u683C\u5F0F\uFF1Aprovider/model\uFF08\u7B2C\u4E00\u4E2A / \u5207\u5206\uFF0Cmodel \u53EF\u542B /\uFF09\uFF0C\u4E24\u6BB5\u90FD\u4E0D\u80FD\u4E3A\u7A7A";
   return null;
 }
-function addPriceRow(rows, key) {
-  const trimmed = typeof key === "string" ? key.trim() : "";
-  if (!PRICE_KEY_PATTERN.test(trimmed)) return isRowMap(rows) ? rows : {};
-  if (isRowMap(rows) && trimmed in rows) return rows;
-  return { ...isRowMap(rows) ? rows : {}, [trimmed]: {} };
-}
-function removePriceRow(rows, key) {
-  const table = isRowMap(rows) ? { ...rows } : {};
-  delete table[key];
-  return table;
-}
-function updatePriceRow(rows, key, bucket, value) {
-  const table = isRowMap(rows) ? { ...rows } : {};
-  const row = isRowMap(table[key]) ? { ...table[key] } : {};
-  if (value === "" || value === void 0 || value === null) delete row[bucket];
-  else row[bucket] = value;
-  table[key] = row;
-  return table;
-}
 
-// src/usage-prices-editor.js
-var BUCKET_LABELS = { input: "\u8F93\u5165", output: "\u8F93\u51FA", cacheRead: "\u7F13\u5B58\u8BFB\u53D6", cacheWrite: "\u7F13\u5B58\u5199\u5165" };
-var CURRENCY_OPTIONS = ["USD", "CNY"];
-var currencyLabel = (v) => v === "CNY" ? "\u4EBA\u6C11\u5E01\uFF08CNY\uFF09" : "\u7F8E\u5143\uFF08USD\uFF09";
-var unitHintFor = (currency) => currency === "CNY" ? "\u5143 / 1M tokens\uFF08\u4EBA\u6C11\u5E01\uFF09" : "\u7F8E\u5143 / 1M tokens\uFF08USD\uFF09";
-function renderUsagePricesEditor(deps) {
-  const {
-    draft,
-    setDraft,
-    newPriceKey,
-    setNewPriceKey,
-    openCards,
-    setOpenCards,
-    makeSelect,
-    makeCombobox,
-    available,
-    styles
-  } = deps;
-  const { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle } = styles;
-  const rows = draft?.usagePrices && typeof draft.usagePrices === "object" && !Array.isArray(draft.usagePrices) ? draft.usagePrices : {};
-  const currency = draft?.usageCurrency === "CNY" ? "CNY" : "USD";
-  const setCurrency = (value) => {
-    if (!draft) return;
-    setDraft((prev) => prev ? { ...prev, usageCurrency: value } : prev);
-  };
-  const applyRows = (next) => {
-    if (!draft) return;
-    setDraft((prev) => prev ? { ...prev, usagePrices: next } : prev);
-  };
-  const createRow = () => {
-    if (!draft) return;
-    const key = newPriceKey.trim();
-    if (key in rows) return;
-    const next = addPriceRow(rows, key);
-    if (next === rows) return;
-    applyRows(next);
-    setNewPriceKey("");
-    setOpenCards((prev) => ({ ...prev, "usage-prices": true }));
-  };
-  const toggleCard = (id) => setOpenCards((prev) => ({ ...prev, [id]: !prev[id] }));
-  const cardOpen = (id) => openCards[id] === true;
-  const open = cardOpen("usage-prices");
-  const count = Object.keys(rows).length;
-  const keyHint = priceKeyHint(newPriceKey);
-  const bucketInputStyle = { ...selectStyle, fontFamily: MONO_FONT, padding: "4px 6px", fontSize: 12 };
-  return React5.createElement(
-    "div",
-    { style: cardStyle },
-    React5.createElement(
-      "div",
-      {
-        style: { cursor: "pointer", marginBottom: open ? 8 : 0 },
-        onClick: () => toggleCard("usage-prices")
-      },
-      React5.createElement(
-        "div",
-        { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } },
-        React5.createElement("span", { style: glyphStyle }, open ? "\u25BE" : "\u25B8"),
-        React5.createElement("span", { style: { fontWeight: 600 } }, "\u7528\u91CF\u5355\u4EF7\u8868\uFF08Usage Prices\uFF09"),
-        React5.createElement("span", { style: { fontSize: 12, color: "var(--text-secondary, #888)" } }, "\u6309\u6A21\u578B\u8BA1\u4EF7\uFF0C\u7528\u91CF\u9762\u677F\u7684\u6210\u672C\u5217\u7531\u5355\u4EF7\u5B9E\u65F6\u6298\u7B97")
-      ),
-      React5.createElement("div", { style: summaryStyle }, count === 0 ? "\u672A\u914D\u7F6E\u5355\u4EF7" : `\u5DF2\u5B9A\u4EF7 ${count} \u4E2A\u6A21\u578B`)
-    ),
-    open ? React5.createElement(
-      React5.Fragment,
-      null,
-      React5.createElement(
-        "div",
-        { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" } },
-        React5.createElement("span", { style: labelStyle }, "\u8BA1\u4EF7\u5E01\u79CD"),
-        makeSelect ? makeSelect(currency, CURRENCY_OPTIONS, currencyLabel, setCurrency, !draft) : React5.createElement("span", { style: { fontSize: 12, color: "var(--text-secondary, #888)" } }, currencyLabel(currency)),
-        React5.createElement("span", { style: hintStyle }, `\u5355\u4EF7\u5355\u4F4D\uFF1A${unitHintFor(currency)}\uFF1B\u6210\u672C\u5217\u7B26\u53F7 ${currencySymbol(currency)}`)
-      ),
-      React5.createElement(
-        "div",
-        { style: { ...hintStyle, marginBottom: 8 } },
-        "\u5168\u5C40\u5E01\u79CD\u5BF9\u6574\u5F20\u5355\u4EF7\u8868\u751F\u6548\uFF08\u4E0D\u6309\u884C\u6DF7\u5E01\u79CD\uFF09\uFF0C\u6539\u5B8C\u70B9\u300C\u7ACB\u5373\u4FDD\u5B58\u300D\u751F\u6548\uFF1B\u4EF7\u683C\u70ED\u66F4\u4E0D\u5F71\u54CD\u7EDF\u8BA1\uFF0C\u6210\u672C\u5728\u5C55\u793A\u5C42\u5B9E\u65F6\u6298\u7B97\u3002\u672A\u5B9A\u4EF7\u7684\u6A21\u578B\u53EA\u8BB0 token\u3001\u6210\u672C\u5217\u663E\u793A\u300C\u2014\u300D\u3002"
-      ),
-      count === 0 ? React5.createElement(
-        "div",
-        { style: { fontSize: 12, color: "var(--text-secondary, #888)", marginBottom: 8 } },
-        "\u672A\u914D\u7F6E\u5355\u4EF7\uFF0C\u4EC5\u7EDF\u8BA1 token \u7528\u91CF\uFF0C\u4E0D\u8BA1\u6210\u672C\u3002\u6BCF\u884C\u542B\uFF1A\u8F93\u5165 / \u8F93\u51FA / \u7F13\u5B58\u8BFB\u53D6 / \u7F13\u5B58\u5199\u5165 \u56DB\u6863\u5355\u4EF7\uFF1B\u7528\u4E0B\u65B9\u6A21\u578B\u9009\u6846\uFF08\u53EF\u76F4\u63A5\u624B\u586B provider/model\uFF09\u6DFB\u52A0\u5355\u4EF7\u3002"
-      ) : null,
-      Object.entries(rows).map(([key, row]) => {
-        const error = validatePriceRow(row);
-        return React5.createElement(
-          "div",
-          { key: `price-${key}`, style: { border: "1px solid var(--separator, #333)", borderRadius: 6, padding: 8, marginBottom: 6 } },
-          React5.createElement(
-            "div",
-            { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 4 } },
-            React5.createElement("span", { style: { fontWeight: 600, fontFamily: MONO_FONT, fontSize: 12, overflowWrap: "anywhere" } }, key),
-            React5.createElement("button", {
-              style: { ...miniBtnStyle, marginLeft: "auto" },
-              title: `\u5220\u9664 ${key} \u7684\u5355\u4EF7\uFF08\u4FDD\u5B58\u540E\u751F\u6548\uFF09`,
-              disabled: !draft,
-              onClick: () => applyRows(removePriceRow(rows, key))
-            }, "\u5220\u9664")
-          ),
-          React5.createElement(
-            "div",
-            { style: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 6 } },
-            PRICE_BUCKETS.map((bucket) => React5.createElement(
-              "label",
-              { key: `${key}-${bucket}`, style: { display: "block", minWidth: 0 } },
-              React5.createElement("div", { style: labelStyle }, BUCKET_LABELS[bucket]),
-              React5.createElement("input", {
-                type: "text",
-                inputMode: "decimal",
-                value: row?.[bucket] ?? "",
-                placeholder: REQUIRED_BUCKETS.includes(bucket) ? "\u5FC5\u586B" : "\u7559\u7A7A=\u672A\u5B9A\u4EF7",
-                disabled: !draft,
-                spellCheck: false,
-                onChange: (e) => applyRows(updatePriceRow(rows, key, bucket, e.target.value)),
-                style: bucketInputStyle
-              })
-            ))
-          ),
-          error ? React5.createElement("div", { style: { fontSize: 12, color: "#f44336", marginTop: 4 } }, `\u26A0 ${error}\uFF08\u8BE5\u884C\u5C06\u88AB\u8DF3\u8FC7\uFF0C\u4E0D\u4F1A\u4FDD\u5B58\uFF09`) : null
-        );
-      }),
-      React5.createElement(
-        "div",
-        { style: { display: "flex", gap: 8, alignItems: "center" } },
-        makeCombobox ? makeCombobox(
-          newPriceKey,
-          priceKeyOptions(available, rows),
-          "usage-price-new-key",
-          "\u9009\u62E9\u6A21\u578B\uFF08\u53EF\u76F4\u63A5\u624B\u586B provider/model\uFF09",
-          setNewPriceKey,
-          !draft
-        ) : React5.createElement("input", {
-          value: newPriceKey,
-          placeholder: "provider/model\uFF0C\u5982 newapi/k3-256k\u2026",
-          disabled: !draft,
-          onChange: (e) => setNewPriceKey(e.target.value),
-          onKeyDown: (e) => {
-            if (e.key === "Enter") createRow();
-          },
-          style: { ...selectStyle, fontFamily: MONO_FONT }
-        }),
-        React5.createElement("button", {
-          style: miniBtnStyle,
-          disabled: !draft || newPriceKey.trim() === "" || keyHint !== null || newPriceKey.trim() in rows,
-          title: `\u4E3A\u6240\u9009\u6A21\u578B\u6DFB\u52A0\u4E00\u884C\u5355\u4EF7\uFF08${unitHintFor(currency)}\uFF09`,
-          onClick: createRow
-        }, "+ \u6DFB\u52A0\u5355\u4EF7")
-      ),
-      keyHint !== null ? React5.createElement("div", { style: { fontSize: 12, color: "#f44336", marginTop: 4 } }, keyHint) : null,
-      newPriceKey.trim() !== "" && keyHint === null && newPriceKey.trim() in rows ? React5.createElement("div", { style: { fontSize: 12, color: "#f44336", marginTop: 4 } }, "\u8BE5\u6A21\u578B\u7684\u5355\u4EF7\u884C\u5DF2\u5B58\u5728") : null
-    ) : null
-  );
+// src/settings-ops.js
+var BINDING_FIELDS = ["provider", "model", "reasoningEffort", "dsv4p0813", "fallbacks"];
+function record(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
-
-// src/settings-core.js
-function SettingsPage({ scope: sp, connection, close }) {
-  const [draft, setDraft] = React6.useState(null);
-  const [saving, setSaving] = React6.useState(false);
-  const [msg, setMsg] = React6.useState(null);
-  const [available, setAvailable] = React6.useState({ providers: [], models: {}, errors: {} });
-  const [loadError, setLoadError] = React6.useState(false);
-  const [modelsReady, setModelsReady] = React6.useState(false);
-  const [dirty, setDirty] = React6.useState(false);
-  const [revision, setRevision] = React6.useState(null);
-  const [conflict, setConflict] = React6.useState(null);
-  const [reloadNonce, setReloadNonce] = React6.useState(0);
-  const [roster, setRoster] = React6.useState([]);
-  const [maskFilter, setMaskFilter] = React6.useState("");
-  const [maskSelL, setMaskSelL] = React6.useState(null);
-  const [maskSelR, setMaskSelR] = React6.useState(null);
-  const [maskManual, setMaskManual] = React6.useState("");
-  const [newRoleKey, setNewRoleKey] = React6.useState("");
-  const [roleToolDrafts, setRoleToolDrafts] = React6.useState({});
-  const [importError, setImportError] = React6.useState("");
-  const [newPriceKey, setNewPriceKey] = React6.useState("");
-  const [openCards, setOpenCards] = React6.useState({});
-  const [personaFileErr, setPersonaFileErr] = React6.useState({});
-  React6.useEffect(() => {
-    if (!sp) return;
-    if (connection && connection.rpc && typeof connection.rpc.call === "function") {
-      connection.rpc.call("/dsh-my-go", "loadSettings", {}).then((res) => {
-        const loaded = interpretLoadResult(res);
-        if (loaded.status === "ok") {
-          setDraft(loaded.draft);
-          setRevision(loaded.revision);
-          setDirty(false);
-          setConflict(null);
-          setLoadError(false);
-        } else {
-          setDraft(null);
-          setLoadError(true);
-        }
-      }).catch(() => {
-        setDraft(null);
-        setLoadError(true);
-      });
-      connection.rpc.call("/dsh-my-go", "listModels", {}).then((res) => {
-        if (res && res.ok && res.value && Array.isArray(res.value.providers) && res.value.models !== null && typeof res.value.models === "object") setAvailable(res.value);
-      }).catch(() => {
-      }).finally(() => setModelsReady(true));
-      connection.rpc.call("/dsh-my-go", "listTools", {}).then((res) => {
-        if (res && res.ok && Array.isArray(res.value)) setRoster(res.value);
-      }).catch(() => {
-      });
+function text(value) {
+  return typeof value === "string" ? value : "";
+}
+function isVoidValue(value) {
+  if (value === void 0 || value === null || value === "" || value === false) return true;
+  return Array.isArray(value) && value.length === 0;
+}
+function clone(value) {
+  return value === void 0 ? void 0 : JSON.parse(JSON.stringify(value));
+}
+function bindingFieldsOf(row) {
+  const source = record(row);
+  const out = {};
+  for (const field of BINDING_FIELDS) {
+    if (!(field in source)) continue;
+    out[field] = source[field];
+  }
+  return out;
+}
+function draftFromSection(value) {
+  const section = record(value);
+  const roles = record(section.roles);
+  const draft = { roles: { ...roles } };
+  for (const type of AGENT_TYPES) {
+    const carried = type === "sisyphus" ? {} : record(roles[type]);
+    const row = Object.keys(carried).length > 0 ? { ...record(section[type]), ...carried } : record(section[type]);
+    draft[type] = {
+      provider: text(row.provider),
+      model: text(row.model),
+      reasoningEffort: text(row.reasoningEffort),
+      dsv4p0813: row.dsv4p0813 === true,
+      fallbacks: normalizeChainRows(row.fallbacks)
+    };
+    if (typeof row.persona === "string") draft[type].persona = row.persona;
+  }
+  const prices = {};
+  for (const [key, row] of Object.entries(record(section.usagePrices))) {
+    if (typeof key === "string" && PRICE_KEY_PATTERN.test(key)) prices[key] = { ...record(row) };
+  }
+  draft.usagePrices = prices;
+  draft.usageCurrency = section.usageCurrency === "CNY" ? "CNY" : "USD";
+  return draft;
+}
+function normalizeForCompare(draft) {
+  const source = record(draft);
+  const roles = { ...record(source.roles) };
+  for (const type of AGENT_TYPES) {
+    if (type === "sisyphus" || source[type] === void 0) continue;
+    roles[type] = { ...record(roles[type]), ...record(source[type]) };
+  }
+  const out = { roles: {} };
+  for (const type of AGENT_TYPES) {
+    const row = record(source[type]);
+    out[type] = {
+      provider: text(row.provider).trim(),
+      model: text(row.model).trim(),
+      reasoningEffort: text(row.reasoningEffort),
+      dsv4p0813: row.dsv4p0813 === true,
+      fallbacks: normalizeChainRows(stripEmptyFallbackRows({ fallbacks: normalizeChainRows(row.fallbacks) }).fallbacks)
+    };
+  }
+  for (const key of Object.keys(roles).sort()) {
+    if (typeof key !== "string" || !ROLE_KEY_PATTERN.test(key) || key === "sisyphus") continue;
+    const entry = record(roles[key]);
+    const normalized = {};
+    for (const field of BINDING_FIELDS) {
+      normalized[field] = field === "fallbacks" ? normalizeChainRows(stripEmptyFallbackRows({ fallbacks: normalizeChainRows(entry.fallbacks) }).fallbacks) : field === "dsv4p0813" ? entry[field] === true : text(entry[field]).trim();
+    }
+    normalized.persona = text(entry.persona);
+    normalized.toolFilter = {
+      allow: (Array.isArray(record(entry.toolFilter).allow) ? entry.toolFilter.allow : []).map(String).filter((n) => n !== ""),
+      deny: (Array.isArray(record(entry.toolFilter).deny) ? entry.toolFilter.deny : []).map(String).filter((n) => n !== "")
+    };
+    out.roles[key] = normalized;
+  }
+  const prices = {};
+  for (const key of Object.keys(record(source.usagePrices)).sort()) {
+    const row = record(source.usagePrices)[key];
+    if (typeof key !== "string" || !PRICE_KEY_PATTERN.test(key)) continue;
+    const price = sanitizePriceRow(row);
+    if (price !== null) prices[key] = price;
+  }
+  out.usagePrices = prices;
+  out.usageCurrency = source.usageCurrency === "CNY" ? "CNY" : "USD";
+  return out;
+}
+function compareKey(draft) {
+  return JSON.stringify(normalizeForCompare(draft));
+}
+function dirtyLabels(draft, section) {
+  const next = normalizeForCompare(draft);
+  const stored = normalizeForCompare(draftFromSection(section));
+  const labels = [];
+  if (JSON.stringify(next.sisyphus) !== JSON.stringify(stored.sisyphus)) labels.push("\u603B\u8C03\u5EA6\u7ED1\u5B9A");
+  const changedRoles = [];
+  for (const type of AGENT_TYPES) {
+    if (type === "sisyphus") continue;
+    if (JSON.stringify(next[type]) !== JSON.stringify(stored[type])) changedRoles.push(type);
+  }
+  if (changedRoles.length > 0) labels.push(`\u5185\u7F6E\u5DE5\u79CD ${changedRoles.length} \u9879`);
+  if (JSON.stringify(next.roles) !== JSON.stringify(stored.roles)) labels.push("\u89D2\u8272\u540D\u518C");
+  if (JSON.stringify(next.usagePrices) !== JSON.stringify(stored.usagePrices)) labels.push("\u5355\u4EF7\u8868");
+  if (next.usageCurrency !== stored.usageCurrency) labels.push("\u5E01\u79CD");
+  return labels;
+}
+function buildSettingsOps(draft, stored = {}) {
+  const source = record(draft);
+  const section = record(stored.value);
+  const userLayer = record(stored.user);
+  const draftRoles = record(source.roles);
+  const ops = [];
+  const push = (path, value) => {
+    ops.push(isVoidValue(value) ? { op: "unset", path } : { op: "set", path, value: clone(value) });
+  };
+  const sisyphus = bindingFieldsOf(source.sisyphus);
+  for (const field of BINDING_FIELDS) {
+    if (!(field in sisyphus)) continue;
+    push(["sisyphus", field], cleanValue(field, sisyphus[field]));
+  }
+  const roleKeys = [.../* @__PURE__ */ new Set([
+    ...AGENT_TYPES.filter((type) => type !== "sisyphus"),
+    ...Object.keys(draftRoles).filter((key) => key !== "sisyphus" && ROLE_KEY_PATTERN.test(key))
+  ])];
+  const storedRoles = record(section.roles);
+  for (const key of roleKeys) {
+    const topRow = AGENT_TYPES.includes(key) ? bindingFieldsOf(source[key]) : {};
+    const roleRow = bindingFieldsOf(draftRoles[key]);
+    const src = { ...roleRow, ...topRow };
+    const carried = draftRoles[key];
+    const fieldOps = [];
+    const collect = (path, value) => {
+      fieldOps.push(isVoidValue(value) ? { op: "unset", path } : { op: "set", path, value: clone(value) });
+    };
+    for (const field of BINDING_FIELDS) {
+      if (!(field in src)) continue;
+      collect(["roles", key, field], cleanValue(field, src[field]));
+    }
+    if (carried && typeof carried === "object") {
+      if ("persona" in carried) collect(["roles", key, "persona"], text(carried.persona));
+      const filter = record(carried.toolFilter);
+      for (const side of ["allow", "deny"]) {
+        if (!Array.isArray(filter[side])) continue;
+        collect(["roles", key, "toolFilter", side], filter[side].map(String).filter((name2) => name2 !== ""));
+      }
+    }
+    const looksLikeNewRow = carried !== null && typeof carried === "object" && Array.isArray(carried.fallbacks) && carried.toolFilter !== null && typeof carried.toolFilter === "object";
+    if (!(key in storedRoles) && looksLikeNewRow && !fieldOps.some((op) => op.op === "set")) {
+      ops.push({ op: "set", path: ["roles", key], value: canonicalRole(src, carried) });
+      continue;
+    }
+    ops.push(...fieldOps);
+  }
+  if (source.roles !== void 0 && source.roles !== null && typeof source.roles === "object") {
+    for (const key of Object.keys(record(userLayer.roles))) {
+      if (AGENT_TYPES.includes(key) || key in draftRoles) continue;
+      ops.push({ op: "unset", path: ["roles", key] });
+    }
+  }
+  if (source.usagePrices !== void 0 && source.usagePrices !== null && typeof source.usagePrices === "object") {
+    const written = {};
+    for (const [key, row] of Object.entries(source.usagePrices)) {
+      if (typeof key !== "string" || !PRICE_KEY_PATTERN.test(key)) continue;
+      const price = sanitizePriceRow(row);
+      if (price === null) continue;
+      written[key] = price;
+      ops.push({ op: "set", path: ["usagePrices", key], value: price });
+    }
+    if (Object.keys(written).length === 0) {
+      ops.push({ op: "unset", path: ["usagePrices"] });
     } else {
-      setLoadError(true);
-    }
-  }, [sp, reloadNonce]);
-  const mutateDraft = (updater) => {
-    setDirty(true);
-    setDraft(updater);
-  };
-  React6.useEffect(() => {
-    if (!dirty) return void 0;
-    const win = typeof window === "undefined" ? void 0 : window;
-    return attachBeforeUnloadGuard(win);
-  }, [dirty]);
-  if (!sp) return React6.createElement("div", { style: { padding: 16, color: "#888" } }, "\u8BBE\u7F6E\u670D\u52A1\u4E0D\u53EF\u7528");
-  const set = (type, field, value) => {
-    if (!draft) return;
-    mutateDraft((prev) => {
-      if (!prev) return prev;
-      return { ...prev, [type]: { ...prev?.[type], [field]: value } };
-    });
-  };
-  const setChain = (type, chainRow) => {
-    if (!draft) return;
-    mutateDraft((prev) => prev ? { ...prev, [type]: { ...prev?.[type], provider: chainRow.provider, model: chainRow.model, fallbacks: chainRow.fallbacks } } : prev);
-  };
-  const setDeny = (rows) => {
-    if (!draft) return;
-    mutateDraft((prev) => prev ? { ...prev, toolMask: { deny: rows } } : prev);
-  };
-  const setPersonaOverride = (type, text) => {
-    if (!draft) return;
-    mutateDraft((prev) => prev ? { ...prev, roles: { ...prev.roles ?? {}, [type]: withPersonaOverride(prev.roles?.[type], text) } } : prev);
-  };
-  const loadBuiltinPersona = async (type) => {
-    if (!draft) return;
-    if (!connection || !connection.rpc || typeof connection.rpc.call !== "function") {
-      setPersonaFileErr((prev) => ({ ...prev, [type]: "\u8FDE\u63A5\u4E0D\u53EF\u7528" }));
-      return;
-    }
-    try {
-      const res = await connection.rpc.call("/dsh-my-go", "getBuiltinPersona", { type });
-      const parsed = resolveBuiltinPersonaResult(res);
-      if (parsed.ok) {
-        setPersonaOverride(type, parsed.persona);
-        setPersonaFileErr((prev) => ({ ...prev, [type]: "" }));
-      } else {
-        setPersonaFileErr((prev) => ({ ...prev, [type]: parsed.message }));
+      for (const key of Object.keys(record(userLayer.usagePrices))) {
+        if (key in written) continue;
+        ops.push({ op: "unset", path: ["usagePrices", key] });
       }
-    } catch (e) {
-      setPersonaFileErr((prev) => ({ ...prev, [type]: String(e) }));
+    }
+  }
+  const storedCurrency = section.usageCurrency === "CNY" || section.usageCurrency === "USD" ? section.usageCurrency : "USD";
+  if ((source.usageCurrency === "USD" || source.usageCurrency === "CNY") && source.usageCurrency !== storedCurrency) {
+    ops.push({ op: "set", path: ["usageCurrency"], value: source.usageCurrency });
+  }
+  return ops;
+}
+function canonicalRole(src, carried) {
+  const row = record(src);
+  const out = {};
+  for (const field of BINDING_FIELDS) {
+    const value = field in row ? cleanValue(field, row[field]) : void 0;
+    if (value === void 0 || value === "" || value === false || Array.isArray(value) && value.length === 0) {
+      out[field] = field === "dsv4p0813" ? false : field === "fallbacks" ? [] : "";
+      continue;
+    }
+    out[field] = clone(value);
+  }
+  const from = record(carried);
+  out.persona = text(from.persona);
+  const filter = record(from.toolFilter);
+  out.toolFilter = {
+    allow: (Array.isArray(filter.allow) ? filter.allow : []).map(String).filter((name2) => name2 !== ""),
+    deny: (Array.isArray(filter.deny) ? filter.deny : []).map(String).filter((name2) => name2 !== "")
+  };
+  return out;
+}
+function cleanValue(field, value) {
+  if (field === "fallbacks") return normalizeChainRows(value);
+  if (field === "dsv4p0813") return value === true;
+  if (typeof value === "string") return value.trim();
+  return value;
+}
+function sectionAfterWrite(layers, ops) {
+  const next = clone(record(layers.value));
+  const base = record(layers.base);
+  for (const op of ops) {
+    const path = Array.isArray(op.path) ? op.path : [];
+    const leaf = path[path.length - 1];
+    if (leaf === void 0 || path.length === 0) continue;
+    if (op.op === "set") {
+      const parent2 = path.slice(0, -1).reduce((node, key) => {
+        if (node === null || typeof node !== "object") return node;
+        if (node[key] === null || typeof node[key] !== "object") node[key] = {};
+        return node[key];
+      }, next);
+      if (parent2 !== null && typeof parent2 === "object") parent2[leaf] = clone(op.value);
+      continue;
+    }
+    const parent = path.slice(0, -1).reduce((node, key) => record(node)[key], next);
+    if (parent !== null && typeof parent === "object") delete parent[leaf];
+    const baseParent = path.slice(0, -1).reduce((node, key) => record(node)[key], base);
+    const fromBase = baseParent === null || baseParent === void 0 ? void 0 : record(baseParent)[leaf];
+    if (fromBase !== void 0 && parent !== null && typeof parent === "object") parent[leaf] = clone(fromBase);
+  }
+  return next;
+}
+function writeLanded(draft, layers, ops) {
+  return compareKey(draft) === compareKey(draftFromSection(sectionAfterWrite(layers, ops)));
+}
+function summaryLine(section) {
+  const draft = draftFromSection(section);
+  const bound = AGENT_TYPES.filter((type) => draft[type] && (text(draft[type].provider) !== "" || text(draft[type].model) !== "")).length;
+  const custom = Object.keys(record(draft.roles)).filter((key) => !AGENT_TYPES.includes(key) && ROLE_KEY_PATTERN.test(key)).length;
+  const prices = Object.keys(record(draft.usagePrices)).length;
+  const parts = [`\u7F16\u6392 ${AGENT_TYPES.length} \u89D2\u8272\uFF08${bound} \u4E2A\u6307\u5B9A\u4E86\u6A21\u578B\uFF09`];
+  if (custom > 0) parts.push(`\u81EA\u5B9A\u4E49 ${custom}`);
+  if (prices > 0) parts.push(`\u5355\u4EF7 ${prices} \u6761\uFF08${draft.usageCurrency}\uFF09`);
+  else parts.push("\u672A\u914D\u5355\u4EF7\uFF08\u53EA\u7EDF\u8BA1 token\uFF09");
+  return parts.join(" \xB7 ");
+}
+
+// src/roles-editor.js
+var React3 = __toESM(require("react"), 1);
+var el = React3.createElement;
+var EFFORTS = ["", "low", "high", "max"];
+var effortLabel = (value) => value === "" ? "\u8DDF\u968F\u6A21\u578B\u9ED8\u8BA4\uFF08\u4E0D\u5355\u72EC\u6307\u5B9A\uFF09" : { low: "\u4F4E\uFF08low\uFF09", high: "\u9AD8\uFF08high\uFF09", max: "\u6700\u9AD8\uFF08max\uFF09" }[value] ?? value;
+function renderRolesPane(deps) {
+  const {
+    role,
+    current,
+    writable,
+    catalog,
+    tools = [],
+    toolDrafts = {},
+    setToolDrafts,
+    importError,
+    personaFileErr = {},
+    rosterFailed = false,
+    setBinding,
+    setChain,
+    setPersona,
+    setToolFilter,
+    loadBuiltinPersona,
+    onExportRole,
+    onImportOverwrite,
+    onDeleteRole,
+    onRenameRole,
+    onRefreshTools
+  } = deps;
+  const key = role.key;
+  const builtin = role.builtin === true;
+  const row = builtin ? current[key] ?? {} : current.roles?.[key] ?? {};
+  const disabled = !writable;
+  const providers = Array.isArray(catalog.providers) ? catalog.providers : [];
+  const modelMap = catalog.models && typeof catalog.models === "object" ? catalog.models : {};
+  const modelsFor = (providerId) => providerId ? Array.isArray(modelMap[providerId]) ? modelMap[providerId] : [] : [...new Set(Object.values(modelMap).flat())].filter((id) => typeof id === "string" && id !== "");
+  const listErrorFor = (providerId) => {
+    if (!providerId) return "";
+    const errors = catalog.errors && typeof catalog.errors === "object" ? catalog.errors : {};
+    const detail = errors[providerId];
+    return typeof detail === "string" && detail !== "" ? detail : "";
+  };
+  const filter = row.toolFilter && typeof row.toolFilter === "object" ? row.toolFilter : {};
+  const namesOf = (side) => Array.isArray(filter[side]) ? filter[side].map(String) : [];
+  const toolList = (side) => {
+    const names = namesOf(side);
+    const pending = toolDrafts?.[key]?.[side] ?? "";
+    const listId = `mygo-tf-${key}-${side}`;
+    const write = (next) => setToolFilter(key, { allow: side === "allow" ? next : namesOf("allow"), deny: side === "deny" ? next : namesOf("deny") });
+    return el(
+      "div",
+      { className: "mygo-field" },
+      el("label", { className: "mygo-label" }, side === "allow" ? "\u5DE5\u5177\u767D\u540D\u5355\uFF08allow\uFF09" : "\u5DE5\u5177\u9ED1\u540D\u5355\uFF08deny\uFF09"),
+      names.length === 0 ? el("div", { className: "mygo-hint" }, side === "allow" ? "\uFF08\u7A7A = \u5168\u91CF\uFF0C\u9664\u5168\u5C40\u63A9\u7801\uFF09" : "\uFF08\u7A7A = \u4E0D\u989D\u5916\u5C4F\u853D\uFF09") : el("div", { className: "mygo-chips" }, names.map((name2, index) => el(
+        "span",
+        { key: `${side}-${name2}-${index}`, title: name2, className: "mygo-chip" },
+        el("span", { className: "mygo-chipName" }, name2),
+        el("span", {
+          role: "button",
+          className: "mygo-chipKill",
+          title: "\u79FB\u9664",
+          "aria-label": `\u79FB\u9664 ${name2}`,
+          onClick: () => {
+            if (!disabled) write(names.filter((_, at) => at !== index));
+          }
+        }, "\xD7")
+      ))),
+      el(
+        "div",
+        { className: "mygo-colFoot" },
+        el("input", {
+          className: "mygo-input mygo-inputMono",
+          value: pending,
+          list: listId,
+          placeholder: "\u5DE5\u5177\u540D\uFF08\u53EF\u70B9\u9009\uFF0C\u4E5F\u53EF\u624B\u586B\u672A\u8FDE\u63A5\u5DE5\u5177\uFF09",
+          disabled,
+          spellCheck: false,
+          onChange: (event) => setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: event.target.value } })),
+          onKeyDown: (event) => {
+            if (event.key === "Enter" && pending.trim() !== "" && !disabled) add();
+          }
+        }),
+        el("datalist", { id: listId }, tools.filter((name2) => !names.includes(name2)).map((name2) => el("option", { key: name2, value: name2 }))),
+        el("button", {
+          className: "mygo-btn mygo-btnMini",
+          disabled: disabled || pending.trim() === "",
+          title: "\u52A0\u5165\u540D\u5355",
+          onClick: add
+        }, "+ \u6DFB\u52A0")
+      )
+    );
+    function add() {
+      const name2 = pending.trim();
+      if (name2 === "" || names.includes(name2)) {
+        setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: "" } }));
+        return;
+      }
+      write([...names, name2]);
+      setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: "" } }));
     }
   };
-  const toggleCard = (id) => setOpenCards((prev) => ({ ...prev, [id]: !prev[id] }));
-  const cardOpen = (id) => openCards[id] === true;
-  const buildPersistDraft = (source) => {
-    const out = { ...source };
-    for (const type of AGENT_TYPES) {
-      const cfg = source[type];
-      if (cfg && typeof cfg === "object" && !Array.isArray(cfg)) out[type] = stripEmptyFallbackRows(cfg);
-    }
-    if (source.roles && typeof source.roles === "object" && !Array.isArray(source.roles)) {
-      const roles = { ...source.roles };
-      for (const [key, row] of Object.entries(roles)) {
-        if (row && typeof row === "object" && !Array.isArray(row)) roles[key] = stripEmptyFallbackRows(row);
-      }
-      out.roles = roles;
-    }
-    if (source.usagePrices !== void 0 && source.usagePrices !== null && typeof source.usagePrices === "object" && !Array.isArray(source.usagePrices)) {
-      const prices = {};
-      for (const [key, row] of Object.entries(source.usagePrices)) {
-        if (typeof key !== "string" || !PRICE_KEY_PATTERN.test(key)) continue;
-        const price = sanitizePriceRow(row);
-        if (price !== null) prices[key] = price;
-      }
-      out.usagePrices = prices;
-    }
-    return out;
-  };
-  const save = async () => {
-    if (!draft) {
-      setMsg("\u914D\u7F6E\u5C1A\u672A\u52A0\u8F7D\u6210\u529F\uFF0C\u5DF2\u7981\u6B62\u4FDD\u5B58\u4EE5\u907F\u514D\u8986\u76D6");
-      return false;
-    }
-    if (conflict) {
-      setMsg(conflict);
-      return false;
-    }
-    setSaving(true);
-    setMsg(null);
-    try {
-      if (!connection || !connection.rpc || typeof connection.rpc.call !== "function") {
-        setMsg("\u8FDE\u63A5\u4E0D\u53EF\u7528");
-        return false;
-      }
-      const body = buildPersistDraft(draft);
-      if (typeof revision === "number") body.revision = revision;
-      const outcome = interpretSaveResult(await connection.rpc.call("/dsh-my-go", "saveSettings", body));
-      if (outcome.status === "saved") {
-        setDirty(false);
-        setConflict(null);
-        if (typeof outcome.revision === "number") setRevision(outcome.revision);
-        setMsg(outcome.message);
-        return true;
-      }
-      if (outcome.status === "conflict") {
-        setConflict(outcome.message);
-        setMsg(outcome.message);
-        return false;
-      }
-      setMsg(outcome.message);
-      return false;
-    } catch (e) {
-      setMsg("\u4FDD\u5B58\u5931\u8D25: " + String(e));
-      return false;
-    } finally {
-      setSaving(false);
-    }
-  };
-  const saveAndClose = async () => {
-    if (await save() && typeof close === "function") close();
-  };
-  const reloadDraft = () => {
-    setConflict(null);
-    setMsg(null);
-    setDirty(false);
-    setLoadError(false);
-    setDraft(null);
-    setReloadNonce((n) => n + 1);
-  };
-  const selectStyle = { background: "var(--surface, #1e1e1e)", color: "var(--text, #e0e0e0)", border: "1px solid var(--separator, #333)", borderRadius: 4, padding: "4px 8px", fontSize: 13, width: "100%", boxSizing: "border-box" };
-  const labelStyle = { fontSize: 12, color: "var(--text-secondary, #888)", marginBottom: 2 };
-  const hintStyle = { fontSize: 11, color: "var(--text-secondary, #888)", marginTop: 2 };
-  const cardStyle = { border: "1px solid var(--separator, #333)", borderRadius: 8, padding: 12, marginBottom: 12 };
-  const rowStyle = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 };
-  const miniBtnStyle = { padding: "2px 8px", borderRadius: 4, border: "1px solid var(--separator, #333)", background: "transparent", color: "var(--text, #e0e0e0)", cursor: "pointer", fontSize: 12 };
-  const chainRowStyle = { display: "grid", gridTemplateColumns: "minmax(56px, auto) 1fr 1fr auto", gap: 6, alignItems: "center", marginBottom: 6 };
-  const primaryBadgeStyle = { fontSize: 10, padding: "0 5px", borderRadius: 4, background: "rgba(76,175,80,0.15)", color: "#4caf50", border: "1px solid rgba(76,175,80,0.4)", flexShrink: 0 };
-  const glyphStyle = { fontSize: 10, color: "var(--text-secondary, #888)", flexShrink: 0 };
-  const summaryStyle = { fontSize: 11, color: "var(--text-secondary, #888)", marginTop: 3, overflowWrap: "anywhere" };
-  const EFFORTS = ["", "low", "high", "max"];
-  const providers = available.providers;
-  const effortLabel = (v) => v === "" ? "\u8DDF\u968F\u6A21\u578B\u9ED8\u8BA4\uFF08\u4E0D\u5355\u72EC\u6307\u5B9A\uFF09" : { low: "\u4F4E\uFF08low\uFF09", high: "\u9AD8\uFF08high\uFF09", max: "\u6700\u9AD8\uFF08max\uFF09" }[v] ?? v;
-  const makeSelect = (value, options, labelFn, onChange, disabled = false) => React6.createElement(
-    "select",
-    { style: selectStyle, value: value ?? "", disabled, onChange: (e) => onChange(e.target.value) },
-    ...options.map(
-      (opt) => React6.createElement("option", { key: opt, value: opt }, labelFn(opt))
+  return el(
+    "div",
+    { className: "mygo-col", "data-pane": "role" },
+    el(
+      "div",
+      { className: "mygo-colHead" },
+      el("span", { className: "mygo-label" }, `\u6B63\u5728\u7F16\u8F91\uFF1A${role.label}`),
+      builtin ? null : el("span", { className: "mygo-rowBadge" }, "\u81EA\u5B9A\u4E49")
+    ),
+    renderChainEditor(row, providers, modelsFor, listErrorFor, disabled, (shape) => setChain(key, shape)),
+    el(
+      "div",
+      { className: "mygo-fields" },
+      el(
+        "div",
+        { className: "mygo-field" },
+        el("label", { className: "mygo-label" }, "\u601D\u8003\u6863\u4F4D\uFF08Reasoning Effort\uFF09"),
+        el("select", {
+          className: "mygo-select",
+          value: row.reasoningEffort ?? "",
+          disabled,
+          onChange: (event) => setBinding(key, "reasoningEffort", event.target.value)
+        }, EFFORTS.map((option) => el("option", { key: option, value: option }, effortLabel(option)))),
+        el("div", { className: "mygo-hint" }, "\u63A8\u7406\u5F3A\u5EA6\uFF1A\u8D8A\u9AD8\u8D8A\u806A\u660E\uFF0C\u4E5F\u8D8A\u8D35\u3002")
+      ),
+      el(
+        "div",
+        { className: "mygo-field" },
+        el("label", { className: "mygo-label" }, "DSV4P0813 \u8865\u4E01"),
+        el(
+          "label",
+          { className: "mygo-check" },
+          el("input", {
+            type: "checkbox",
+            checked: row.dsv4p0813 === true,
+            disabled: disabled || key === "sisyphus",
+            onChange: (event) => setBinding(key, "dsv4p0813", event.target.checked)
+          }),
+          "\u542F\u7528"
+        ),
+        el("div", { className: "mygo-hint" }, key === "sisyphus" ? "Sisyphus \u4F1A\u8BDD\u4E0D\u7ECF\u8FC7 DSV4P0813 \u6CE8\u5165\u8BC6\u522B\u9762\uFF0C\u52FE\u9009\u5BF9\u5176\u4E0D\u751F\u6548\uFF0C\u5DF2\u7F6E\u7070\u9501\u5B9A\u3002" : "\u4E24\u9636\u6BB5\u951A\u5B9A\u4E0A\u4E0B\u6587\u6CE8\u5165\uFF0C\u4E13\u4E3A DeepSeek V4 Pro 0813 \u8C03\u6821\uFF0C\u5176\u4ED6\u6A21\u578B\u52FF\u5F00\uFF1B\u53EA\u5BF9 MyGO preset \u6D3E\u53D1\u7684\u5B50\u4EE3\u7406\u4F1A\u8BDD\u751F\u6548\u3002")
+      ),
+      key === "sisyphus" ? el(
+        "div",
+        { className: "mygo-field mygo-fieldWide" },
+        el("div", { className: "mygo-hint" }, "Sisyphus \u7684\u7F16\u6392\u7EAA\u5F8B\u4EBA\u8BBE\u4E0D\u63D0\u4F9B\u9762\u677F\u8986\u76D6\uFF1B\u603B\u8C03\u5EA6\u53EA\u8BA4\u5BF9\u8BDD\u6846\u6240\u9009\u6A21\u578B\uFF0C\u6B64\u5904\u914D\u7F6E\u4E3A\u515C\u5E95/\u8865\u4E01\u4F4D\uFF08\u4EC5\u5F53\u63D2\u4EF6\u914D\u7F6E bindSisyphus \u5F00\u542F\u65F6\u751F\u6548\uFF09\u3002")
+      ) : el(
+        "div",
+        { className: "mygo-field mygo-fieldWide" },
+        el("label", { className: "mygo-label" }, "\u4EBA\u8BBE\u8986\u76D6\uFF08Persona\uFF09"),
+        el("div", { className: "mygo-hint" }, `\u5F53\u524D\u6765\u6E90\uFF1A${personaOverrideSource(current.roles?.[key])}\uFF1B\u7559\u7A7A\u4FDD\u5B58 = \u6062\u590D prompts/${key}.md \u6587\u4EF6\u9ED8\u8BA4`),
+        el("textarea", {
+          className: "mygo-textarea",
+          value: current.roles?.[key]?.persona ?? "",
+          rows: 3,
+          disabled,
+          placeholder: `\u7559\u7A7A = \u4F7F\u7528 prompts/${key}.md \u6587\u4EF6\u9ED8\u8BA4\u4EBA\u8BBE`,
+          onChange: (event) => setPersona(key, event.target.value)
+        }),
+        el(
+          "div",
+          { className: "mygo-colFoot" },
+          builtin ? el("button", {
+            className: "mygo-btn mygo-btnMini",
+            disabled,
+            title: `\u8BFB\u53D6 prompts/${key}.md \u539F\u6587\u586B\u5165\u4E0A\u65B9\u7F16\u8F91\u6846\uFF08\u8349\u7A3F\u6001\uFF0C\u70B9\u4FDD\u5B58\u624D\u751F\u6548\uFF09`,
+            onClick: () => loadBuiltinPersona(key)
+          }, "\u8F7D\u5165\u6587\u4EF6\u9ED8\u8BA4") : null,
+          personaFileErr[key] ? el("span", { className: "mygo-statusError" }, personaFileErr[key]) : null
+        )
+      )
+    ),
+    builtin ? null : el("div", { className: "mygo-fields" }, toolList("allow"), toolList("deny")),
+    builtin ? null : el(
+      "div",
+      { className: "mygo-field" },
+      el("label", { className: "mygo-label" }, "\u89D2\u8272\u952E\u540D"),
+      el("input", {
+        className: "mygo-input mygo-inputMono",
+        value: key,
+        disabled,
+        spellCheck: false,
+        onBlur: (event) => {
+          const next = event.target.value.trim();
+          if (!disabled && next !== "" && next !== key) onRenameRole?.(key, next);
+        },
+        title: "\u6539\u540D\u8BF7\u76F4\u63A5\u5728\u89D2\u8272\u6E05\u5355\u91CC\u65B0\u5EFA + \u5220\u9664\uFF1B\u8FD9\u91CC\u5931\u7126\u5373\u5C1D\u8BD5\u91CD\u547D\u540D"
+      })
+    ),
+    builtin ? null : el(
+      "div",
+      { className: "mygo-colFoot" },
+      el("button", { className: "mygo-btn mygo-btnMini", disabled, title: "\u628A\u8BE5\u89D2\u8272\u7684\u5B8C\u6574 JSON \u590D\u5236\u5230\u526A\u8D34\u677F", onClick: () => onExportRole?.(key) }, "\u5BFC\u51FA JSON"),
+      el("button", { className: "mygo-btn mygo-btnMini", disabled, title: "\u7C98\u8D34 JSON \u8986\u76D6\u8BE5\u89D2\u8272", onClick: () => onImportOverwrite?.(key) }, "\u4ECE JSON \u8986\u76D6"),
+      el("button", {
+        className: "mygo-btn mygo-btnMini",
+        disabled,
+        onClick: () => onDeleteRole?.(key),
+        title: "\u4ECE\u8349\u7A3F\u91CC\u5220\u6389\u8FD9\u4E2A\u89D2\u8272\uFF08\u4FDD\u5B58\u540E\u6574\u952E\u4ECE roles \u5B57\u5178\u79FB\u9664\uFF09"
+      }, `\u5220\u9664\u300C${key}\u300D`),
+      importError ? el("span", { className: "mygo-statusError" }, importError) : null
+    ),
+    builtin ? null : el(
+      "div",
+      { className: "mygo-colFoot" },
+      rosterFailed ? el("span", { className: "mygo-hint" }, "\u5DE5\u5177\u82B1\u540D\u518C\u62C9\u53D6\u5931\u8D25\uFF1A\u540D\u5355\u53EA\u662F\u4E0D\u7ED9\u63D0\u793A\uFF0C\u624B\u586B\u7167\u5E38\u3002") : el("span", { className: "mygo-hint" }, `\u5BBF\u4E3B\u82B1\u540D\u518C ${tools.length} \u4E2A\u5DE5\u5177\u53EF\u70B9\u9009\u3002`),
+      el("button", { className: "mygo-btn mygo-btnMini", onClick: () => onRefreshTools?.(), title: "MCP \u521A\u8FDE\u4E0A\u65B0\u5DE5\u5177\u65F6\u91CD\u62C9\u4E00\u6B21\u540D\u5355" }, "\u5237\u65B0\u82B1\u540D\u518C")
     )
   );
-  const makeCombobox = (value, options, listId, placeholder, onChange, disabled = false) => React6.createElement(
+}
+function renderChainEditor(row, providers, modelsFor, listErrorFor, disabled, onChange) {
+  const chain = composeChain(row);
+  const apply2 = (next) => onChange(next);
+  return el(
     "div",
-    { style: { minWidth: 0 } },
-    React6.createElement("input", {
-      style: { ...selectStyle, fontFamily: MONO_FONT },
+    { className: "mygo-field" },
+    el("div", { className: "mygo-label" }, "\u6A21\u578B\u4F18\u5148\u7EA7\uFF08\u4E3B\u9009 + \u5907\u9009\u94FE\uFF09"),
+    el("div", { className: "mygo-hint" }, "#1 \u4E3A\u4E3B\u9009\uFF1B\u4E3B\u6A21\u578B\u5931\u8D25\uFF08\u9650\u6D41\u91CD\u8BD5\u8017\u5C3D\u540E\uFF09\u6309\u5E8F\u81EA\u52A8\u5207\u6362\u540E\u7EED\u6761\u76EE\u3002\u5907\u9009 \u2191 \u5230\u9876 = \u4E00\u952E\u6276\u6B63\u4E3A\u4E3B\u9009\uFF1B\u5220\u9664 #1 \u5219 #2 \u81EA\u52A8\u6276\u6B63\u3002"),
+    el("div", { className: "mygo-chain" }, chain.map((entry, index) => {
+      const listError = listErrorFor(entry.provider);
+      return el(
+        React3.Fragment,
+        { key: `mygo-chain-${index}` },
+        el(
+          "div",
+          { className: "mygo-chainRow" },
+          el(
+            "span",
+            { className: "mygo-chainIndex" },
+            `#${index + 1}`,
+            index === 0 ? el("span", { className: "mygo-rowBadge", "data-tone": "on" }, "\u4E3B\u9009") : null
+          ),
+          combobox(
+            entry.provider,
+            providers,
+            `mygo-chain-providers-${index}`,
+            index === 0 ? "\u8DDF\u968F Sisyphus\uFF08\u70B9\u9009\u6216\u624B\u586B\u6E20\u9053\uFF09" : "\uFF08\u6E20\u9053\uFF1A\u70B9\u9009\u6216\u624B\u586B\uFF09",
+            disabled,
+            (value) => apply2(updateChainEntry(chain, index, "provider", value))
+          ),
+          combobox(
+            entry.model,
+            modelsFor(entry.provider),
+            `mygo-chain-models-${index}`,
+            index === 0 ? "\u8DDF\u968F Sisyphus\uFF08\u70B9\u9009\u6216\u624B\u586B\u6A21\u578B\uFF09" : "\uFF08\u6A21\u578B\uFF1A\u70B9\u9009\u6216\u624B\u586B\uFF09",
+            disabled,
+            (value) => apply2(updateChainEntry(chain, index, "model", value))
+          ),
+          el(
+            "div",
+            { className: "mygo-chainActors" },
+            el("button", { className: "mygo-btn mygo-btnMini", disabled: disabled || index === 0, title: "\u4E0A\u79FB\uFF08#2 \u5230\u9876\u5373\u6276\u6B63\u4E3A\u4E3B\u9009\uFF09", onClick: () => apply2(moveChainEntry(chain, index, -1)) }, "\u2191"),
+            el("button", { className: "mygo-btn mygo-btnMini", disabled: disabled || index === chain.length - 1, title: "\u4E0B\u79FB\uFF08\u66F4\u540E\u5C1D\u8BD5\uFF09", onClick: () => apply2(moveChainEntry(chain, index, 1)) }, "\u2193"),
+            el("button", { className: "mygo-btn mygo-btnMini", disabled: disabled || chain.length <= 1, title: "\u5220\u9664\u8BE5\u884C\uFF08\u81F3\u5C11\u4FDD\u7559\u4E3B\u9009\u4F4D\uFF1B\u5220 #1 \u5219 #2 \u6276\u6B63\uFF09", onClick: () => apply2(removeChainEntry(chain, index)) }, "\xD7")
+          )
+        ),
+        listError ? el("div", { className: "mygo-hint" }, `\u26A0 \u6E20\u9053 ${entry.provider} \u7684\u6A21\u578B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25\uFF1A${listError}\uFF08\u53EF\u76F4\u63A5\u624B\u586B\u6A21\u578B\u540D\uFF0C\u4E0D\u5F71\u54CD\u4FDD\u5B58\uFF09`) : null
+      );
+    })),
+    el(
+      "div",
+      { className: "mygo-colFoot" },
+      el("button", { className: "mygo-btn mygo-btnMini", disabled, onClick: () => apply2(addChainEntry(chain, { provider: "", model: "" })) }, "+ \u6DFB\u52A0\u6761\u76EE")
+    )
+  );
+}
+function combobox(value, options, listId, placeholder, disabled, onChange) {
+  return el(
+    "div",
+    { className: "mygo-field" },
+    el("input", {
+      className: "mygo-input mygo-inputMono",
       value: value ?? "",
       list: listId,
       placeholder,
       disabled,
       spellCheck: false,
-      onChange: (e) => onChange(e.target.value)
+      onChange: (event) => onChange(event.target.value)
     }),
-    React6.createElement(
-      "datalist",
-      { id: listId },
-      ...options.filter((opt) => opt !== "").map((opt) => React6.createElement("option", { key: opt, value: opt }))
-    )
+    el("datalist", { id: listId }, options.filter((option) => option !== "").map((option) => el("option", { key: option, value: option })))
   );
-  const modelsForProvider = (providerId) => {
-    const modelsMap = available.models && typeof available.models === "object" ? available.models : {};
-    if (!providerId) return [...new Set(Object.values(modelsMap).flat())];
-    const specific = modelsMap[providerId];
-    return Array.isArray(specific) ? specific : [];
-  };
-  const modelListErrorFor = (providerId) => {
-    if (!providerId) return "";
-    const errors = available.errors && typeof available.errors === "object" ? available.errors : {};
-    const detail = errors[providerId];
-    return typeof detail === "string" && detail !== "" ? detail : "";
-  };
-  const renderChainEditor = (keyPrefix, cfg, onChange, disabled = false) => {
-    const chain = composeChain(cfg);
-    const apply2 = (next) => onChange(decomposeChain(next));
-    return React6.createElement(
-      "div",
-      { style: { marginBottom: 8 } },
-      React6.createElement("div", { style: labelStyle }, "\u6A21\u578B\u4F18\u5148\u7EA7\uFF08\u4E3B\u9009 + \u5907\u9009\u94FE\uFF09"),
-      React6.createElement(
-        "div",
-        { style: { fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 } },
-        "#1 \u4E3A\u4E3B\u9009\uFF1B\u4E3B\u6A21\u578B\u5931\u8D25\uFF08\u9650\u6D41\u91CD\u8BD5\u8017\u5C3D\u540E\uFF09\u6309\u5E8F\u81EA\u52A8\u5207\u6362\u540E\u7EED\u6761\u76EE\u3002\u5907\u9009 \u2191 \u5230\u9876 = \u4E00\u952E\u6276\u6B63\u4E3A\u4E3B\u9009\uFF1B\u5220\u9664 #1 \u5219 #2 \u81EA\u52A8\u6276\u6B63\u3002"
-      ),
-      chain.map((row, i) => {
-        const listError = modelListErrorFor(row.provider);
-        return React6.createElement(
-          React6.Fragment,
-          { key: `${keyPrefix}-chain-${i}` },
-          React6.createElement(
-            "div",
-            { style: chainRowStyle },
-            React6.createElement(
-              "span",
-              { style: { fontSize: 11, color: "var(--text-secondary, #888)", display: "flex", alignItems: "center", gap: 4 } },
-              `#${i + 1}`,
-              i === 0 ? React6.createElement("span", { style: primaryBadgeStyle }, "\u4E3B\u9009") : null
-            ),
-            makeCombobox(
-              row.provider,
-              providers,
-              `${keyPrefix}-${i}-providers`,
-              i === 0 ? "\u8DDF\u968F Sisyphus\uFF08\u53EF\u70B9\u9009\u6216\u624B\u586B\u6E20\u9053\uFF09" : "\uFF08\u6E20\u9053\uFF1A\u53EF\u70B9\u9009\u6216\u624B\u586B\uFF09",
-              (v) => apply2(updateChainEntry(chain, i, "provider", v)),
-              disabled
-            ),
-            makeCombobox(
-              row.model,
-              modelsForProvider(row.provider),
-              `${keyPrefix}-${i}-models`,
-              i === 0 ? "\u8DDF\u968F Sisyphus\uFF08\u53EF\u70B9\u9009\u6216\u624B\u586B\u6A21\u578B\uFF09" : "\uFF08\u6A21\u578B\uFF1A\u53EF\u70B9\u9009\u6216\u624B\u586B\uFF09",
-              (v) => apply2(updateChainEntry(chain, i, "model", v)),
-              disabled
-            ),
-            React6.createElement(
-              "div",
-              { style: { display: "flex", gap: 4 } },
-              React6.createElement("button", { style: miniBtnStyle, disabled: disabled || i === 0, title: "\u4E0A\u79FB\uFF08#2 \u5230\u9876\u5373\u6276\u6B63\u4E3A\u4E3B\u9009\uFF09", onClick: () => apply2(moveChainEntry(chain, i, -1)) }, "\u2191"),
-              React6.createElement("button", { style: miniBtnStyle, disabled: disabled || i === chain.length - 1, title: "\u4E0B\u79FB\uFF08\u66F4\u540E\u5C1D\u8BD5\uFF09", onClick: () => apply2(moveChainEntry(chain, i, 1)) }, "\u2193"),
-              React6.createElement("button", { style: miniBtnStyle, disabled: disabled || chain.length <= 1, title: "\u5220\u9664\u8BE5\u884C\uFF08\u81F3\u5C11\u4FDD\u7559\u4E3B\u9009\u4F4D\uFF1B\u5220 #1 \u5219 #2 \u6276\u6B63\uFF09", onClick: () => apply2(removeChainEntry(chain, i)) }, "\xD7")
-            )
-          ),
-          // 行内渠道失败提示（tisitan.9 A-06）：与「该渠道真的没有模型」区分——
-          // 清单没拉上来，不是清单为空
-          listError ? React6.createElement(
-            "div",
-            { style: { ...hintStyle, marginTop: -2, marginBottom: 6, color: ACCENT_QUEUE } },
-            `\u26A0 \u6E20\u9053 ${row.provider} \u7684\u6A21\u578B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25\uFF1A${listError}\uFF08\u53EF\u76F4\u63A5\u624B\u586B\u6A21\u578B\u540D\uFF0C\u4E0D\u5F71\u54CD\u4FDD\u5B58\uFF09`
-          ) : null
-        );
-      }),
-      React6.createElement("button", { style: miniBtnStyle, disabled, onClick: () => apply2(addChainEntry(chain)) }, "+ \u6DFB\u52A0\u6761\u76EE")
-    );
-  };
-  const fetchFailed = modelsReady && available.providers.length === 0;
-  return React6.createElement(
+}
+
+// src/usage-prices-editor.js
+var React4 = __toESM(require("react"), 1);
+var el2 = React4.createElement;
+function renderPricesPane(deps) {
+  const { selectedPrice, current, writable, keys = [], setCurrency, setPrice, onDeletePrice } = deps;
+  const currency = current.usageCurrency === "CNY" ? "CNY" : "USD";
+  const row = selectedPrice && current.usagePrices?.[selectedPrice] ? current.usagePrices[selectedPrice] : null;
+  const validation = row ? validatePriceRow(row) : null;
+  const unit = currency === "CNY" ? "\u5143 / 1M tokens\uFF08\u4EBA\u6C11\u5E01\uFF09" : "\u7F8E\u5143 / 1M tokens\uFF08USD\uFF09";
+  return el2(
     "div",
-    { style: { padding: 16, maxWidth: 600 } },
-    React6.createElement("h2", { style: { margin: "0 0 4px" } }, "MyGO \u7F16\u6392\u914D\u7F6E"),
-    React6.createElement("p", { style: { margin: "0 0 6px", fontSize: 13, color: "var(--text-secondary, #888)" } }, "\u7ED9\u6BCF\u4E2A\u5DE5\u79CD\u5355\u72EC\u6307\u5B9A\u6A21\u578B\uFF1B\u7559\u7A7A = \u8DDF\u968F Sisyphus\uFF08\u5373\u60A8\u5728\u5BF9\u8BDD\u6846\u91CC\u9009\u7684\u6A21\u578B\uFF09\u3002\u6539\u5B8C\u70B9\u300C\u7ACB\u5373\u4FDD\u5B58\u300D\uFF0C\u4E0B\u6B21\u6D3E\u53D1\u751F\u6548\u3002"),
-    fetchFailed ? React6.createElement("div", {
-      style: { padding: 12, marginBottom: 16, borderRadius: 6, background: "rgba(244,67,54,0.1)", border: "1px solid rgba(244,67,54,0.3)", fontSize: 13 }
-    }, "\u26A0 \u6682\u65F6\u8BFB\u4E0D\u5230 DSH \u7684 Provider/Model \u5217\u8868\u2014\u2014\u786E\u8BA4 dsh web \u5DF2\u91CD\u542F\u3001LLM \u63D2\u4EF6\u5DF2\u914D\u7F6E\u5E76\u6FC0\u6D3B\u540E\uFF0C\u56DE\u6765\u5237\u65B0\u5373\u53EF\u3002\u4E0D\u5F71\u54CD\u624B\u586B\uFF1A\u6E20\u9053\u4E0E\u6A21\u578B\u4E24\u680F\u90FD\u662F\u53EF\u624B\u586B\u8F93\u5165\u6846\uFF0C\u6E05\u5355\u5728\u573A\u65F6\u70B9\u9009\u5373\u53EF\u3002") : null,
-    // 加载失败红字横幅（tisitan.20 Z1'）：与「加载中」可区分，保存已被禁用
-    loadError ? React6.createElement("div", {
-      style: { padding: 12, marginBottom: 16, borderRadius: 6, background: "rgba(244,67,54,0.1)", border: "1px solid rgba(244,67,54,0.3)", fontSize: 13 }
-    }, "\u26A0 \u914D\u7F6E\u52A0\u8F7D\u5931\u8D25\uFF08loadSettings \u4E0D\u53EF\u7528\u6216\u8FD4\u56DE\u9519\u8BEF\uFF09\u2014\u2014\u4E3A\u9632\u6E05\u7A7A\u914D\u7F6E\u5DF2\u7981\u7528\u5168\u90E8\u7F16\u8F91\u4E0E\u4FDD\u5B58\uFF0C\u8BF7\u786E\u8BA4\u63D2\u4EF6\u5DF2\u6FC0\u6D3B\u540E\u5237\u65B0\u91CD\u8BD5\u3002") : null,
-    // 并发写冲突横幅（tisitan.9 E6/A-03）：他处已经改过这份配置，保存被锁，
-    // 唯一出路是显式重新加载（草稿会被丢弃——所以顺带把 beforeunload 的语义
-    // 也说清楚，用户知道自己手里有未保存的东西）
-    conflict ? React6.createElement(
+    { className: "mygo-col", "data-pane": "price" },
+    el2(
       "div",
-      {
-        style: { display: "flex", alignItems: "center", gap: 10, padding: 12, marginBottom: 16, borderRadius: 6, background: "rgba(230,162,60,0.12)", border: "1px solid rgba(230,162,60,0.45)", fontSize: 13 }
-      },
-      React6.createElement("span", { style: { color: ACCENT_QUEUE, fontWeight: 600 } }, "\u26A0 " + conflict),
-      React6.createElement("button", {
-        style: miniBtnStyle,
-        title: "\u4E22\u5F03\u5F53\u524D\u8349\u7A3F\uFF0C\u91CD\u65B0\u8BFB\u53D6\u6700\u65B0\u914D\u7F6E\uFF08\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\u4F1A\u4E22\u5931\uFF09",
-        onClick: reloadDraft
-      }, "\u91CD\u65B0\u52A0\u8F7D")
-    ) : null,
-    !draft && !loadError ? React6.createElement("div", {
-      style: { padding: 12, marginBottom: 16, borderRadius: 6, border: "1px solid var(--separator, #333)", fontSize: 13, color: "var(--text-secondary, #888)" }
-    }, "\u914D\u7F6E\u52A0\u8F7D\u4E2D\u2026") : null,
-    ...AGENT_TYPES.map((type) => {
-      const cfg = draft?.[type] || {};
-      const open = cardOpen(type);
-      return React6.createElement(
+      { className: "mygo-colHead" },
+      el2("span", { className: "mygo-label" }, selectedPrice ? `\u6B63\u5728\u7F16\u8F91\uFF1A${selectedPrice}` : "\u6B63\u5728\u7F16\u8F91\uFF1A\uFF08\u672A\u9009\u62E9\u8BA1\u4EF7\u952E\uFF09"),
+      selectedPrice ? null : el2("span", { className: "mygo-rowBadge" }, "\u7A7A\u8868")
+    ),
+    el2(
+      "div",
+      { className: "mygo-fields" },
+      el2(
         "div",
-        { key: type, style: cardStyle },
-        // 卡片标题行：工种中文名 + 英文名（AGENT_LABELS 已合并）+ 一句话角色说明
-        React6.createElement(
-          "div",
-          {
-            style: { cursor: "pointer", marginBottom: open ? 8 : 0 },
-            onClick: () => toggleCard(type)
-          },
-          React6.createElement(
-            "div",
-            { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } },
-            React6.createElement("span", { style: glyphStyle }, open ? "\u25BE" : "\u25B8"),
-            React6.createElement("span", { style: { fontWeight: 600 } }, AGENT_LABELS[type] || type),
-            React6.createElement("span", { style: { fontSize: 12, color: "var(--text-secondary, #888)" } }, AGENT_BLURBS[type] ?? "")
-          ),
-          React6.createElement("div", { style: summaryStyle }, builtinSummaryText(cfg))
-        ),
-        open ? React6.createElement(
-          React6.Fragment,
-          null,
-          // Sisyphus 卡片语义（broker.mjs:599,1580）：绑定仅当插件配置
-          // bindSisyphus===true 才参与 agent/request 覆盖，默认完全跟随对话框模型
-          type === "sisyphus" ? React6.createElement("div", { style: { ...hintStyle, marginBottom: 8 } }, "\u603B\u8C03\u5EA6\u53EA\u8BA4\u5BF9\u8BDD\u6846\u6240\u9009\u6A21\u578B\uFF0C\u6B64\u5904\u914D\u7F6E\u4E3A\u515C\u5E95/\u8865\u4E01\u4F4D\uFF08\u4EC5\u5F53\u63D2\u4EF6\u914D\u7F6E bindSisyphus \u5F00\u542F\u65F6\u751F\u6548\uFF09\u3002") : null,
-          // 模型优先级列表（tisitan.19）：主选（#1）与备选链（#2..N）合并编辑
-          renderChainEditor(type, cfg, (chainRow) => setChain(type, chainRow), !draft),
-          React6.createElement(
-            "div",
-            { style: rowStyle },
-            React6.createElement(
-              "div",
-              null,
-              React6.createElement("div", { style: labelStyle }, "\u601D\u8003\u6863\u4F4D\uFF08Reasoning Effort\uFF09"),
-              React6.createElement("div", { style: hintStyle }, "\u63A8\u7406\u5F3A\u5EA6\uFF1A\u8D8A\u9AD8\u8D8A\u806A\u660E\uFF0C\u4E5F\u8D8A\u8D35"),
-              makeSelect(cfg.reasoningEffort ?? "", EFFORTS, effortLabel, (v) => set(type, "reasoningEffort", v), !draft)
-            ),
-            React6.createElement(
-              "div",
-              null,
-              React6.createElement("div", { style: labelStyle }, "DSV4P0813 \u8865\u4E01"),
-              // 棒4-Z3（tisitan.20）：Sisyphus 卡置灰锁定——注入识别面
-              // typeOfAgent（broker.mjs:527-534）恒不命中 sisyphus 会话，勾选
-              // 永不生效，留可勾选只会误导
-              React6.createElement(
-                "label",
-                { style: { display: "flex", alignItems: "center", gap: 6, cursor: draft && type !== "sisyphus" ? "pointer" : "not-allowed", fontSize: 13, paddingTop: 2 } },
-                React6.createElement("input", { type: "checkbox", checked: cfg.dsv4p0813 === true, disabled: !draft || type === "sisyphus", onChange: (e) => set(type, "dsv4p0813", e.target.checked) }),
-                "\u542F\u7528"
-              ),
-              React6.createElement(
-                "div",
-                { style: hintStyle },
-                type === "sisyphus" ? "Sisyphus \u4F1A\u8BDD\u4E0D\u7ECF\u8FC7 DSV4P0813 \u6CE8\u5165\u8BC6\u522B\u9762\uFF0C\u52FE\u9009\u5BF9\u5176\u4E0D\u751F\u6548\uFF0C\u5DF2\u7F6E\u7070\u9501\u5B9A" : "\u4E24\u9636\u6BB5\u951A\u5B9A\u4E0A\u4E0B\u6587\u6CE8\u5165\uFF0C\u4E13\u4E3A DeepSeek V4 Pro 0813 \u8C03\u6821\uFF0C\u5176\u4ED6\u6A21\u578B\u52FF\u5F00\uFF1B\u4EC5\u5BF9 MyGO preset \u6D3E\u53D1\u7684\u5B50\u4EE3\u7406\u4F1A\u8BDD\u751F\u6548\uFF0Clib-only \u90E8\u7F72\u5F62\u6001\u4E0B\u4E0D\u751F\u6548"
-              )
-            )
-          ),
-          // 人设覆盖（tisitan.15）：内置工种走「roles 行 persona > prompts 文件」
-          // 解析链；Sisyphus 的编排纪律人设是行为本体，不开放覆盖
-          type === "sisyphus" ? React6.createElement("div", { style: { ...hintStyle, marginTop: 4 } }, "Sisyphus \u7684\u7F16\u6392\u7EAA\u5F8B\u4EBA\u8BBE\u4E0D\u63D0\u4F9B\u9762\u677F\u8986\u76D6\u3002") : React6.createElement(
-            "div",
-            { style: { marginBottom: 8 } },
-            React6.createElement("div", { style: labelStyle }, "\u4EBA\u8BBE\u8986\u76D6\uFF08Persona\uFF09"),
-            React6.createElement("div", { style: hintStyle, marginBottom: 4 }, `\u5F53\u524D\u6765\u6E90\uFF1A${personaOverrideSource(draft?.roles?.[type])}\uFF1B\u7559\u7A7A\u4FDD\u5B58 = \u6062\u590D prompts/${type}.md \u6587\u4EF6\u9ED8\u8BA4`),
-            React6.createElement("textarea", {
-              value: draft?.roles?.[type]?.persona ?? "",
-              disabled: !draft,
-              rows: 3,
-              placeholder: `\u7559\u7A7A = \u4F7F\u7528 prompts/${type}.md \u6587\u4EF6\u9ED8\u8BA4\u4EBA\u8BBE`,
-              onChange: (e) => setPersonaOverride(type, e.target.value),
-              style: { ...selectStyle, resize: "vertical", fontFamily: "inherit" }
-            }),
-            React6.createElement(
-              "div",
-              { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 4 } },
-              React6.createElement("button", {
-                style: miniBtnStyle,
-                disabled: !draft,
-                title: `\u8BFB\u53D6 prompts/${type}.md \u539F\u6587\u586B\u5165\u4E0A\u65B9\u7F16\u8F91\u6846\uFF08\u8349\u7A3F\u6001\uFF0C\u70B9\u4FDD\u5B58\u624D\u751F\u6548\uFF09`,
-                onClick: () => loadBuiltinPersona(type)
-              }, "\u8F7D\u5165\u6587\u4EF6\u9ED8\u8BA4"),
-              personaFileErr[type] ? React6.createElement("span", { style: { fontSize: 12, color: "#f44336" } }, personaFileErr[type]) : null
-            )
-          )
-        ) : null
-      );
-    }),
-    // ── 自定义角色（tisitan.14/tisitan.15）：roles dict 里的非内置条目；渲染与行操作在 roles-editor.js
-    renderRolesEditor({
-      draft,
-      // 角色区一切写操作都经 mutateDraft（E6/A-03）：dep 名不变（roles-editor
-      // 仍按 deps.setDraft 消费），换的是实现——漏了这一处就会出现「改自定义
-      // 角色不置 dirty」的偏心 dirty，比没有 dirty 更坏
-      setDraft: mutateDraft,
-      newRoleKey,
-      setNewRoleKey,
-      roleToolDrafts,
-      setRoleToolDrafts,
-      importError,
-      setImportError,
-      openCards,
-      setOpenCards,
-      EFFORTS,
-      effortLabel,
-      makeSelect,
-      renderChainEditor,
-      roster,
-      styles: { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle, rowStyle }
-    }),
-    // ── 工具屏蔽（tisitan.13）：置于 8 工种卡片之后；渲染逻辑在 tool-mask-editor.js
-    // React 由该模块自身 import（tisitan.8 A-12，与 roles-editor 对齐）
-    renderToolMaskEditor({
-      draft,
-      roster,
-      maskFilter,
-      setMaskFilter,
-      maskSelL,
-      setMaskSelL,
-      maskSelR,
-      setMaskSelR,
-      maskManual,
-      setMaskManual,
-      setDeny,
-      cardOpen,
-      toggleCard,
-      styles: { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle }
-    }),
-    // ── 用量单价表（contract D1）：置于工具屏蔽之后；渲染逻辑在 usage-prices-editor.js，
-    // 行操作走 usage-price-rows.js 纯函数，保存边界在 buildPersistDraft 净化
-    renderUsagePricesEditor({
-      draft,
-      setDraft: mutateDraft,
-      newPriceKey,
-      setNewPriceKey,
-      openCards,
-      setOpenCards,
-      makeSelect,
-      makeCombobox,
-      available,
-      styles: { cardStyle, glyphStyle, summaryStyle, hintStyle, labelStyle, miniBtnStyle, selectStyle }
-    }),
-    React6.createElement(
+        { className: "mygo-field" },
+        el2("label", { className: "mygo-label" }, "\u8BA1\u4EF7\u5E01\u79CD\uFF08\u5168\u8868\u4E00\u4E2A\uFF09"),
+        el2("select", {
+          className: "mygo-select",
+          value: currency,
+          disabled: !writable,
+          onChange: (event) => setCurrency(event.target.value)
+        }, ["USD", "CNY"].map((option) => el2("option", { key: option, value: option }, option === "CNY" ? "\u4EBA\u6C11\u5E01\uFF08CNY\uFF09" : "\u7F8E\u5143\uFF08USD\uFF09"))),
+        el2("div", { className: "mygo-hint" }, `\u5355\u4F4D\uFF1A${unit}\u3002\u6DF7\u5E01\u79CD\u6C42\u548C\u6CA1\u6709\u610F\u4E49\uFF0C\u6240\u4EE5\u6574\u8868\u5171\u7528\u4E00\u4E2A\u65CB\u94AE\u3002`)
+      ),
+      el2(
+        "div",
+        { className: "mygo-field" },
+        el2("label", { className: "mygo-label" }, "\u8BA1\u4EF7\u952E"),
+        el2("input", {
+          className: "mygo-input mygo-inputMono",
+          value: selectedPrice ?? "",
+          disabled: true,
+          list: "mygo-price-suggest",
+          placeholder: "\u5F62\u5982 deepseek/deepseek-chat"
+        }),
+        el2("datalist", { id: "mygo-price-suggest" }, keys.map((key) => el2("option", { key, value: key }))),
+        el2("div", { className: "mygo-hint" }, selectedPrice ? "\u6539\u952E\u540D\u8BF7\u65B0\u5EFA\u4E00\u884C\u518D\u5220\u65E7\u884C\u3002" : priceKeyHint("") ?? "\u952E\u683C\u5F0F\uFF1Aprovider/model\uFF08\u7B2C\u4E00\u4E2A / \u5207\u5206\uFF0C\u4E24\u6BB5\u90FD\u975E\u7A7A\uFF09\u3002")
+      ),
+      PRICE_BUCKETS.map((bucket) => el2(
+        "div",
+        { key: bucket, className: "mygo-field" },
+        el2("label", { className: "mygo-label" }, `${PRICE_BUCKET_LABELS[bucket]}\uFF08${bucket}\uFF09`),
+        el2("input", {
+          className: "mygo-input mygo-inputMono",
+          value: row ? String(row[bucket] ?? "") : "",
+          type: "number",
+          min: "0",
+          step: "any",
+          disabled: !writable || !selectedPrice,
+          placeholder: PRICE_REQUIRED_BUCKETS.includes(bucket) ? "\u5FC5\u586B" : "\u53EF\u9009\uFF08\u672A\u5B9A\u4EF7\uFF09",
+          "aria-label": `${selectedPrice ?? "\u4EF7\u683C"} ${bucket}`,
+          onChange: (event) => setPrice(selectedPrice, bucket, event.target.value)
+        })
+      ))
+    ),
+    el2(
       "div",
-      { style: { display: "flex", alignItems: "center", gap: 12, marginTop: 8, flexWrap: "wrap" } },
-      React6.createElement("button", {
-        onClick: save,
-        // 冲突后锁保存（E6/A-03）：draft 的基线已作废，放行就等于让用户拿旧
-        // 快照盖掉新配置——正是围栏要拦的那件事。必须显式「重新加载」解锁。
-        disabled: saving || !draft || conflict !== null,
-        style: { padding: "6px 20px", borderRadius: 6, border: "1px solid var(--separator, #333)", background: "transparent", color: "var(--text, #e0e0e0)", cursor: saving ? "wait" : "pointer", fontSize: 13 }
-      }, saving ? "\u4FDD\u5B58\u4E2D\u2026" : "\u7ACB\u5373\u4FDD\u5B58"),
-      typeof close === "function" ? React6.createElement("button", {
-        // close 的唯一使用点（E6/A-03）：保存成功才关设置页，失败/冲突绝不关
-        onClick: saveAndClose,
-        disabled: saving || !draft || conflict !== null,
-        title: "\u4FDD\u5B58\u6210\u529F\u540E\u5173\u95ED\u8BBE\u7F6E\u9875\uFF08\u4FDD\u5B58\u5931\u8D25\u6216\u4ED6\u5904\u5DF2\u6539\u65F6\u4E0D\u4F1A\u5173\u95ED\uFF09",
-        style: { padding: "6px 14px", borderRadius: 6, border: "1px solid var(--separator, #333)", background: "transparent", color: "var(--text, #e0e0e0)", cursor: "pointer", fontSize: 13 }
-      }, "\u4FDD\u5B58\u5E76\u5173\u95ED") : null,
-      dirty && conflict === null ? React6.createElement("span", { style: { fontSize: 12, color: ACCENT_QUEUE }, title: "\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\uFF1A\u5173\u9875\u7B7E/\u5237\u65B0\u524D\u6D4F\u89C8\u5668\u4F1A\u62E6\u4E00\u9053" }, "\u25CF \u672A\u4FDD\u5B58") : null,
-      msg ? React6.createElement("span", { style: { fontSize: 13, color: msg.startsWith("\u5DF2") ? "#4caf50" : "#f44336" } }, msg) : null
+      { className: "mygo-colFoot" },
+      el2("span", {
+        className: validation ? "mygo-statusError" : "mygo-hint",
+        "data-role": "price-validation"
+      }, row === null ? "\u5DE6\u5217\u9009\u4E00\u6761\u8BA1\u4EF7\u952E\u6765\u6539\uFF0C\u6216\u5728\u4E0B\u65B9\u65B0\u5EFA\u4E00\u884C\u3002" : validation ? `\u672A\u5C31\u7EEA\uFF1A${validation}\uFF08\u8FD9\u4E00\u884C\u4FDD\u5B58\u65F6\u4F1A\u88AB\u6574\u884C\u8DF3\u8FC7\uFF0C\u4E0D\u5F71\u54CD\u5176\u5B83\u884C\uFF09` : "\u56DB\u6876\u5408\u6CD5\uFF0C\u4FDD\u5B58\u5373\u751F\u6548\u3002"),
+      el2("button", {
+        className: "mygo-btn mygo-btnMini",
+        disabled: !writable || !selectedPrice,
+        onClick: () => onDeletePrice?.(selectedPrice),
+        title: "\u4ECE\u8349\u7A3F\u91CC\u5220\u6389\u8FD9\u4E00\u884C\uFF08\u4FDD\u5B58\u540E\u6574\u952E\u79FB\u9664\uFF09"
+      }, selectedPrice ? `\u5220\u9664\u300C${selectedPrice}\u300D` : "\u5220\u9664\u884C"),
+      el2("span", { className: "mygo-hint" }, `\u5F53\u524D\u5E01\u79CD\u7B26\u53F7\uFF1A${currencySymbol(currency)}`)
     )
   );
 }
 
+// src/settings-core.js
+var el3 = React5.createElement;
+function SettingsCard({ view = "page", scope, face, catalog, connection }) {
+  const snapshot = useScopeSnapshot(scope);
+  if (view === "summary") {
+    const card = resolveCardView(snapshot);
+    return el3("span", { className: "mygo-summary" }, card.kind === "ready" ? summaryLine(snapshot.value) : snapshot === void 0 ? "\u914D\u7F6E\u8BFB\u53D6\u4E2D\u2026" : "\u547D\u540D\u7A7A\u95F4\u672A\u5C31\u7EEA");
+  }
+  return el3(SettingsPage, { snapshot, scope, face, catalog, connection });
+}
+function useScopeSnapshot(scope) {
+  const subscribe = React5.useCallback((emit) => {
+    const off = typeof scope?.subscribe === "function" ? scope.subscribe(emit) : null;
+    const styleOff = mountSettingsStyles();
+    return () => {
+      if (typeof off === "function") off();
+      styleOff();
+    };
+  }, [scope]);
+  const get = React5.useCallback(() => scope?.getSnapshot ? scope.getSnapshot() : void 0, [scope]);
+  const snapshot = React5.useSyncExternalStore(subscribe, get, get);
+  React5.useEffect(() => {
+    if (typeof scope?.ensure === "function") void scope.ensure();
+    else if (typeof scope?.load === "function") void scope.load();
+  }, [scope]);
+  return snapshot;
+}
+function SettingsPage({ snapshot, scope, face, catalog, connection }) {
+  const [draft, setDraft] = React5.useState(null);
+  const [fence, setFence] = React5.useState(null);
+  const [saving, setSaving] = React5.useState(false);
+  const [message, setMessage] = React5.useState(null);
+  const [picked, setPicked] = React5.useState(AGENT_TYPES[0]);
+  const [pickedPrice, setPickedPrice] = React5.useState(null);
+  const [newRoleKey, setNewRoleKey] = React5.useState("");
+  const [toolDrafts, setToolDrafts] = React5.useState({});
+  const [importError, setImportError] = React5.useState("");
+  const [newPriceKey, setNewPriceKey] = React5.useState("");
+  const [personaFileErr, setPersonaFileErr] = React5.useState({});
+  const card = resolveCardView(snapshot);
+  const ready = card.kind === "ready";
+  const layers = ready ? { value: snapshot.value, base: snapshot.base, user: snapshot.user } : { value: {}, base: {}, user: {} };
+  const stored = ready ? draftFromSection(snapshot.value) : null;
+  const current = draft ?? stored ?? emptyDraft();
+  const dirty = draft !== null && compareKey(draft) !== compareKey(stored ?? emptyDraft());
+  const pending = draft === null ? [] : dirtyLabels(draft, snapshot?.value ?? {});
+  const drifted = draft !== null && typeof fence === "number" && typeof snapshot?.revision === "number" && fence !== snapshot.revision;
+  const writable = ready && snapshot.writable !== false && snapshot.mode !== "memory";
+  const models = useCatalog(catalog);
+  const tools = useToolRoster(connection);
+  React5.useEffect(() => {
+    if (!dirty) return void 0;
+    return attachBeforeUnloadGuard(typeof window === "undefined" ? void 0 : window);
+  }, [dirty]);
+  const stage = (updater) => {
+    setDraft((prev) => updater(prev ?? stored ?? emptyDraft()));
+    if (draft === null && typeof snapshot?.revision === "number") setFence(snapshot.revision);
+    setMessage(null);
+  };
+  const reload = () => {
+    if (typeof face?.getSnapshot === "function") void face.load?.();
+    if (typeof scope?.load === "function") void scope.load();
+    else if (typeof scope?.ensure === "function") void scope.ensure();
+  };
+  const discardAndReload = () => {
+    setDraft(null);
+    setFence(null);
+    setMessage(null);
+    reload();
+  };
+  const save = async () => {
+    if (!draft || !writable || saving) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const ops = buildSettingsOps(draft, layers);
+      const before = { value: snapshot.value, base: snapshot.base };
+      await scope.mutate(ops, typeof fence === "number" ? fence : void 0);
+      const after = scope.getSnapshot();
+      const landed = ready && after?.status === "ready" && writeLanded(draft, before, ops) && compareKey(draftFromSection(after.value)) === compareKey(draft);
+      setMessage(describeSaveOutcome(landed, after?.revision));
+      if (landed) {
+        setDraft(null);
+        setFence(null);
+      }
+    } catch (error) {
+      setMessage({ ok: false, text: `\u5199\u5165\u901A\u9053\u5F02\u5E38\uFF1A${String(error)}` });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const customRows = normalizeRoleRows(current.roles, AGENT_TYPES);
+  const roleList = [
+    ...AGENT_TYPES.map((type) => roleEntry(type, AGENT_LABELS[type] ?? type, current[type], current.roles?.[type], true)),
+    ...customRows.map((row) => roleEntry(row.key, row.key, row, current.roles?.[row.key], false))
+  ];
+  const selectedKey = roleList.some((row) => row.key === picked) ? picked : AGENT_TYPES[0];
+  const selectedRole = roleList.find((row) => row.key === selectedKey);
+  const selectedBuiltin = AGENT_TYPES.includes(selectedKey);
+  const rowOf = (key) => AGENT_TYPES.includes(key) ? { ...current[key], ...partialOf(key) } : { ...current.roles?.[key] };
+  function partialOf(key) {
+    const carried = current.roles?.[key];
+    return carried && typeof carried === "object" && Object.prototype.hasOwnProperty.call(carried, "persona") ? { persona: carried.persona } : {};
+  }
+  const setBinding = (key, field, value) => stage((prev) => AGENT_TYPES.includes(key) ? { ...prev, [key]: { ...prev[key], [field]: value } } : { ...prev, roles: { ...prev.roles, [key]: { ...prev.roles?.[key], [field]: value } } });
+  const setChain = (key, chain) => stage((prev) => {
+    const split = decomposeChain(chain);
+    const row = { provider: split.provider, model: split.model, fallbacks: split.fallbacks };
+    if (AGENT_TYPES.includes(key)) return { ...prev, [key]: { ...prev[key], ...row } };
+    return { ...prev, roles: { ...prev.roles, [key]: { ...prev.roles?.[key], ...row } } };
+  });
+  const setPersona = (key, text2) => stage((prev) => ({
+    ...prev,
+    roles: { ...prev.roles, [key]: withPersonaOverride(rowOf(key), text2) }
+  }));
+  const setToolFilter = (key, filter) => stage((prev) => ({
+    ...prev,
+    roles: { ...prev.roles, [key]: { ...prev.roles?.[key], toolFilter: { allow: [...filter.allow ?? []], deny: [...filter.deny ?? []] } } }
+  }));
+  const loadBuiltinPersona = async (key) => {
+    if (!connection?.rpc?.call) {
+      setPersonaFileErr((prev) => ({ ...prev, [key]: "\u8FDE\u63A5\u4E0D\u53EF\u7528" }));
+      return;
+    }
+    try {
+      const parsed = resolveBuiltinPersonaResult(await connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.getBuiltinPersona, { type: key }));
+      if (parsed.ok) {
+        setPersona(key, parsed.persona);
+        setPersonaFileErr((prev) => ({ ...prev, [key]: "" }));
+      } else {
+        setPersonaFileErr((prev) => ({ ...prev, [key]: parsed.message }));
+      }
+    } catch (error) {
+      setPersonaFileErr((prev) => ({ ...prev, [key]: String(error) }));
+    }
+  };
+  const createRole = () => {
+    const key = newRoleKey.trim();
+    if (!writable || !isValidRoleKey2(key, customRows)) return;
+    stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: blankRole() } }));
+    setNewRoleKey("");
+    setPicked(key);
+    setImportError("");
+  };
+  const deleteRole = (key) => {
+    stage((prev) => {
+      const roles = { ...prev.roles };
+      delete roles[key];
+      return { ...prev, roles };
+    });
+    setPicked(AGENT_TYPES[0]);
+  };
+  const renameRole = (from, to) => {
+    const next = String(to).trim();
+    if (!isValidRoleKey2(next, customRows)) {
+      setImportError(`\u952E\u540D\u300C${next}\u300D\u975E\u6CD5\u6216\u5DF2\u5B58\u5728\uFF08\u5185\u7F6E\u540D\u4E0E\u5C0F\u5199-\u89C4\u5219\u540C\u6837\u62D2\u6536\uFF09`);
+      return;
+    }
+    stage((prev) => {
+      const roles = { ...prev.roles };
+      roles[next] = { ...roles[from] };
+      delete roles[from];
+      return { ...prev, roles };
+    });
+    setPicked(next);
+    setImportError("");
+  };
+  const exportRole = async (key) => {
+    const json = JSON.stringify({ key, ...current.roles?.[key] }, null, 2);
+    try {
+      await navigator.clipboard.writeText(json);
+    } catch {
+      if (typeof window !== "undefined") window.prompt("\u526A\u8D34\u677F\u4E0D\u53EF\u7528\uFF0C\u8BF7\u624B\u52A8\u590D\u5236\u8BE5\u89D2\u8272 JSON\uFF1A", json);
+    }
+  };
+  const importOverwrite = (key) => {
+    const text2 = typeof window === "undefined" ? null : window.prompt(`\u7C98\u8D34 JSON \u8986\u76D6\u89D2\u8272\u300C${key}\u300D\uFF08\u952E\u540D\u4EE5\u5F53\u524D\u884C\u4E3A\u51C6\uFF09\uFF1A`);
+    const parsed = parseRoleText(text2);
+    if (!parsed.ok) {
+      setImportError(parsed.error);
+      return;
+    }
+    stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: parsed.row } }));
+    setImportError("");
+  };
+  const importRole = () => {
+    const text2 = typeof window === "undefined" ? null : window.prompt("\u7C98\u8D34\u89D2\u8272 JSON \u5BFC\u5165\uFF08\u53EF\u5148\u5728\u522B\u5904\u5BFC\u51FA\uFF0C\u6539 key \u540E\u5BFC\u5165\uFF09\uFF1A");
+    const parsed = parseRoleText(text2);
+    if (!parsed.ok) {
+      setImportError(parsed.error);
+      return;
+    }
+    const key = parsed.key;
+    if (!isValidRoleKey2(key, customRows)) {
+      setImportError("\u952E\u540D\u7F3A\u5931\u3001\u975E\u6CD5\u6216\u5DF2\u5B58\u5728\uFF08\u542B\u5185\u7F6E\u540D\uFF09");
+      return;
+    }
+    stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: parsed.row } }));
+    setPicked(key);
+    setImportError("");
+  };
+  const priceKeys = Object.keys(current.usagePrices ?? {}).sort();
+  const selectedPrice = priceKeys.includes(pickedPrice ?? "") ? pickedPrice : priceKeys[0] ?? null;
+  const setPrice = (key, bucket, value) => stage((prev) => ({
+    ...prev,
+    usagePrices: { ...prev.usagePrices, [key]: { ...prev.usagePrices?.[key], [bucket]: value } }
+  }));
+  const createPrice = () => {
+    const key = newPriceKey.trim();
+    if (!writable || !isValidPriceKey(key, current)) return;
+    stage((prev) => ({ ...prev, usagePrices: { ...prev.usagePrices, [key]: blankPriceRow() } }));
+    setNewPriceKey("");
+    setPickedPrice(key);
+  };
+  const deletePrice = (key) => {
+    stage((prev) => {
+      const prices = { ...prev.usagePrices };
+      delete prices[key];
+      return { ...prev, usagePrices: prices };
+    });
+    setPickedPrice(null);
+  };
+  return el3(
+    "section",
+    { className: "mygo-config", "data-plugin": "dsh-my-go" },
+    el3("p", { className: "mygo-intro" }, "\u7ED9\u6BCF\u4E2A\u5DE5\u79CD\u5355\u72EC\u6307\u5B9A\u6A21\u578B\u4F18\u5148\u7EA7\u4E0E\u601D\u8003\u6863\u4F4D\uFF1B\u7559\u7A7A = \u8DDF\u968F Sisyphus\uFF08\u5373\u5BF9\u8BDD\u6846\u91CC\u9009\u7684\u6A21\u578B\uFF09\u3002\u6539\u5B8C\u70B9\u300C\u7ACB\u5373\u4FDD\u5B58\u300D\uFF0C\u4E0B\u6B21\u6D3E\u53D1\u751F\u6548\u3002"),
+    el3("p", { className: "mygo-intro" }, "\u672C\u9875\u53EA\u662F\u5BBF\u4E3B\u91CC dsh-my-go \u547D\u540D\u7A7A\u95F4\u7684\u89C6\u56FE\uFF1A\u4E0D\u70B9\u4FDD\u5B58\u4E0D\u5199\u4EFB\u4F55\u5B57\u8282\uFF1B\u6E05\u7A7A\u4E00\u4E2A\u53EF\u7A7A\u5B57\u6BB5\u7B49\u4E8E\u53D1 unset\uFF08\u56DE\u843D\u5230 cordis \u884C config \u6216 schema \u9ED8\u8BA4\uFF09\uFF1B\u624B\u6539 settings.yaml \u7684 dsh-my-go \u6BB5\u4E0E\u672C\u9762\u662F\u540C\u4E00\u5C42\u3002"),
+    ready ? null : el3(BlockedNotice, { card, scope }),
+    ready && !writable ? el3("div", { className: "mygo-notice mygo-noticeWarn" }, "\u8FD9\u4EFD\u6587\u6863\u5F53\u524D\u53EA\u8BFB\uFF08\u5BBF\u4E3B\u62D2\u7EDD\u5199\u5165\uFF09\uFF1A\u7F16\u8F91\u533A\u7167\u5E38\u53EF\u770B\uFF0C\u4FDD\u5B58\u5DF2\u7981\u7528\u3002") : null,
+    drifted ? el3(
+      "div",
+      { className: "mygo-notice mygo-noticeWarn", "data-role": "drift" },
+      el3("span", null, `\u5916\u90E8\u5DF2\u7ECF\u6539\u8FC7\u8FD9\u4E00\u547D\u540D\u7A7A\u95F4\uFF08\u8349\u7A3F\u5EFA\u5728 r${fence}\uFF0C\u73B0\u5728 r${snapshot?.revision}\uFF09\uFF1A\u4F60\u7684\u8349\u7A3F\u8FD8\u5728\uFF0C\u4F46\u4FDD\u5B58\u4F1A\u88AB\u62D2\u3002`),
+      el3("button", { className: "mygo-btn mygo-btnMini", onClick: discardAndReload }, "\u4E22\u5F03\u8349\u7A3F\u5E76\u91CD\u8BFB")
+    ) : null,
+    el3(
+      "div",
+      { className: "mygo-block", "data-block": "roles" },
+      el3(
+        "div",
+        { className: "mygo-blockHead" },
+        el3("span", { className: "mygo-blockTitle" }, "\u6A21\u578B\u4E0E\u89D2\u8272"),
+        el3("span", { className: "mygo-count" }, `${AGENT_TYPES.length} \u5185\u7F6E \xB7 ${customRows.length} \u81EA\u5B9A\u4E49`),
+        el3("span", { className: "mygo-blockHint" }, "\u5DE6\u5217\u9009\u89D2\u8272\uFF0C\u53F3\u5217\u53EA\u6539\u8FD9\u4E00\u884C\u3002")
+      ),
+      el3(
+        "div",
+        { className: "mygo-grid" },
+        el3(
+          "div",
+          { className: "mygo-col" },
+          el3("div", { className: "mygo-colHead" }, el3("span", { className: "mygo-label" }, "\u89D2\u8272\u6E05\u5355")),
+          el3("div", { className: "mygo-list", role: "listbox", "aria-label": "\u89D2\u8272\u6E05\u5355" }, roleList.map((entry) => el3(
+            "div",
+            {
+              key: entry.key,
+              role: "option",
+              "aria-selected": entry.key === selectedKey,
+              "data-selected": entry.key === selectedKey,
+              className: "mygo-listRow",
+              title: `${entry.label} \xB7 ${entry.meta}`,
+              onClick: () => setPicked(entry.key)
+            },
+            el3("span", { className: "mygo-rowName" }, entry.label),
+            el3("span", { className: "mygo-rowMeta" }, entry.meta),
+            entry.badges.map((badge) => el3("span", { key: badge.text, className: "mygo-rowBadge", "data-tone": badge.tone ?? "" }, badge.text))
+          ))),
+          el3(
+            "div",
+            { className: "mygo-colFoot" },
+            el3("input", {
+              className: "mygo-input mygo-inputMono",
+              value: newRoleKey,
+              placeholder: "\u65B0\u89D2\u8272\u952E\u540D\uFF08\u5C0F\u5199\u5B57\u6BCD\u5F00\u5934\uFF0C\u53EF\u542B -\uFF09",
+              disabled: !writable,
+              spellCheck: false,
+              "aria-label": "\u65B0\u89D2\u8272\u952E\u540D",
+              onChange: (event) => setNewRoleKey(event.target.value),
+              onKeyDown: (event) => {
+                if (event.key === "Enter") createRole();
+              }
+            }),
+            el3("button", { className: "mygo-btn", disabled: !writable || !isValidRoleKey2(newRoleKey.trim(), customRows), onClick: createRole, title: "\u65B0\u5EFA\u4E00\u4E2A\u81EA\u5B9A\u4E49\u89D2\u8272\u5E76\u9009\u4E2D\u5B83" }, "+ \u65B0\u5EFA\u89D2\u8272"),
+            el3("button", { className: "mygo-btn", disabled: !writable, onClick: importRole, title: "\u7C98\u8D34\u89D2\u8272 JSON \u5BFC\u5165\u4E3A\u65B0\u89D2\u8272" }, "\u5BFC\u5165 JSON")
+          )
+        ),
+        el3("div", { className: "mygo-col" }, selectedRole ? renderRolesPane({
+          role: selectedRole,
+          current,
+          writable,
+          catalog: models,
+          tools: tools.names,
+          rosterFailed: tools.failed,
+          toolDrafts,
+          setToolDrafts,
+          importError,
+          personaFileErr,
+          setBinding,
+          setChain,
+          setPersona,
+          setToolFilter,
+          loadBuiltinPersona,
+          onExportRole: exportRole,
+          onImportOverwrite: importOverwrite,
+          onDeleteRole: deleteRole,
+          onRenameRole: renameRole,
+          onRefreshTools: tools.refresh
+        }) : null)
+      ),
+      el3("div", { className: "mygo-detail", "data-role": "role-detail" }, roleDetailText(selectedKey, current))
+    ),
+    el3(
+      "div",
+      { className: "mygo-block", "data-block": "prices" },
+      el3(
+        "div",
+        { className: "mygo-blockHead" },
+        el3("span", { className: "mygo-blockTitle" }, "\u7528\u91CF\u5355\u4EF7\u8868"),
+        el3("span", { className: "mygo-count" }, `${priceKeys.length} \u6761`),
+        el3("span", { className: "mygo-blockHint" }, "\u6309\u300C\u6E20\u9053/\u6A21\u578B\u300D\u8BB0\u56DB\u7C7B token \u5355\u4EF7\uFF0C\u7528\u91CF\u9762\u677F\u636E\u6B64\u6298\u7B97\u6210\u672C\uFF1B\u4E0D\u914D\u5C31\u53EA\u7EDF\u8BA1 token \u6570\u3002")
+      ),
+      el3(
+        "div",
+        { className: "mygo-grid" },
+        el3(
+          "div",
+          { className: "mygo-col" },
+          el3("div", { className: "mygo-colHead" }, el3("span", { className: "mygo-label" }, "\u8BA1\u4EF7\u952E")),
+          el3("div", { className: "mygo-list", role: "listbox", "aria-label": "\u8BA1\u4EF7\u952E\u6E05\u5355" }, priceKeys.length === 0 ? el3("div", { className: "mygo-hint" }, "\uFF08\u8FD8\u6CA1\u6709\u4E00\u6761\u5355\u4EF7\uFF1A\u5728\u4E0B\u65B9\u8F93\u5165\u300C\u6E20\u9053/\u6A21\u578B\u300D\u5EFA\u7B2C\u4E00\u6761\uFF09") : priceKeys.map((key) => el3(
+            "div",
+            {
+              key,
+              role: "option",
+              "aria-selected": key === selectedPrice,
+              "data-selected": key === selectedPrice,
+              className: "mygo-listRow",
+              title: key,
+              onClick: () => setPickedPrice(key)
+            },
+            el3("span", { className: "mygo-rowName" }, key),
+            el3("span", { className: "mygo-rowMeta" }, priceMetaText(current.usagePrices[key]))
+          ))),
+          el3(
+            "div",
+            { className: "mygo-colFoot" },
+            el3("input", {
+              className: "mygo-input mygo-inputMono",
+              value: newPriceKey,
+              placeholder: "\u6E20\u9053/\u6A21\u578B\uFF0C\u5982 deepseek/deepseek-chat",
+              disabled: !writable,
+              list: "mygo-price-keys",
+              spellCheck: false,
+              "aria-label": "\u65B0\u8BA1\u4EF7\u952E",
+              onChange: (event) => setNewPriceKey(event.target.value),
+              onKeyDown: (event) => {
+                if (event.key === "Enter") createPrice();
+              }
+            }),
+            el3("datalist", { id: "mygo-price-keys" }, priceSuggestions(models).map((key) => el3("option", { key, value: key }))),
+            el3("button", { className: "mygo-btn", disabled: !writable || !isValidPriceKey(newPriceKey.trim(), current), onClick: createPrice }, "+ \u65B0\u5EFA\u884C")
+          )
+        ),
+        el3("div", { className: "mygo-col" }, renderPricesPane({
+          selectedPrice,
+          current,
+          writable,
+          keys: priceSuggestions(models),
+          setCurrency: (value) => stage((prev) => ({ ...prev, usageCurrency: value })),
+          setPrice,
+          onDeletePrice: deletePrice
+        }))
+      ),
+      el3("div", { className: "mygo-detail", "data-role": "price-detail" }, priceDetailText(selectedPrice, current, layers))
+    ),
+    el3(
+      "div",
+      { className: "mygo-legend" },
+      el3("span", null, "\u94FE\uFF1A#1 \u4E3B\u9009\uFF0C#2..N \u5907\u9009\uFF0C\u5931\u8D25\u6309\u5E8F\u964D\u7EA7"),
+      el3("span", null, "\u8986\u76D6\uFF1Apersona \u8986\u76D6\u4E86 prompts \u6587\u4EF6\u9ED8\u8BA4"),
+      el3("span", null, "DSV\uFF1A\u4E24\u9636\u6BB5\u951A\u5B9A\u6CE8\u5165\uFF0C\u4EC5 DeepSeek V4 Pro 0813"),
+      el3("span", null, "\u672A\u8FDE\u63A5\uFF1A\u5DE5\u5177\u540D\u4E0D\u5728\u5BBF\u4E3B\u82B1\u540D\u518C\uFF08MCP \u672A\u8FDE\u6216\u624B\u586B\uFF09")
+    ),
+    el3(
+      "div",
+      { className: "mygo-footer" },
+      el3("button", {
+        className: "mygo-btnPrimary",
+        "data-role": "save",
+        disabled: !writable || !ready || !dirty || saving,
+        onClick: save,
+        title: "\u628A\u8349\u7A3F\u7F16\u8BD1\u6210\u547D\u540D\u7A7A\u95F4 ops\uFF0C\u4E00\u6B21\u539F\u5B50\u63D0\u4EA4\uFF08\u4FDD\u5B58\u524D\u4E0D\u5199\u4EFB\u4F55\u5B57\u8282\uFF09"
+      }, saving ? "\u4FDD\u5B58\u4E2D\u2026" : "\u7ACB\u5373\u4FDD\u5B58"),
+      el3("button", {
+        className: "mygo-btn",
+        disabled: !dirty && !drifted,
+        onClick: discardAndReload,
+        title: "\u4E22\u5F03\u672A\u4FDD\u5B58\u8349\u7A3F\u5E76\u91CD\u65B0\u8BFB\u53D6\u5BBF\u4E3B\u73B0\u503C"
+      }, "\u4E22\u5F03\u8349\u7A3F\u5E76\u91CD\u8BFB"),
+      el3("span", { className: "mygo-status", "data-role": "status" }, statusText({ ready, dirty, pending, revision: snapshot?.revision })),
+      message ? el3("span", { className: message.ok ? "mygo-statusOk" : "mygo-statusError", "data-role": "receipt" }, message.text) : null
+    )
+  );
+}
+function useCatalog(catalog) {
+  const subscribe = React5.useCallback((emit) => catalog ? catalog.subscribe(emit) : () => {
+  }, [catalog]);
+  const get = React5.useCallback(() => catalog ? catalog.get() : { status: "idle", providers: [], models: {}, errors: {} }, [catalog]);
+  const state = React5.useSyncExternalStore(subscribe, get, get);
+  React5.useEffect(() => {
+    catalog?.load?.();
+  }, [catalog]);
+  return state;
+}
+function useToolRoster(connection) {
+  const [names, setNames] = React5.useState([]);
+  const [failed, setFailed] = React5.useState(false);
+  const load = React5.useCallback(() => {
+    if (!connection?.rpc?.call) return;
+    connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.listTools, {}).then((res) => {
+      if (res && res.ok && Array.isArray(res.value)) {
+        setNames(res.value.filter((name2) => typeof name2 === "string" && name2 !== ""));
+        setFailed(false);
+      } else {
+        setFailed(true);
+      }
+    }).catch(() => setFailed(true));
+  }, [connection]);
+  React5.useEffect(() => {
+    load();
+  }, [load]);
+  return { names, failed, refresh: load };
+}
+function BlockedNotice({ card, scope }) {
+  return el3(
+    "div",
+    { className: "mygo-notice mygo-noticeError", "data-role": "blocked" },
+    el3("span", null, card.hint),
+    card.retryable ? el3("button", { className: "mygo-btn mygo-btnMini", onClick: () => reloadScope(scope) }, "\u91CD\u8BD5") : null
+  );
+}
+function reloadScope(scope) {
+  if (typeof scope?.load === "function") void scope.load();
+  else if (typeof scope?.ensure === "function") void scope.ensure();
+}
+function statusText({ ready, dirty, pending, revision }) {
+  const at = typeof revision === "number" ? ` \xB7 r${revision}` : "";
+  if (!ready) return `\u914D\u7F6E\u672A\u5C31\u7EEA${at}`;
+  if (!dirty) return `\u65E0\u6539\u52A8${at}`;
+  return `\u5F85\u4FDD\u5B58\uFF1A${pending.length > 0 ? pending.join(" \xB7 ") : "\u8349\u7A3F\u4E0E\u73B0\u503C\u540C\u5F62"}${at}`;
+}
+function roleEntry(key, label, row, carried, builtin) {
+  const badges = [];
+  if (typeof carried?.persona === "string" && carried.persona !== "") badges.push({ text: "\u8986\u76D6", tone: "warn" });
+  if (row?.dsv4p0813 === true) badges.push({ text: "DSV", tone: "on" });
+  if (!builtin) badges.push({ text: "\u81EA\u5B9A\u4E49" });
+  return { key, label, meta: chainText(row), badges, builtin };
+}
+function chainText(row) {
+  const chain = composeChain(row ?? {});
+  const first = chain[0];
+  const named = first && (first.provider !== "" || first.model !== "") ? `${first.provider}/${first.model}` : "\u8DDF\u968F Sisyphus";
+  return chain.length > 1 ? `${named} \u2192${chain.length - 1}` : named;
+}
+function roleDetailText(key, current) {
+  if (!key) return "\u5DE6\u5217\u9009\u4E00\u4E2A\u89D2\u8272\u6765\u7F16\u8F91\u3002";
+  const builtin = AGENT_TYPES.includes(key);
+  const row = builtin ? current[key] ?? {} : current.roles?.[key] ?? {};
+  const chain = composeChain(row);
+  const filter = row.toolFilter ?? {};
+  const lines = [
+    `${AGENT_LABELS[key] ?? key}\uFF08${key}\uFF09\xB7 ${builtin ? "\u5185\u7F6E\u5DE5\u79CD" : "\u81EA\u5B9A\u4E49\u89D2\u8272"}`,
+    `\u6A21\u578B\u4F18\u5148\u7EA7\uFF1A${chain.map((entry, index) => `#${index + 1} ${entry.provider || "\u2014"}/${entry.model || "\u2014"}`).join("  ")}`,
+    `\u601D\u8003\u6863\u4F4D\uFF1A${row.reasoningEffort || "\u8DDF\u968F\u6A21\u578B\u9ED8\u8BA4"}\uFF1BDSV4P0813\uFF1A${row.dsv4p0813 === true ? "\u5F00" : "\u5173"}`
+  ];
+  if (key !== "sisyphus") lines.push(`\u4EBA\u8BBE\u6765\u6E90\uFF1A${personaOverrideSource(current.roles?.[key])}`);
+  if (!builtin) {
+    const allow = Array.isArray(filter.allow) ? filter.allow : [];
+    const deny = Array.isArray(filter.deny) ? filter.deny : [];
+    lines.push(`\u5DE5\u5177\u9762\uFF1A\u767D\u540D\u5355 ${allow.length} \u6761${allow.length > 0 ? `\uFF08${allow.join(", ")}\uFF09` : ""}\uFF1B\u9ED1\u540D\u5355 ${deny.length} \u6761${deny.length > 0 ? `\uFF08${deny.join(", ")}\uFF09` : ""}`);
+    lines.push("\u6D3E\u53D1\u65F6 go_work \u7528\u952E\u540D\u70B9\u540D\u8BE5\u89D2\u8272\uFF1B\u5220\u9664\u540E\u4E0B\u6B21\u4FDD\u5B58\u6574\u952E\u4ECE roles \u5B57\u5178\u79FB\u9664\u3002");
+  }
+  return lines.join("\n");
+}
+function priceMetaText(row) {
+  if (!row) return "";
+  const at = (bucket) => row[bucket] === "" || row[bucket] === void 0 || row[bucket] === null ? "\u2014" : String(row[bucket]);
+  return `\u5165 ${at("input")} / \u51FA ${at("output")}`;
+}
+function priceDetailText(key, current, layers) {
+  if (!key) return "\u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BA1\u4EF7\u884C\uFF1A\u7528\u91CF\u9762\u677F\u53EA\u62A5 token \u6570\uFF0C\u4E0D\u6298\u7B97\u6210\u672C\u3002";
+  const row = current.usagePrices?.[key] ?? {};
+  const storedRow = layers.value.usagePrices?.[key];
+  const unit = current.usageCurrency === "CNY" ? "\u4EBA\u6C11\u5E01" : "\u7F8E\u5143";
+  const lines = [
+    `${key} \xB7 ${unit} / 1M tokens`,
+    PRICE_BUCKETS.map((bucket) => `${PRICE_BUCKET_LABELS[bucket]}\uFF1A${row[bucket] === "" || row[bucket] === void 0 ? "\u672A\u5B9A\u4EF7" : row[bucket]}`).join("  "),
+    storedRow === void 0 ? "\u8BE5\u952E\u5728\u5BBF\u4E3B\u73B0\u503C\u91CC\u8FD8\u4E0D\u5B58\u5728\uFF1A\u4FDD\u5B58\u540E\u65B0\u589E\u3002" : `\u5BBF\u4E3B\u73B0\u503C\uFF1A\u5165 ${storedRow.input} / \u51FA ${storedRow.output}\uFF0C\u7F13\u5B58\u8BFB ${storedRow.cacheRead ?? "\u672A\u5B9A\u4EF7"} / \u5199 ${storedRow.cacheWrite ?? "\u672A\u5B9A\u4EF7"}\u3002`,
+    "\u8F93\u5165/\u8F93\u51FA\u5FC5\u586B\uFF0C\u7F13\u5B58\u4E24\u6876\u53EF\u9009\uFF1B\u4E0D\u5B8C\u6574\u7684\u884C\u4FDD\u5B58\u65F6\u6574\u884C\u8DF3\u8FC7\uFF08fail-closed\uFF09\uFF0C\u4E0D\u4F1A\u6BD2\u6740\u540C\u6279\u5176\u5B83\u884C\u3002"
+  ];
+  return lines.join("\n");
+}
+function priceSuggestions(catalog) {
+  const map = catalog.models && typeof catalog.models === "object" ? catalog.models : {};
+  return [...new Set(Object.entries(map).flatMap(([provider, ids]) => (Array.isArray(ids) ? ids : []).map((id) => `${provider}/${id}`)))];
+}
+function isValidRoleKey2(key, customRows) {
+  return typeof key === "string" && ROLE_KEY_PATTERN.test(key) && !AGENT_TYPES.includes(key) && !customRows.some((row) => row.key === key);
+}
+function isValidPriceKey(key, current) {
+  return typeof key === "string" && PRICE_KEY_PATTERN.test(key) && current.usagePrices?.[key] === void 0;
+}
+function parseRoleText(text2) {
+  if (text2 === null || String(text2).trim() === "") return { ok: false, error: "\u6CA1\u6709\u8F93\u5165\u5185\u5BB9" };
+  let parsed;
+  try {
+    parsed = JSON.parse(text2);
+  } catch {
+    return { ok: false, error: "\u4E0D\u662F\u5408\u6CD5 JSON" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, error: "JSON \u5FC5\u987B\u662F\u4E00\u4E2A\u89D2\u8272\u5BF9\u8C61" };
+  const key = typeof parsed.key === "string" ? parsed.key : "";
+  const filter = parsed.toolFilter && typeof parsed.toolFilter === "object" ? parsed.toolFilter : {};
+  const row = {
+    provider: typeof parsed.provider === "string" ? parsed.provider : "",
+    model: typeof parsed.model === "string" ? parsed.model : "",
+    reasoningEffort: typeof parsed.reasoningEffort === "string" ? parsed.reasoningEffort : "",
+    dsv4p0813: parsed.dsv4p0813 === true,
+    fallbacks: Array.isArray(parsed.fallbacks) ? parsed.fallbacks : [],
+    persona: typeof parsed.persona === "string" ? parsed.persona : "",
+    toolFilter: {
+      allow: Array.isArray(filter.allow) ? filter.allow.map(String).filter((name2) => name2 !== "") : [],
+      deny: Array.isArray(filter.deny) ? filter.deny.map(String).filter((name2) => name2 !== "") : []
+    }
+  };
+  return { ok: true, key, row };
+}
+function blankRole() {
+  return { provider: "", model: "", reasoningEffort: "", dsv4p0813: false, fallbacks: [], persona: "", toolFilter: { allow: [], deny: [] } };
+}
+function blankPriceRow() {
+  return { input: "", output: "", cacheRead: "", cacheWrite: "" };
+}
+function emptyDraft() {
+  const draft = { roles: {}, usagePrices: {}, usageCurrency: "USD" };
+  for (const type of AGENT_TYPES) draft[type] = { provider: "", model: "", reasoningEffort: "", dsv4p0813: false, fallbacks: [] };
+  return draft;
+}
+
 // src/client.js
 var name = "dsh-my-go";
-var inject = ["slots", "settingsScope", "connection"];
+var inject = ["slots", "settingsScope", "connection", "remote", "remote.session"];
 function createSelfManagedTimer() {
   let warned = false;
   return {
@@ -2631,13 +2844,144 @@ function apply(ctx) {
   const timer = client.get("timer");
   const panelTimer = timer && typeof timer.interval === "function" ? timer : createSelfManagedTimer();
   const stopPanel = createOrchestrationPanel({ slots, connection, sessions, timer: panelTimer });
-  const scope = client.get("settingsScope") ? client.get("settingsScope").bind({ namespace: "dsh-my-go" }) : null;
-  slots.inject("settings.section", () => slots.register(
-    { name: "settings.section", id: "dsh-my-go", order: 30, label: "MyGO \u7F16\u6392" },
-    (props) => React7.createElement(SettingsPage, { ...props, scope, connection })
-  ));
+  const binder = client.get("settingsScope");
+  const remote = client.get("remote");
+  if (binder && slots && typeof slots.inject === "function") {
+    const scope = binder.bind({ namespace: SETTINGS_NAMESPACE });
+    const face = binder.describe ? binder.describe() : null;
+    const catalog = createCatalogStore(remote);
+    client.effect(() => {
+      let off = null;
+      const sync = () => {
+        const served = new Set((face?.getSnapshot?.()?.view?.namespaces ?? []).map((entry) => entry.ns));
+        const available = face === null || served.has(SETTINGS_NAMESPACE);
+        if (available && off === null) off = registerCard(slots, scope, face, catalog, connection);
+        else if (!available && off !== null) {
+          off();
+          off = null;
+        }
+      };
+      const unsubscribe = face?.subscribe ? face.subscribe(sync) : () => {
+      };
+      void (face?.ensure ? face.ensure() : face?.load ? face.load() : void 0);
+      sync();
+      return () => {
+        unsubscribe();
+        if (off !== null) off();
+      };
+    }, "dsh-my-go: configuration card");
+    client.effect(() => {
+      const offs = [
+        remote?.$on?.("llm/adapters-updated", () => catalog.invalidate()),
+        remote?.$on?.("settings/document-updated", () => catalog.invalidate())
+      ];
+      const reset = () => catalog.reset();
+      const offReset = typeof client.on === "function" ? client.on("connection/reset", reset) : null;
+      return () => {
+        for (const off of offs) if (typeof off === "function") off();
+        if (typeof offReset === "function") offReset();
+      };
+    }, "dsh-my-go: model catalog invalidations");
+  }
   return () => {
     stopPanel();
+  };
+}
+function registerCard(slots, scope, face, catalog, connection) {
+  return slots.inject("plugins.bundle.config", () => slots.register(
+    { name: "plugins.bundle.config", key: SETTINGS_NAMESPACE },
+    (props) => React6.createElement(
+      SettingsCardBoundary,
+      null,
+      React6.createElement(SettingsCard, { ...props, scope, face, catalog, connection })
+    )
+  ));
+}
+var SettingsCardBoundary = class extends React6.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error) {
+    console.error("[dsh-my-go] configuration card render failed:", error);
+  }
+  render() {
+    if (this.state.failed) {
+      return React6.createElement("div", { className: "mygo-notice mygo-noticeError" }, "dsh-my-go \u914D\u7F6E\u5361\u6E32\u67D3\u5F02\u5E38\uFF08\u5DF2\u62E6\u622A\uFF0C\u4E0D\u5F71\u54CD\u9875\u9762\u5176\u5B83\u90E8\u5206\uFF09\u3002");
+    }
+    return this.props.children;
+  }
+};
+function createCatalogStore(remote) {
+  const empty = { status: "idle", providers: [], models: {}, errors: {} };
+  let state = empty;
+  let generation = 0;
+  let started = false;
+  const listeners = /* @__PURE__ */ new Set();
+  const publish = () => {
+    for (const listener of [...listeners]) listener();
+  };
+  async function fetchCatalog() {
+    const at = ++generation;
+    state = { ...state, status: "loading" };
+    publish();
+    if (!remote?.session || typeof remote.session.modelCatalog !== "function") {
+      state = { status: "error", providers: [], models: {}, errors: {} };
+      publish();
+      return;
+    }
+    try {
+      const response = await remote.session.modelCatalog();
+      if (at !== generation) return;
+      if (!response || response.ok !== true || !response.value) {
+        state = { status: "error", providers: [], models: {}, errors: {} };
+        publish();
+        return;
+      }
+      const value = response.value;
+      const groups = Array.isArray(value.groups) ? value.groups : [];
+      const failures = Array.isArray(value.failures) ? value.failures : [];
+      const providers = (Array.isArray(value.routableProviders) && value.routableProviders.length > 0 ? value.routableProviders : groups.map((group) => group?.id)).filter((id) => typeof id === "string" && id !== "");
+      const models = {};
+      for (const group of groups) {
+        if (!group || typeof group.id !== "string") continue;
+        models[group.id] = (Array.isArray(group.models) ? group.models : []).map((model) => model?.id).filter((id) => typeof id === "string" && id !== "");
+      }
+      for (const provider of providers) if (!(provider in models)) models[provider] = [];
+      const errors = {};
+      for (const failure of failures) {
+        if (failure && typeof failure.id === "string") errors[failure.id] = String(failure.message ?? "\u6A21\u578B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25");
+      }
+      state = { status: "ready", providers, models, errors };
+    } catch (error) {
+      if (at !== generation) return;
+      state = { status: "error", providers: [], models: {}, errors: { "": String(error) } };
+    }
+    publish();
+  }
+  return {
+    get: () => state,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    load() {
+      if (started) return Promise.resolve(state);
+      started = true;
+      return fetchCatalog();
+    },
+    invalidate() {
+      if (!started) return Promise.resolve(state);
+      return fetchCatalog();
+    },
+    reset() {
+      started = false;
+      state = empty;
+      publish();
+    }
   };
 }
 

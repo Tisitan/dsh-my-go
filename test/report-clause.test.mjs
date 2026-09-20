@@ -125,6 +125,21 @@ test('pin：agent.cordis.yml 的 broker 行必须显式 reportExternalization: t
     'broker 行必须显式 reportExternalization: true——显式配置优先于代码默认，2026-09-07 基线关窗、外部化点亮后实战期保持显式开；若有人误关回 false（含同步 preset 覆盖回旧 false 装机）本 pin 红')
 })
 
+// 同范式第二钉（2026-09-18 读平面扩池批）：装机 yml 显式 readPoolSize 必须为 3
+// （钳制上限顶格）。同步 preset 覆盖回保守起步的 2、删行回落代码缺省 1、或写超
+// 上限被钳制口径掩盖，本 pin 都红——显式值是唯一可审计的装机面。
+test('pin：agent.cordis.yml 的 broker 行必须显式 readPoolSize: 3（读平面扩池装机口径）', async () => {
+  const cordisSchema = yaml.DEFAULT_SCHEMA.extend([
+    new yaml.Type('tag:yaml.org,2002:js', { kind: 'scalar', construct: (data) => data }),
+  ])
+  const text = await readFile(new URL('../preset/agent.cordis.yml', import.meta.url), 'utf-8')
+  const doc = yaml.load(text, { schema: cordisSchema })
+  const brokerRow = doc.find((row) => row?.id === 'broker')
+  assert.ok(brokerRow, 'broker 行在册')
+  assert.equal(brokerRow?.config?.readPoolSize, 3,
+    'broker 行必须显式 readPoolSize: 3——2026-09-18 扩池批装机口径（读平面并发上限顶格）；被同步 preset 覆盖回 2/1 或删行回落代码缺省 1，本 pin 红')
+})
+
 // 方案 B：REPORT_CLAUSE 明牌压制工种手册旧交付收尾约定，防两源指令打架回潮
 test('REPORT_CLAUSE 含覆盖声明：压制工种手册旧收尾/交付约定，冲突以条款为准', () => {
   assert.match(REPORT_CLAUSE, /Precedence:/, '条款必须显式声明优先级')
@@ -150,7 +165,7 @@ test('提示词面旧机制字样归零：REPORT_CLAUSE 与 prompts/ 全目录�
   assert.ok(!REPORT_CLAUSE.includes('mygo_report'), 'REPORT_CLAUSE 零出现')
   const promptsDir = fileURLToPath(new URL('../prompts/', import.meta.url))
   const files = (await readdir(promptsDir)).filter((f) => f.endsWith('.md'))
-  assert.ok(files.length >= 8, 'prompts 目录清点非空（7 工种 + sisyphus）')
+  assert.ok(files.length >= 8, 'prompts 目录清点非空（8 工种 + sisyphus）')
   for (const file of files) {
     const text = await readFile(join(promptsDir, file), 'utf-8')
     assert.ok(!text.includes('mygo_report'), `prompts/${file} 零出现`)

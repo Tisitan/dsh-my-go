@@ -175,7 +175,7 @@ test('orchestration_status：尾部含角色名册区（内置 + 自定义），
   })
   const r = await tools.get('orchestration_status').execute({}, execOf(parent))
   assert.ok(r.text.includes('── 角色名册（roster） ──'), '输出尾部有 roles 区标题')
-  assert.ok(r.text.includes('- hermes | 跟随环境 | 备选0 | 全量（除全局掩码） | 内置文件'), '内置工种列出且未配显示跟随环境')
+  assert.ok(r.text.includes('- hermes | 跟随环境 | 备选0 | 全量 | 内置文件'), '内置工种列出且未配显示跟随环境')
   assert.ok(r.text.includes('- custom-x | p9·m9 | 备选0 | 除 write | 自定义人设'), '自定义角色列出绑定与 toolFilter 摘要')
   assert.ok(!r.text.includes('- sisyphus'), '编排者单例不入可派名册')
 })

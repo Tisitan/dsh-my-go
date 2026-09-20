@@ -792,10 +792,30 @@ function hostSubagentVersion() {
 // 两版通吃，故这里也两枚并查——**只有两枚同时缺席**才是真断链（queued 档静默
 // 塌成 steer），存在任一枚即必须由对应 arity 命中。本机实装 0.1.2-alpha.5 只有
 // 旧符号（5 参），新符号缺席不构成红。
+// 哨兵 skip 的醒目告警（批次 4+6）：本用例曾因宿主依赖不可解析而长期恒 skip
+// 且零声息（README「已知局限」自述）——skip 保持绿是刻意的（缺依赖的环境不算
+// 红），但静默失效必须消除：stderr 直接透传 CI/终端日志，报告器不吞。任何
+// skip 都在此打出多行边框告警，肉眼可搜「契约哨兵未生效」。
+function warnContractSentinelSkipped(reason) {
+  console.error(`
+┌──────────────────────────────────────────────────────────────────────┐
+│ ⚠ 契约哨兵未生效（SKIPPED，不是通过）：${reason}
+│ ⚠ 宿主 dsh-subagent 门面/排队符号契约本轮零对账——mock-ctx 保真无兜底，
+│   上游符号漂移（sendMessage 门面 / queuePrompt·deliverPrompt 排队符号）
+│   将不会在这里被拦下。请在装齐 @deepseek-ai/dsh-subagent 的环境重跑。
+└──────────────────────────────────────────────────────────────────────┘`)
+}
+
 test('契约哨兵：宿主 dsh-subagent >= 0.1.2-alpha.3 时门面只剩 sendMessage 且队列符号在位', async (t) => {
   const version = hostSubagentVersion()
-  if (typeof version !== 'string') return t.skip('宿主 @deepseek-ai/dsh-subagent 不可解析（本仓未安装该依赖），契约哨兵跳过')
-  if (compareVersions(version, '0.1.2-alpha.3') < 0) return t.skip(`解析到宿主版本 ${version}，低于 0.1.2-alpha.3 门槛，契约哨兵跳过`)
+  if (typeof version !== 'string') {
+    warnContractSentinelSkipped('宿主 @deepseek-ai/dsh-subagent 不可解析（本仓未安装该依赖）')
+    return t.skip('宿主 @deepseek-ai/dsh-subagent 不可解析（本仓未安装该依赖），契约哨兵跳过')
+  }
+  if (compareVersions(version, '0.1.2-alpha.3') < 0) {
+    warnContractSentinelSkipped(`解析到宿主版本 ${version}，低于 0.1.2-alpha.3 门槛`)
+    return t.skip(`解析到宿主版本 ${version}，低于 0.1.2-alpha.3 门槛，契约哨兵跳过`)
+  }
   const mod = await import('@deepseek-ai/dsh-subagent')
   const Runtime = mod.SubagentRuntime ?? mod.default
   assert.equal(typeof Runtime, 'function', `版本 ${version} 的 dsh-subagent 必须导出 SubagentRuntime`)

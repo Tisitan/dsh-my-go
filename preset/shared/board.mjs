@@ -49,13 +49,13 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { homedir } from 'node:os'
 import { encodeSegment } from './archive.mjs'
+import { mygoHome } from './paths.mjs'
 
 // board 根目录（台账路径惯例同款：DSH_HOME 缺省 join(homedir(), '.dsh')）。
 // 每次调用现算——测试靠改 DSH_HOME 注入隔离目录，不设模块级缓存。
 export function boardRoot() {
-  return join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'dsh-my-go', 'board')
+  return mygoHome('board')
 }
 
 // 唯一拼路径点：根焊死 + 双段编码（session 目录 + child 文件名）。

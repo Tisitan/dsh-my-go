@@ -1,8 +1,9 @@
 // dsh-my-go — report_submit 四字段校验器 + 回执合成直测（提交制单源，shared 纯模块）。
 //
 // validateReportArgs 矩阵：四字段缺一 / evidence 索引级错误 / ["无"] 与空数组
-// 归一化 / 行形态矩阵 / 非字符串项不炸。buildOwnerSummary：回执形态与降级。
-// REPORT_CLAUSE / RELAY_CLAUSE：核心机关措辞 pin + 旧机制字样零出现。
+// 归一化 / 行形态矩阵 / 非字符串项不炸 / 施工层小节闸（按工种强制 + 其余放行）/
+// evidence 分型（test: image: 前缀放行，伪装前缀拒收）。buildOwnerSummary：回执
+// 形态与降级。REPORT_CLAUSE / RELAY_CLAUSE：核心机关措辞 pin + 旧机制字样零出现。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { REPORT_CLAUSE, RELAY_CLAUSE, validateReportArgs, buildOwnerSummary } from '../preset/shared/report-format.mjs'
@@ -51,8 +52,8 @@ test('evidence 索引级错误：非法项逐条带索引，合法项不误伤',
   const r = validateReportArgs(argsOf({ evidence: ['src/a.js:12', '这不是合法证据项', 'b.ts:3', '带后缀描述 c.js:7'] }))
   assert.equal(r.ok, false)
   assert.deepEqual(r.errors, [
-    'evidence[1]: 检测到非法证据项「这不是合法证据项」——请改用裸「路径:行号」或「无」重调，禁止任何前后缀描述',
-    'evidence[3]: 检测到非法证据项「带后缀描述 c.js:7」——请改用裸「路径:行号」或「无」重调，禁止任何前后缀描述',
+    'evidence[1]: 检测到非法证据项「这不是合法证据项」——请改用裸「路径:行号」、「test:」/「image:」前缀行或「无」重调，禁止其他前后缀描述',
+    'evidence[3]: 检测到非法证据项「带后缀描述 c.js:7」——请改用裸「路径:行号」、「test:」/「image:」前缀行或「无」重调，禁止其他前后缀描述',
   ])
 })
 
@@ -95,6 +96,77 @@ test('空字符串三字段（非缺失）：同样逐字段红', () => {
   const r = validateReportArgs(argsOf({ report: '   ', conclusion: '', open: '  ' }))
   assert.equal(r.ok, false)
   assert.equal(r.errors.length, 3)
+})
+
+// ── evidence 分型（test:/image: 前缀行）──────────────────────────────────────
+
+test('evidence 分型：test:/image: 前缀行合法（原样保留进登记值，可混排路径锚点）', () => {
+  const evidence = [
+    'test:npm test → exit 0',
+    'test: 冒号后有空白也放行',
+    'image:shots/a.png',
+    'preset/shared/report-format.mjs:96',
+  ]
+  const r = validateReportArgs(argsOf({ evidence }))
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.value.evidence, evidence)
+})
+
+test('evidence 伪装前缀：整行前缀不是 test:/image: 即逐行记账拒收（含空载荷）', () => {
+  const r = validateReportArgs(argsOf({ evidence: [
+    'file:test:a.ts:12 → pass', // ✗ 前缀前又叠路径
+    'fooimage:shots/a.png',     // ✗ 前缀被拉长
+    'pretest:npm test',         // ✗ 同上
+    'test:',                    // ✗ 前缀后空载荷
+    'image:   ',                // ✗ trim 后空载荷
+    'a test:line',              // ✗ 前缀不在行首
+    'image: shots/a.png',       // ✓ 冒号后空白容忍
+  ] }))
+  assert.equal(r.ok, false)
+  assert.deepEqual(r.errors.map((e) => e.slice(0, 'evidence[0]'.length)), [
+    'evidence[0]', 'evidence[1]', 'evidence[2]', 'evidence[3]', 'evidence[4]', 'evidence[5]',
+  ])
+})
+
+// ── 施工层小节闸（agentType 在场才强制）──────────────────────────────────────
+
+const SECTION_ERRS = [
+  'report: 检测到缺少「偏差记录」小节——请补上「偏差记录：」节标（内容写「无」也算合格）后原地重调',
+  'report: 检测到缺少「未验项」小节——请补上「未验项：」节标（内容写「无」也算合格）后原地重调',
+]
+
+test('小节闸：hermes 缺「偏差记录」/ hephaestus 缺「未验项」→ 逐节点名拒收', () => {
+  const half = '# 完整报告\n实施细节。\n未验项：无\n'
+  const r1 = validateReportArgs(argsOf({ report: half }), { agentType: 'hermes' })
+  assert.equal(r1.ok, false)
+  assert.deepEqual(r1.errors, [SECTION_ERRS[0]])
+  const r2 = validateReportArgs(argsOf({ report: '# 完整报告\n偏差记录：无\n' }), { agentType: 'hephaestus' })
+  assert.equal(r2.ok, false)
+  assert.deepEqual(r2.errors, [SECTION_ERRS[1]])
+})
+
+test('小节闸：施工层两节齐 → 放行（值为「无」也算；节标容错半角冒号与空白）', () => {
+  assert.equal(validateReportArgs(argsOf({ report: '偏差记录：无\n未验项：无\n' }), { agentType: 'hermes' }).ok, true)
+  assert.equal(validateReportArgs(argsOf({ report: '偏差记录 : 改了 3 处\n未验项 : 无\n' }), { agentType: 'hephaestus' }).ok, true)
+})
+
+test('小节闸：其余工种 / 反查不到 agentType → 不强制（未传第二参 = 向后兼容）', () => {
+  const bare = argsOf()
+  for (const agentType of ['explore', 'librarian', 'looker', 'prometheus', 'oracle', 'apelles', 'sisyphus', 'custom-role', undefined, null]) {
+    assert.equal(validateReportArgs(bare, { agentType }).ok, true, `${String(agentType)} 不在施工层集合`)
+  }
+  assert.equal(validateReportArgs(bare).ok, true, '未传第二参（旧调用点）不强制')
+})
+
+test('小节闸：report 本身为空时只报缺失一条，不叠小节错误（一次修正到位）', () => {
+  const r = validateReportArgs(argsOf({ report: '   ' }), { agentType: 'hermes' })
+  assert.deepEqual(r.errors, ['report: 检测到缺失或为空——请改用完整报告全文重调'])
+})
+
+test('小节闸：与 evidence 错误并存时逐条全报（不挤牙膏）', () => {
+  const r = validateReportArgs(argsOf({ evidence: ['坏项'] }), { agentType: 'hephaestus' })
+  assert.equal(r.ok, false)
+  assert.deepEqual(r.errors, [...SECTION_ERRS, 'evidence[0]: 检测到非法证据项「坏项」——请改用裸「路径:行号」、「test:」/「image:」前缀行或「无」重调，禁止其他前后缀描述'])
 })
 
 // ── buildOwnerSummary（主编回执合成）─────────────────────────────────────────

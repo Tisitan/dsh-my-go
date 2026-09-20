@@ -16,7 +16,7 @@ const check = (name, ok) => {
 const mod = await import(pathToFileURL(join(root, "lib", "index.js")).href);
 check("host exports name", mod.name === "dsh-my-go");
 // 0.3.0-tisitan.0：编排面整体迁往 broker 半后 inject 收敛为存储/面板面依赖
-check("host exports inject (tools/llm/settings)", Array.isArray(mod.inject) && mod.inject.includes("tools") && mod.inject.includes("llm") && mod.inject.includes("settings") && !mod.inject.includes("subagents"));
+check("host exports inject (tools/settings; llm retired with listModels)", Array.isArray(mod.inject) && mod.inject.includes("tools") && mod.inject.includes("settings") && !mod.inject.includes("llm") && !mod.inject.includes("subagents"));
 check("host exports apply function", typeof mod.apply === "function");
 
 // 0.3.0-tisitan.0：lib 半编排面已切除——源码不得残留编排工具注册与编排事件钩子

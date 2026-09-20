@@ -30,11 +30,21 @@ test('pin：ADJACENT_BYPASS_TOOLS 恒为上游邻接消息三件套（名字改�
 // 出现次数强得多：它验证的是 restrict 实际收到的清单）。
 
 test('pin：三档投递全部经 subagents 门面，不复活「直取注册表 steer」旁路', async () => {
-  const src = await readFile(new URL('../preset/tools/broker.mjs', import.meta.url), 'utf-8')
-  assert.doesNotMatch(src, /childAgent\.steer\(/, '终审 U1：不得绕过门面直调 Agent.steer')
-  assert.doesNotMatch(src, /mygo-steer-/, '不得自造 steer messageId（真实 inbox id 才是账）')
+  // 5.2 拆分波：M1-M5 投递链本体迁入 ./broker-delivery.mjs，本 pin 随之覆盖
+  // 「broker.mjs + 投递簇模块」两半之积——负向不变量对两个文件各自成立（旁路
+  // 写在哪都算回潮），正向通路在册按合并源核（通路只此一份实现）。
+  const [brokerSrc, deliverySrc] = await Promise.all([
+    readFile(new URL('../preset/tools/broker.mjs', import.meta.url), 'utf-8'),
+    readFile(new URL('../preset/tools/broker-delivery.mjs', import.meta.url), 'utf-8'),
+  ])
+  for (const [name, src] of [['broker.mjs', brokerSrc], ['broker-delivery.mjs', deliverySrc]]) {
+    assert.doesNotMatch(src, /childAgent\.steer\(/, `终审 U1：不得绕过门面直调 Agent.steer（${name}）`)
+    assert.doesNotMatch(src, /mygo-steer-/, `不得自造 steer messageId（真实 inbox id 才是账；${name}）`)
+  }
   // 投递点数量不是不变量（合并两档共用体会让计数变小而语义不变），只钉通路在册
-  assert.ok(src.split('deliverToAdjacent(').length - 1 >= 1, '邻接投递走共享门面通路在册')
+  const union = brokerSrc + deliverySrc
+  assert.ok(union.split('deliverToAdjacent(').length - 1 >= 1, '邻接投递走共享门面通路在册（投递链簇）')
+  assert.ok(deliverySrc.split('deliverToAdjacent(').length - 1 >= 2, 'steer 与 queued 两档都在簇内同一条通路上（>=2 = 两条路都经门面）')
 })
 
 // 最小 ctx mock：只喂 broker.apply 走通到 agent/created 监听器注册所需的表面
@@ -189,9 +199,9 @@ test('agent/created 对无 agent 的载荷与 restrict 全崩场景均不炸挂�
 })
 
 // N12（0.3.0-tisitan.7）：闸体自身抛错（agent.ctx 尚未 ready、宿主内部异常）此前落进
-// 一个纯静默的 catch。本闸是星型拓扑与邻接三件套的 agent 作用域防线（tool-mask
-// 那条 standing 层兜底的前提在 web 部署下不成立，见 README「容错」），失守必须
-// 可见——不炸挂载，但一行 warn 点名是哪个 agent。
+// 一个纯静默的 catch。本闸是星型拓扑与邻接三件套的 agent 作用域防线（原
+// tool-mask standing 层已拆除迁移至 dsh-tool-guard，本闸是唯一防线，见
+// README「容错」），失守必须可见——不炸挂载，但一行 warn 点名是哪个 agent。
 test('agent/created 闸体抛错：不炸挂载且 console.warn 留痕，每 agent 恰一行（N12）', async () => {
   const { ctx, listeners, dispatch } = mockCtx()
   const warns = []

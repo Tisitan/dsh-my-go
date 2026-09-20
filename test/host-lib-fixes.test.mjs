@@ -1,7 +1,7 @@
 // lib 半存储/安装面回归（0.3.0-tisitan.8 lib/client 修复批）：
 //   E1/B-02  settings 注册静默塌方 → 失败面隔离 + 留痕
-//   E4/B-04  loadSettings 谎报成功 → 读盘抛错回 unavailable
-//   E7/B-05  saveSettings 脏键整批毒杀 → ROLE_KEY_PATTERN 过滤
+//   E4/B-04  读面失败不许谎报成功 → 端点退役后改判为「旧设置面端点不再存在」
+//   E7/B-05  脏键整批毒杀 → ROLE_KEY_PATTERN 过滤（ops 编译层已搬浏览器侧）
 //   E10/B-03 snapshot 端点无 try → 桥抛错回结构化 internal
 //   E5/A-02  snapshot 出口裁剪（history 末 8 / 剔 prompt）
 //   E9/B-07  面板通道注册壳（原 rpc.handle arity 探测 → F1 换 webServer 直注册）
@@ -12,10 +12,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as host from '../lib/index.js'
 import { createPanelRpcTransport, callWebRouteHandler } from './helpers/mock-ctx.mjs'
+import { buildSettingsOps } from '../src/settings-ops.js'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-lib8-'))
 
@@ -68,8 +69,7 @@ test('settings.register 抛错：error 留痕在册，且热更监听与 RPC 面
     )
     assert.ok(listeners.has('settings/updated'), '热更监听仍挂上（旧写法同 try 罩住，注册一抛就整段失联）')
     assert.ok(await rpc('/dsh-my-go', 'listTools', {}), 'RPC 面仍可用')
-    const res = await rpc('/dsh-my-go', 'loadSettings', {})
-    assert.equal(res.ok, true, '读盘端点不受注册失败影响')
+    assert.equal((await rpc('/dsh-my-go', 'snapshot', {})).ok, true, '面板端点不受注册失败影响')
     // 热更链路真的活着：改一次存储，快照花名册立刻反映新绑定
     settings.get = () => ({ roles: { hermes: { provider: 'p2', model: 'm2' } } })
     listeners.get('settings/updated')('dsh-my-go')
@@ -100,55 +100,41 @@ test('settings.get 抛错：注册成功也独立留痕，RPC 面不受牵连', 
   }
 })
 
-// ── E4/B-04：loadSettings 不再谎报成功 ────────────────────────────────────
+// ── E4/B-04（改判）：旧设置面端点必须彻底不在 ─────────────────────────────
 
-test('loadSettings：读盘抛错回 ok:false + unavailable（前端 loadError 横幅据此亮起）', async () => {
+test('loadSettings / saveSettings / listModels 端点已退役：一律 bad-request（混合通道不许复活）', async () => {
   const settings = {
     register: () => ({}),
-    get: () => { throw new Error('EIO disk gone') },
+    get: () => ({ roles: { hermes: { provider: 'p1', model: 'm1' } } }),
     mutate: async () => {},
   }
   const { ctx, rpc } = mockHostCtx({ settings })
   await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'loadSettings', {})
-  assert.equal(res.ok, false, '旧写法回 ok:true + 空对象，前端把读失败渲染成干净空表单')
-  assert.equal(res.error.code, 'unavailable')
-  assert.ok(res.error.message.includes('EIO disk gone'), '原因带回去，不留哑谜')
-  assert.deepEqual(res.error.details, {}, '错误信封三字段齐（ConnectionRpcFailure 契约）')
+  for (const endpoint of ['loadSettings', 'saveSettings', 'listModels']) {
+    const res = await rpc('/dsh-my-go', endpoint, { hermes: { model: 'x' } })
+    assert.equal(res.ok, false, `${endpoint} 不再受理`)
+    assert.equal(res.error.code, 'bad-request')
+    assert.match(res.error.message, /unknown endpoint/, '拒绝口径是「不认识这个端点」，不是内部错')
+  }
+  assert.equal((await rpc('/dsh-my-go', 'snapshot', {})).ok, true, '面板端点照常（迁移没牵连非设置面）')
 })
 
-// ── E7/B-05：脏键不再毒杀整批保存 ─────────────────────────────────────────
+// ── E7/B-05：脏键不再毒杀整批保存（判据搬到 ops 编译层）────────────────────
 
-test('saveSettings：draft.roles 里的脏键就地丢弃，其余行照常落盘', async () => {
-  const mutates = []
-  const settings = {
-    register: () => ({}),
-    get: () => undefined,
-    mutate: async (ns, ops) => { mutates.push({ ns, ops }) },
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await host.apply(ctx, NO_INSTALL)
-  const res = await rpc('/dsh-my-go', 'saveSettings', {
+test('写面：draft.roles 里的脏键就地丢弃，其余行照常落盘（E7/B-05 判据搬到 ops 编译层）', () => {
+  const ops = buildSettingsOps({
     roles: {
       'Bad Key': { provider: 'evil', model: 'evil' }, // 大写 + 空格：schema 必拒
       '../escape': { provider: 'evil2' }, // 路径串：同样必拒
       hermes: { provider: 'p1', model: 'm1' },
       'custom-ok': { provider: 'p9', model: 'm9' },
     },
-  })
-  assert.equal(res.ok, true, '一枚脏键不得毒杀整次保存（mutate 是整批原子的）')
-  assert.equal(mutates.length, 1)
-  const keys = mutates[0].ops.map((op) => op.path[1])
-  assert.ok(!keys.includes('Bad Key') && !keys.includes('../escape'), '脏键 ops 一条都不生成')
-  assert.deepEqual(
-    mutates[0].ops.filter((op) => op.path[1] === 'hermes' && op.path[2] === 'provider'),
-    [{ op: 'set', path: ['roles', 'hermes', 'provider'], value: 'p1' }],
-    '正常行原样写入',
-  )
-  assert.ok(keys.includes('custom-ok'), '自定义行原样写入')
+  }, { value: {}, user: {}, base: {} })
+  const paths = JSON.stringify(ops.map((op) => op.path))
+  assert.equal(paths.includes('Bad Key') || paths.includes('escape'), false, '脏键零 op（一枚脏键不毒杀整批原子写）')
+  assert.ok(ops.some((op) => op.path[1] === 'hermes' && op.path[2] === 'provider' && op.value === 'p1'), '其余行照常落盘')
+  assert.ok(ops.some((op) => op.path[1] === 'custom-ok' && op.path[2] === 'provider' && op.value === 'p9'), '自定义行照常')
 })
-
-// ── E10/B-03 + E5/A-02：snapshot 端点 try + 出口裁剪 ──────────────────────
 
 test('snapshot：桥函数抛错回结构化 internal，不再抛穿 RPC 框架', async () => {
   const bridgeKey = Symbol.for('dsh-my-go.snapshot')
@@ -271,7 +257,7 @@ test('F1 鉴权直出：requestRejection 给 401/403 时绝不进业务分发（
   for (const [rejection, body] of [[401, 'unauthorized'], [403, 'forbidden']]) {
     const { ctx, panel } = mockHostCtx({ rejection })
     await host.apply(ctx, NO_INSTALL)
-    const res = await panel.request({ endpoint: 'loadSettings', payload: {} })
+    const res = await panel.request({ endpoint: 'snapshot', payload: {} })
     assert.equal(res.status, rejection, `未认证请求直出 ${rejection}`)
     assert.equal(res.body, body)
     assert.equal(res.frame, undefined, '鉴权失败不回业务信封')
@@ -417,6 +403,12 @@ function fakePackage({ shared = true, prompts = { hermes: 'HERMES' }, presetFile
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'dsh-my-go', version: '9.9.9-tisitan.0' }))
   writeFileSync(join(root, 'preset', 'agent.cordis.yml'), 'name: dsh-my-go\n')
   writeFileSync(join(root, 'preset', 'tools', 'broker.mjs'), presetFile)
+  // 5.3 波 J-2：tools/ 侧簇文件从哨兵同一清单（lib 导出单源）生成占位——
+  // 哨兵加名夹具自动跟上了，两侧永不漂移；broker.mjs 上面的 presetFile 已写。
+  for (const file of host.BROKER_CLUSTER_ROSTER) {
+    if (file === 'broker.mjs') continue
+    writeFileSync(join(root, 'preset', 'tools', file), `// ${file} fixture\n`)
+  }
   if (shared) writeFileSync(join(root, 'preset', 'shared', 'constants.mjs'), 'export const AGENT_TYPES = []\n')
   for (const [name, body] of Object.entries(prompts)) writeFileSync(join(root, 'prompts', `${name}.md`), body)
   return root
@@ -543,6 +535,37 @@ test('安装器行为面：shared 缺席 warn、源缺失吞异常留痕、promp
   }
 })
 
+// 5.3 波 J-2：tools/ 侧在册核验——批次 5 拆分后 broker.mjs 的同目录 import 扇出
+// 到清单里的簇模块，漏拷/半拷的故障点是会话组装期的挂载 import（当场炸且
+// 安装器零留痕）。哨兵把失联提前到装机时 warn，且不阻断（与 shared/ 同款
+// fail-observable 口径）。清单本体经 lib 导出单源消费（上方 fakePackage 同源）。
+test('安装哨兵 tools/ 侧（J-2）：簇文件半拷 → warn 点名缺席者且不阻断；在册者零噪音', async () => {
+  const pkg = fakePackage()
+  const home = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-'))
+  const cap = captureConsole()
+  try {
+    rmSync(join(pkg, 'preset', 'tools', 'broker-tools.mjs')) // 模拟半拷（漏一个簇）
+    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome: home })
+    const toolsWarns = cap.lines.warn.filter((l) => l.includes(' missing —'))
+    assert.equal(toolsWarns.length, 1, `缺席者恰一行点名，实际 ${toolsWarns.length} 行`)
+    assert.ok(toolsWarns[0].includes('tools/broker-tools.mjs missing'), 'warn 点名缺的是哪个文件')
+    assert.match(markerOf(home), /\+[0-9a-f]{16}$/, 'warn 不阻断：marker 照常落盘（fail-observable 非 fail-fast）')
+  } finally {
+    cap.restore()
+    rmSync(pkg, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('安装哨兵清单与 preset/tools/ 实况同源（J-2 防脱节）：清单外无 import 目标', async () => {
+  // 清单是安装期核验的唯一依据，源码侧漏登记 = 新簇上线后哨兵失明——本例把
+  // 「broker.mjs 的同目录 ./broker-*/./metrics import ⊆ 清单」钉成行为档，
+  // 新簇加文件忘登记清单当场红（比装机哨兵本身更早一步）。
+  const brokerSrc = readFileSync(new URL('../preset/tools/broker.mjs', import.meta.url), 'utf-8')
+  const imported = [...brokerSrc.matchAll(/from '\.\/([\w.-]+\.mjs)'/g)].map((m) => m[1]).sort()
+  assert.deepEqual(imported, [...host.BROKER_CLUSTER_ROSTER].filter((f) => f !== 'broker.mjs').sort(), 'broker 同目录 import 全集与哨兵清单逐名一致')
+})
+
 // ── B-10：安装根单一来源 + getBuiltinPersona 回落包内原文 ─────────────────
 
 test('getBuiltinPersona：安装副本缺席时回落包内 prompts（冷启动早期不再假报「文件不存在」）', async () => {
@@ -572,6 +595,17 @@ test('presetInstallRoot：DSH_HOME 覆盖与 ~/.dsh 兜底两条口径都在', (
     process.env.DSH_HOME = '/tmp/some-dsh-home'
     assert.equal(host.presetInstallRoot(), join('/tmp/some-dsh-home', '.agent-presets'))
     assert.equal(host.presetInstallRoot('/explicit'), join('/explicit', '.agent-presets'))
+  } finally {
+    process.env.DSH_HOME = prev
+  }
+})
+
+test('presetInstallRoot：DSH_HOME 空串视同未设，回落 ~/.dsh（paths.mjs dshHome 的 || 语义钉死）', () => {
+  const prev = process.env.DSH_HOME
+  try {
+    process.env.DSH_HOME = ''
+    assert.equal(host.presetInstallRoot(), join(homedir(), '.dsh', '.agent-presets'),
+      '空串走 || 兜底而非 ?? 直通——否则 join(\'\', ...) 解析出相对路径，读写分家')
   } finally {
     process.env.DSH_HOME = prev
   }

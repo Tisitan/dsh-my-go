@@ -11,9 +11,10 @@
 
 import { AGENT_TYPES } from './constants.mjs'
 
-// 旧形态迁移（顶级七工种键 → roles dict）：输入 settings resolved 值，输出
+// 旧形态迁移（顶级八工种键 → roles dict）：输入 settings resolved 值，输出
 // settingsService.mutate 的 ops（无需迁移时返回 null）。语义：
-//   - sisyphus 与 toolMask 恒为顶级键，永不迁移；
+//   - sisyphus 恒为顶级键，永不迁移（旧 toolMask 顶级键已随屏蔽功能
+//   迁移至 dsh-tool-guard 而废弃，此处不再提及）；
 //   - 顶级行无损整行搬入 roles（含 fallbacks 等全字段），同名覆盖 roles
 //     已有行（旧顶级是迁移前唯一权威来源）；
 //   - 旧键 unset（废弃不再消费），roles 中既有其他键不受影响；
@@ -33,7 +34,7 @@ export function migrateLegacyRolesOps(stored) {
 
 // settings → bindings 合并：基线 + sisyphus（顶级）+ 内置工种与 roles dict
 // 自定义键（roles 行）。角色行可携带 persona/toolFilter（自定义角色数据层，
-// 内置七工种人设仍走 prompts/*.md，故 baseBindings 无此二字段）。缺字段
+// 内置八工种人设仍走 prompts/*.md，故 baseBindings 无此二字段）。缺字段
 // 回落基线，与旧逐字段 ?? 链同语义；每次整表重建，WebUI unset 正确回落。
 export function mergeRoleBindings(baseBindings, stored) {
   const merged = { ...baseBindings }
@@ -67,7 +68,7 @@ export function rosterKeys(bindings) {
   return [...AGENT_TYPES, ...custom]
 }
 
-// 名册条目（0.3.0-tisitan.9 A-05）：花名册三处消费面（设置页/面板、编排状态文本、
+// 名册条目（0.3.0-tisitan.9 A-05）：花名册三处消费面（配置卡/面板、编排状态文本、
 // Sisyphus 系统提示简报）的**共同语义源**。此前 lib 半与 broker 半各持一份逐字
 // 相同的 18 行 renderRosterLines，而本文件的 renderRosterBriefing 又自成一式
 // （分隔符 `|` vs `→`、有无备选链明细）——文档宣称的「同源同格式」是假的，同一
@@ -102,7 +103,7 @@ export function rosterEntries(bindings) {
         : provider ? `${provider}·跟随环境`
         : '跟随环境',
       chain,
-      toolFilterText: parts.length > 0 ? parts.join('；') : '全量（除全局掩码）',
+      toolFilterText: parts.length > 0 ? parts.join('；') : '全量',
       personaSource: typeof row.persona === 'string' && row.persona.length > 0
         ? '自定义人设'
         : builtin ? '内置文件' : '无（跟随环境）',

@@ -13,11 +13,16 @@ import {
   apply as hostApply,
 } from '../lib/index.js'
 import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
+import { buildSettingsOps, draftFromSection } from '../src/settings-ops.js'
+
+// 写面判据用的层形状：value/user 同源、base 空——与被测编译器单测同口径。
+const layersOf = (value) => ({ value, user: value, base: {} })
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-roster-home-'))
 
 // 迁移源形状：旧 settings.yaml（0.2.3-tisitan.13 及之前）= sisyphus + 七个顶级
-// 工种键 + toolMask。工种行含 fallbacks 全字段，验证无损搬运。
+// 工种键。工种行含 fallbacks 全字段，验证无损搬运。（旧 toolMask 顶级键随屏蔽
+// 功能迁移至 dsh-tool-guard 而废弃，不再进入迁移形状。）
 const LEGACY_STORED = {
   sisyphus: { provider: 'p-s', model: 'm-s', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] },
   hermes: { provider: 'p1', model: 'm1', reasoningEffort: 'default', dsv4p0813: true, fallbacks: [{ provider: 'p2', model: 'm2' }] },
@@ -27,7 +32,6 @@ const LEGACY_STORED = {
   hephaestus: { provider: 'p4', model: 'm5', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] },
   prometheus: { provider: 'p5', model: 'm6', reasoningEffort: 'max', dsv4p0813: false, fallbacks: [] },
   oracle: { provider: 'p5', model: 'm7', reasoningEffort: 'max', dsv4p0813: false, fallbacks: [] },
-  toolMask: { deny: ['mcp__a__x'] },
 }
 const WORKER_KEYS = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
 
@@ -54,7 +58,6 @@ function mockHostCtx({ settings } = {}) {
 // 把 LEGACY_STORED 里的七工种行搬进 roles（模拟迁移完成后的存储形状）
 const MIGRATED_STORED = {
   sisyphus: LEGACY_STORED.sisyphus,
-  toolMask: LEGACY_STORED.toolMask,
   roles: Object.fromEntries(WORKER_KEYS.map((k) => [k, LEGACY_STORED[k]])),
 }
 
@@ -97,11 +100,11 @@ test('schema：角色键名违反 ^[a-z][a-z-]*$ 在 schema 层拒绝', async ()
   assert.ok(!ROLE_KEY_PATTERN.test('R2D2') && !ROLE_KEY_PATTERN.test('a_b'))
 })
 
-test('schema 回归：sisyphus 顶级键与 toolMask 行为不变', async () => {
+test('schema 回归：sisyphus 顶级键不变；旧 toolMask 键透传不炸（消费面已拆）', async () => {
   const schema = await captureSchema()
   const parsed = schema({ sisyphus: LEGACY_STORED.sisyphus, toolMask: { deny: ['mcp__a__x'] } })
   assert.deepEqual(parsed.sisyphus, LEGACY_STORED.sisyphus, 'sisyphus 恒为顶级键')
-  assert.deepEqual(parsed.toolMask.deny, ['mcp__a__x'], 'toolMask 行为不变')
+  assert.deepEqual(parsed.toolMask, { deny: ['mcp__a__x'] }, '旧 toolMask 键原样透传（schemastery 未知键透传，消费面已拆除不再读它）')
   assert.ok(typeof parsed.roles === 'object', 'roles 缺省为空 dict')
 })
 
@@ -229,40 +232,23 @@ test('apply：迁移失败保留原配置且 apply 不中断（mutate 抛错）'
   await assert.doesNotReject(() => hostApply(ctx, {}), '迁移失败只 warn，不炸插件装载')
 })
 
-// ── RPC：loadSettings 形状提升 + saveSettings 泛化 ────────────────────────
+// ── 读面投影 + 写面泛化（0.5.0-tisitan.3 起随 ops 编译层搬到浏览器侧）──────
 
-test('loadSettings：roles 内置工种行提升回顶级（旧前端形状），roles 原样附带', async () => {
-  const settings = {
-    register: () => ({}),
-    get: () => MIGRATED_STORED,
-    mutate: async () => {},
+test('draftFromSection：roles 内置工种行提升回顶级，roles 原样附带', () => {
+  const draft = draftFromSection(MIGRATED_STORED)
+  for (const field of ['provider', 'model', 'reasoningEffort', 'dsv4p0813', 'fallbacks']) {
+    assert.deepEqual(draft.hermes[field], LEGACY_STORED.hermes[field], `内置工种 ${field} 从 roles 提升回顶级`)
   }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  const res = await rpc('/dsh-my-go', 'loadSettings', {})
-  assert.equal(res.ok, true)
-  assert.deepEqual(res.value.hermes, LEGACY_STORED.hermes, '内置工种从 roles 提升回顶级')
-  assert.deepEqual(res.value.roles.hermes, LEGACY_STORED.hermes, 'roles 原样附带')
-  assert.deepEqual(res.value.sisyphus, LEGACY_STORED.sisyphus, 'sisyphus 顶级不变')
-  assert.deepEqual(res.value.toolMask, LEGACY_STORED.toolMask, 'toolMask 顶级不变')
+  assert.deepEqual(draft.roles.hermes, LEGACY_STORED.hermes, 'roles 原样附带')
+  assert.deepEqual(draft.sisyphus, { ...LEGACY_STORED.sisyphus }, 'sisyphus 顶级不变')
 })
 
-test('saveSettings：sisyphus 顶级路径不变，draft 顶级工种键写入 roles 路径', async () => {
-  const mutates = []
-  const settings = {
-    register: () => ({}),
-    get: () => undefined,
-    mutate: async (ns, ops) => { mutates.push({ ns, ops }) },
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  const res = await rpc('/dsh-my-go', 'saveSettings', {
+test('写面：sisyphus 顶级路径不变，draft 顶级工种键写入 roles 路径', () => {
+  const ops = buildSettingsOps({
     sisyphus: { provider: 'p-s', model: 'm-s' },
     hermes: { provider: 'p1', model: 'm1' },
     roles: { 'custom-x': { provider: 'p9', model: 'm9' } },
-  })
-  assert.equal(res.ok, true)
-  const ops = mutates[0].ops
+  }, layersOf({}))
   assert.deepEqual(
     ops.filter((op) => op.path[0] === 'sisyphus' && op.path[1] === 'provider'),
     [{ op: 'set', path: ['sisyphus', 'provider'], value: 'p-s' }],
@@ -282,60 +268,32 @@ test('saveSettings：sisyphus 顶级路径不变，draft 顶级工种键写入 r
   assert.equal(ops.filter((op) => op.path[0] === 'roles' && op.path[2] === 'toolFilter').length, 0, '保存循环不触碰 toolFilter')
 })
 
-test('saveSettings：draft 顶级值优先于 roles 同名旧值（用户编辑面生效）', async () => {
-  const mutates = []
-  const settings = {
-    register: () => ({}),
-    get: () => undefined,
-    mutate: async (ns, ops) => { mutates.push({ ns, ops }) },
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  await rpc('/dsh-my-go', 'saveSettings', {
+test('写面：draft 顶级值优先于 roles 同名旧值（用户编辑面生效）', () => {
+  const ops = buildSettingsOps({
     hermes: { model: 'edited' },
     roles: { hermes: { model: 'stale' } },
-  })
-  const op = mutates[0].ops.find((o) => o.path[1] === 'hermes' && o.path[2] === 'model')
+  }, layersOf({}))
+  const op = ops.find((o) => o.path[1] === 'hermes' && o.path[2] === 'model')
   assert.deepEqual(op, { op: 'set', path: ['roles', 'hermes', 'model'], value: 'edited' }, '顶级编辑值胜出')
 })
 
-test('saveSettings：draft.roles.sisyphus 不产生任何写面（sisyphus 恒为顶级键，棒2-L1 写面）', async () => {
-  const mutates = []
-  const settings = {
-    register: () => ({}),
-    get: () => undefined,
-    mutate: async (ns, ops) => { mutates.push({ ns, ops }) },
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  const res = await rpc('/dsh-my-go', 'saveSettings', {
+test('写面：draft.roles.sisyphus 不产生任何写面（sisyphus 恒为顶级键，棒2-L1 写面）', () => {
+  const ops = buildSettingsOps({
     roles: {
       sisyphus: { provider: 'dict-p', model: 'dict-m' },
       hermes: { provider: 'p1', model: 'm1' },
     },
-  })
-  assert.equal(res.ok, true)
-  const ops = mutates[0].ops
+  }, layersOf({}))
   assert.equal(ops.filter((o) => o.path[0] === 'roles' && o.path[1] === 'sisyphus').length, 0, 'roles.sisyphus 零写入（schema 拦不住的死数据在写面落盘前拦下）')
   assert.ok(ops.some((o) => o.path[1] === 'hermes' && o.path[2] === 'provider'), '正常角色行不受影响（哨兵）')
 })
 
 // ── 0.2.3-tisitan.15 前端功能批：persona 部分行 + snapshot 花名册 ──────────────
 
-test('saveSettings：只带 persona 的部分行不产生 5 字段 ops（已配绑定绝不被误清）', async () => {
-  const mutates = []
-  const settings = {
-    register: () => ({}),
-    get: () => undefined,
-    mutate: async (ns, ops) => { mutates.push({ ns, ops }) },
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  const res = await rpc('/dsh-my-go', 'saveSettings', {
+test('写面：只带 persona 的部分行不产生 5 字段 ops（已配绑定绝不被误清）', () => {
+  const ops = buildSettingsOps({
     roles: { hermes: { persona: '覆盖人设' }, explore: { persona: '' } },
-  })
-  assert.equal(res.ok, true)
-  const ops = mutates[0].ops
+  }, layersOf({ roles: { hermes: { provider: 'p1', model: 'm1' }, explore: { provider: 'p2' } } }))
   for (const field of ['provider', 'model', 'reasoningEffort', 'dsv4p0813', 'fallbacks']) {
     assert.equal(ops.filter((o) => o.path[0] === 'roles' && o.path[1] === 'hermes' && o.path[2] === field).length, 0, `hermes.${field} 无 ops（字段缺失 = 不触碰）`)
   }
@@ -366,9 +324,10 @@ test('snapshot 响应恒附 rosterLines：桥未就绪（无编排会话）也�
   const lines = res.value.rosterLines
   assert.ok(Array.isArray(lines) && lines.length > 1, 'rosterLines 是非空行数组')
   assert.match(lines[0], /角色名册/, '首行是区标题')
-  for (const key of ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']) {
+  for (const key of ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle', 'apelles']) {
     assert.ok(lines.some((l) => l.startsWith(`- ${key} |`)), `内置键 ${key} 有一行摘要`)
   }
+  assert.equal(res.value.roster.find((e) => e.role === 'apelles')?.builtin, true, 'apelles 是内置工种，结构化条目钉 builtin=true')
   assert.ok(!lines.some((l) => l.startsWith('- sisyphus')), 'sisyphus 是编排者单例，永不在可派花名册')
   assert.ok(lines.some((l) => l.includes('跟随环境')), '无绑定时标注跟随环境')
 })

@@ -1,6 +1,7 @@
 // 二期 2.3 调度面泳道化行为批（read-pool-semantics.md §二；D9/D18/D19 已裁决）。
 // 覆盖：T1 端到端读池并行 / 写平面单线地基 / 跨 lane 并行 / lane-aware skip /
-// lane 内 FIFO / 容量 1 退化全局单线（等价性）/ 复活闸 lane 化。
+// lane 内 FIFO / 容量 1 退化全局单线（等价性）/ 复活闸 lane 化 / T9 装机口径容量 3
+// （三读在飞 + 第四读入队 + 读池满时写任务越过上岗）。
 // 所有「默认容量 1」路径的逐字节等价性另由既有 405 例全套件背书——它们全部
 // 跑在 readPoolSize 缺省（=1）下，是本批最重的等价矩阵。
 //
@@ -184,4 +185,38 @@ test('T8 直派成功路径回归：D19 补位推进为无害调用（满池/无
   const snap = snapshotNow().parents['parent-1']
   assert.equal(snap.queue.length, 0)
   assert.ok(Array.isArray(snap.currentRecords) && snap.currentRecords.length > 0, '在飞状态自洽（读+写各一）')
+})
+
+// 装机口径批（2026-09-18 扩池 2→3）：显式 3 = 钳制上限顶格。T1 咬的是 2，本例把
+// 同一端到端形状外扩一档，并咬住「读池 3/3 满 ≠ 全局满」——写 lane 的空位仍能把
+// 队列里排在满池读任务之后的写任务放行（broker.mjs advanceQueue 的 lane-aware skip）。
+test('T9 端到端读池扩容：readPoolSize=3 时三条读任务同时在飞、第四条排队；读池满时写任务仍可越过上岗', async () => {
+  const { dispatch, tools, spawns } = await applyWithPool(3)
+  const goWork = tools.get('go_work')
+  const a = await goWork.execute({ agent: 'explore', prompt: '读A' }, execOf(parent)) // read 1/3
+  const b = await goWork.execute({ agent: 'librarian', prompt: '读B' }, execOf(parent)) // read 2/3
+  const c = await goWork.execute({ agent: 'explore', prompt: '读C' }, execOf(parent)) // read 3/3
+  assert.equal(a.status, 'running')
+  assert.equal(b.status, 'running', '第二条读任务立即上岗（读池容量 3）')
+  assert.equal(c.status, 'running', '第三条读任务立即上岗（容量 2 时代此处必排队）')
+  assert.equal(spawns.length, 3, '同刻三条读任务在飞 = 读池容量随显式值放大')
+  const d = await goWork.execute({ agent: 'librarian', prompt: '读D' }, execOf(parent))
+  assert.equal(d.status, 'queued', '读池 3/3 满后第四条读任务入队')
+  assert.equal(snapOf('parent-1').queue.length, 1)
+  // 读 lane 满不挡写 lane：直派走目标 lane 空位判定（泳道隔离）
+  const h1 = await goWork.execute({ agent: 'hermes', prompt: '写H1' }, execOf(parent)) // write 1/1
+  assert.equal(h1.status, 'running', '读池 3/3 满时写平面任务仍可直派上岗')
+  const w2 = await goWork.execute({ agent: 'prometheus', prompt: '写W2' }, execOf(parent))
+  assert.equal(w2.status, 'queued', '写平面满 → 入队，队列 [读D, 写W2]')
+  assert.deepEqual(snapOf('parent-1').queue.map((w) => w.agentType), ['librarian', 'prometheus'], '入队序即全局序，skip 不改序')
+  // lane-aware skip：写槽释放 → advanceQueue 扫过满池 read 的队首读D，放行写 lane 的 W2
+  dispatch('subagent/end', doneEnd(h1.childId))
+  await waitFor(() => spawns.length === 5, { what: '读池满时写 lane 空位放行写任务（skip 越过队首读任务）' })
+  assert.equal(spawns[4], '写W2', '越过队首满池读任务上岗的是写任务（读池放开不改变满 lane 原地保留）')
+  assert.deepEqual(snapOf('parent-1').queue.map((w) => w.agentType), ['librarian'], '读D 原地保留、序不重排')
+  // 读槽释放 → 读D 才上岗（lane 内 FIFO）
+  dispatch('subagent/end', doneEnd(a.childId))
+  await waitFor(() => spawns.length === 6, { what: '读槽释放后排队读任务上岗（第 6 次 spawn）' })
+  assert.equal(spawns[5], '读D', '上岗的是排队的读任务4（lane 内 FIFO）')
+  assert.equal(snapOf('parent-1').queue.length, 0)
 })
