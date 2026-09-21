@@ -1,9 +1,11 @@
 // dsh-my-go — report_submit 行为档（提交制 0.5.0-tisitan.1，替身 ctx 端到端）。
 //
-// 验收面：四字段 schema pin（全 required，身份绝不经参数面）/ 正常写板 /
-// 字段校验不过逐条报错且不落板不登记 / evidence ["无"] 与空数组归一化合法 /
-// 主会话调用抛错 / 开关关工具不在册 / D14 观测（board-write 行，谓词轮询零固定
-// sleep）/ 成功事实登记（reportSubmitted，供终局合成回执消费）。
+// 验收面：六字段 schema pin（四基础全 required、两尾字段 schema 可选而闸门按
+// 工种强制；身份绝不经参数面）/ 正常写板 / 字段校验不过逐条报错且不落板不登记 /
+// evidence ["无"] 与空数组归一化合法 / 主会话调用抛错 / 开关关工具不在册 /
+// D14 观测（board-write 行，谓词轮询零固定 sleep）/ 成功事实登记（reportSubmitted，
+// 供终局合成回执消费）/ 施工层两字段端到端（缺字段不落板、补齐首提即过且板面
+// 尾部渲出「## 偏差记录」「## 未验项」两节）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
@@ -46,16 +48,23 @@ async function applyBroker(config = {}) {
   return { tools, home, eventsFile: join(home, 'dsh-my-go', 'metrics', 'events.jsonl'), boardPathOf: (childId) => join(home, 'dsh-my-go', 'board', encodeSegment('parent-rs'), `${encodeSegment(childId)}.md`) }
 }
 
-test('默认开：report_submit 在册，四字段全 required，isConcurrencySafe，无旧机制字样', async () => {
+test('默认开：report_submit 在册，四基础字段全 required + 两尾字段可选，无旧机制字样', async () => {
   const { tools } = await applyBroker({})
   const tool = tools.get('report_submit')
   assert.ok(tool, 'D5 一期默认开 → 工具在册')
-  assert.deepEqual(tool.parameters.required, ['report', 'conclusion', 'evidence', 'open'], '四字段全必填')
-  assert.deepEqual(Object.keys(tool.parameters.properties), ['report', 'conclusion', 'evidence', 'open'], 'childId/sessionId 不得出现在参数面（防伪造他人板）')
+  assert.deepEqual(tool.parameters.required, ['report', 'conclusion', 'evidence', 'open'],
+    'schema 面 required 仍只有四基础字段：deviation/unverified 的强制按工种发生在闸门面，不在 JSON Schema')
+  assert.deepEqual(Object.keys(tool.parameters.properties), ['report', 'conclusion', 'evidence', 'open', 'deviation', 'unverified'],
+    '六字段参数面在册；childId/sessionId 不得出现（防伪造他人板）')
   assert.equal(tool.parameters.properties.evidence.type, 'array', 'evidence 是字符串数组')
   assert.equal(tool.parameters.properties.evidence.items.type, 'string')
+  for (const tail of ['deviation', 'unverified']) {
+    assert.equal(tool.parameters.properties[tail].type, 'string', `${tail} 是字符串字段`)
+    assert.match(tool.parameters.properties[tail].description, /MANDATORY for hermes \/ hephaestus/, `${tail} 描述点名施工层强制`)
+  }
   assert.equal(tool.isConcurrencySafe(), true, '与六件套同例')
-  assert.ok(!JSON.stringify(tool).includes('mygo_report'), '工具描述 = 四字段用法，旧机制字样零出现')
+  assert.ok(!JSON.stringify(tool).includes('mygo_report'), '工具描述 = 六字段用法，旧机制字样零出现')
+  assert.match(tool.description, /all six fields/, '描述口径与条款同步升到六字段')
 })
 
 test('正常写板：report 原文落盘、返回 {ok,path,bytes}、路径按双段编码焊在 board 根内', async () => {
@@ -146,7 +155,7 @@ test('身份推导防御：无 exec.agent 抛错；parentSession 非字符串抛
   )
 })
 
-test('施工层小节闸（agentType 走登记表反查）：hephaestus 子代缺节即拒收不落板，补齐后放行', async () => {
+test('施工层两字段闸（agentType 走登记表反查）：hephaestus 缺字段即拒收不落板，补齐首提即过且两节上板', async () => {
   const parent = { id: 'parent-rs', session: { header: {} } }
   const { ctx, tools } = createMockCtx({
     agents: { get: (id) => (id === 'parent-rs' ? parent : undefined) },
@@ -162,29 +171,39 @@ test('施工层小节闸（agentType 走登记表反查）：hephaestus 子代�
       () => tools.get('report_submit').execute(argsOf(), exec),
       (error) => {
         const text = String(error.message)
-        return text.includes('缺少「偏差记录」小节') && text.includes('缺少「未验项」小节') && !text.includes('conclusion:')
+        return text.includes('deviation: 检测到缺失或为空') && text.includes('unverified: 检测到缺失或为空') && !text.includes('conclusion:')
       },
-      '缺哪节报哪节（其余字段不误伤）',
+      '缺哪字段报哪字段（其余字段不误伤）',
     )
-    assert.equal(existsSync(boardPath), false, '小节闸不过不落板、不登记')
-    const fixed = argsOf({ report: '# 完整报告\n偏差记录：无\n未验项：无\n' })
-    assert.equal((await tools.get('report_submit').execute(fixed, exec)).ok, true, '两节齐（值为「无」）放行')
-    assert.equal(readFileSync(boardPath, 'utf-8'), fixed.report)
+    assert.equal(existsSync(boardPath), false, '两字段闸不过不落板、不登记')
+    // 带两字段的首提即过（不再需要「先摔一次再补节标」），且板面尾部渲出两节。
+    const fixed = argsOf({ deviation: '无', unverified: '未验 Windows 路径下的段编码' })
+    assert.equal((await tools.get('report_submit').execute(fixed, exec)).ok, true, '两字段齐（值为「无」）首提即放行')
+    assert.equal(
+      readFileSync(boardPath, 'utf-8'),
+      '# 完整报告\n实施细节与证据全文。\n\n## 偏差记录\n无\n\n## 未验项\n未验 Windows 路径下的段编码\n',
+      '落板 = report 正文 + ## 偏差记录 / ## 未验项 两节（buildReportBoard 拼装）',
+    )
   } finally {
     await removeHomeWithRetry(home)
   }
 })
 
 test('工种反查两腿：注册表缺席靠 label 兜底认工种；两条腿都查不到 → 不强制', async () => {
-  const { tools } = await applyBroker({})
+  const { tools, home } = await applyBroker({})
+  const coldBoard = join(home, 'dsh-my-go', 'board', encodeSegment('parent-rs'), 'child-cold.md')
   const labeled = (type) => ({ id: 'child-cold', session: { header: { parentSession: 'parent-rs', label: `dsh-my-go:${type}: 施工` } } })
   await assert.rejects(
     () => tools.get('report_submit').execute(argsOf(), execOf(labeled('hephaestus'))),
-    /缺少「偏差记录」小节/,
+    /deviation: 检测到缺失或为空/,
     'cold-resume 后活登记为空，label 兜底仍认得出施工层',
   )
   assert.equal((await tools.get('report_submit').execute(argsOf(), execOf(labeled('oracle')))).ok, true, '非施工层不强制')
+  assert.equal(readFileSync(coldBoard, 'utf-8'), argsOf().report, '非施工层未填两字段 → 板面恒等于 report 原文')
   assert.equal((await tools.get('report_submit').execute(argsOf(), execOf(childAgent('child-plain')))).ok, true, '注册表 + label 双缺（自定义角色）→ 放行')
+  // 非施工层填了两字段照样收（不只是不拒），且照样渲节上板
+  assert.equal((await tools.get('report_submit').execute(argsOf({ deviation: '顺手记一条', unverified: '顺手记二条' }), execOf(labeled('oracle')))).ok, true, 'oracle 填了照样收')
+  assert.equal(readFileSync(coldBoard, 'utf-8'), `${argsOf().report.trimEnd()}\n\n## 偏差记录\n顺手记一条\n\n## 未验项\n顺手记二条\n`, '填了的两节同样落板')
 })
 
 test('开关关（config.reportExternalization=false）：工具不在册', async () => {

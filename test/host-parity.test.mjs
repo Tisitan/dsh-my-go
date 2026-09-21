@@ -829,7 +829,7 @@ test('board 存储层定义唯一归属（源码断言）：本体单点、两�
 
 // ── 报告提交制单源（0.5.0 线）：定义唯一归属 shared/report-format.mjs ────────
 // 同 board 条形态：定义唯一归属 + 两半无本地定义；提交制接线后 broker 消费在册
-// （REPORT_CLAUSE 注入 spawnChild + validateReportArgs 校验 report_submit 四字段）。
+// （REPORT_CLAUSE 注入 spawnChild + validateReportArgs 校验 report_submit 六字段）。
 test('报告提交制单源定义唯一归属（源码断言）：本体单点、两半零残留', async () => {
   const formatSrc = await readFile(new URL('../preset/shared/report-format.mjs', import.meta.url), 'utf-8')
   const [brokerSrc, hostSrc] = await readBothHalves()
@@ -838,21 +838,28 @@ test('报告提交制单源定义唯一归属（源码断言）：本体单点�
     assert.equal(countOf(hostSrc, marker), 0, `lib 半零残留: ${marker}`)
     assert.equal(countOf(brokerSrc, marker), 0, `broker 半无本地定义（唯一归属 shared）: ${marker}`)
   }
-  // 条款注入与四字段校验消费在册（>=1 非计数）。5.4 拆分波：REPORT_CLAUSE 的
+  // 条款注入与六字段校验消费在册（>=1 非计数）。5.4 拆分波：REPORT_CLAUSE 的
   // spawnChild 注入点随调度簇迁入 ./broker-scheduler.mjs（直派/重派共用唯一组装
-  // 点，「一处追加两路同覆盖」的事实 C 不变），四字段校验仍在 tools 簇——
+  // 点，「一处追加两路同覆盖」的事实 C 不变），六字段校验仍在 tools 簇——
   // 「条款与校验器同形、只此一份实现」的原语义不因换文件而稀释（lib 半零残留照旧）。
   const schedulerSrcFmt = await readSchedulerCluster()
   assert.ok(countOf(schedulerSrcFmt, "from '../shared/report-format.mjs'") >= 1, '调度簇消费在册: report-format import')
   assert.ok(countOf(schedulerSrcFmt, 'REPORT_CLAUSE') >= 1, '调度簇消费在册: REPORT_CLAUSE 注入（spawnChild）')
-  // 5.3 拆分波：四字段校验随注册块迁入 ./broker-tools.mjs、RELAY_CLAUSE 的 hop
+  // 5.3 拆分波：字段校验随注册块迁入 ./broker-tools.mjs、RELAY_CLAUSE 的 hop
   // 注入随 composeRelayPrompt 迁入 ./broker-relay.mjs——消费在册随波换钉簇源，
   // 「条款与校验器同形、只此一份实现」的原语义不变（lib 半零残留照旧）。
   const relaySrcForFormat = await readRelayCluster()
   const toolsSrcForFormat = await readToolsCluster()
-  assert.ok(countOf(toolsSrcForFormat, 'validateReportArgs(') >= 1, 'tools 簇消费在册: report_submit 四字段校验')
+  assert.ok(countOf(toolsSrcForFormat, 'validateReportArgs(') >= 1, 'tools 簇消费在册: report_submit 六字段校验')
+  assert.ok(countOf(toolsSrcForFormat, 'buildReportBoard(') >= 1, 'tools 簇消费在册: 落板拼装 buildReportBoard')
   // 3.6 兑现：RELAY_CLAUSE 消费在册（链 hop prompt 的下游验收条款注入）
   assert.ok(countOf(relaySrcForFormat, 'RELAY_CLAUSE') >= 1, 'relay 簇消费在册: RELAY_CLAUSE 注入（composeRelayPrompt）')
+  // 补发口径同源（0.5.0-tisitan.4 字段化批）：end-attribution 只许引用
+  // REPORT_REPAIR_CLAUSE_HINT，不得自带第二份字段清单——旧「一次交齐四字段」那行
+  // 就是活体第二源（条款六字段化后它让施工层补交轮被闸门二次拒收），负向钉死不许回潮。
+  const endAttrSrcForFormat = await readFile(new URL('../preset/shared/end-attribution.mjs', import.meta.url), 'utf-8')
+  assert.ok(countOf(endAttrSrcForFormat, 'REPORT_REPAIR_CLAUSE_HINT') >= 1, 'end 归因消费在册: 补发字段口径引同源常量')
+  assert.equal(countOf(endAttrSrcForFormat, '一次交齐'), 0, 'end-attribution 零自带字段清单（第二源即回归）')
 })
 
 // ── 接力链状态机（0.4.0 线步骤 3.2/3.3）：定义唯一归属 shared/relay-chain.mjs ──

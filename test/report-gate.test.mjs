@@ -2,7 +2,8 @@
 //
 // 验收六路径 + 双发残余窗口（已知边界）：
 //   ① 已提交直通：回执 conclusion = 合成概要、板上是 report 原文、metrics pass
-//   ② 未提交首次：queued 补发（固定措辞点名四字段）、不落史占槽、metrics repair
+//   ② 未提交首次：queued 补发（固定措辞点名六字段，口径引 REPORT_REPAIR_CLAUSE_HINT
+//      同源常量）、不落史占槽、metrics repair
 //   ③ 补交轮提交成功 → 直通（guard 随终局翻篇——再次未提交可再次补发，防授权永挂）
 //   ④ 补发后仍未提交转裁决（「未交付：」前缀落账、终局通知、无二次补发——防死循环主线）
 //   ⑤ failed 直通（无链 error 现路径、无落板、无 report-gate 行）
@@ -103,7 +104,7 @@ test('①已提交直通：conclusion = 合成概要、板上是 report 原文�
   }
 })
 
-test('②未提交首次：queued 补发一次、prompt 点名四字段、不落史占槽、metrics repair', async () => {
+test('②未提交首次：queued 补发一次、prompt 点名六字段、不落史占槽、metrics repair', async () => {
   const g = gateCtx()
   try {
     await broker.apply(g.ctx, {})
@@ -112,7 +113,8 @@ test('②未提交首次：queued 补发一次、prompt 点名四字段、不落
     await waitFor(() => g.queued.length === 1, { what: 'queued 补发已投递' })
     assert.equal(g.queued[0].targetId, 'sess-1')
     assert.ok(g.queued[0].text.includes('未调用 report_submit 提交报告，视为未交付'), '补发 prompt 点名未交付')
-    assert.ok(g.queued[0].text.includes('四字段'), '补发 prompt 指路四字段')
+    assert.ok(g.queued[0].text.includes('六字段'), '补发 prompt 指路六字段（与 REPORT_CLAUSE 同口径）')
+    assert.ok(g.queued[0].text.includes('deviation') && g.queued[0].text.includes('unverified'), '补发 prompt 点名施工层两必填字段')
     assert.ok(g.queued[0].text.includes('report_submit'), '补发 prompt 指路上报通道')
     assert.equal(snapOf('parent-g')?.history?.length ?? 0, 0, '不 finish：未交付中间态不落史（一份工作一条终史）')
     assert.equal(currentOf('parent-g')?.childId, 'sess-1', '记录留在 currentMap 实体占槽（advance=no）')
@@ -290,7 +292,7 @@ test('⑨板兜底：登记表缺席（重启/冷恢复形态）而板上有货 
     assert.equal(g.queued.length, 0, '零补发：板上有货就不再骚扰')
     const conclusion = snapOf('parent-g').history[0].conclusion
     assert.ok(conclusion.includes('(报告已在板，成功登记表缺席)'), '回执点名登记值缺席（不是空字段，也不谎称读过提交值）')
-    assert.ok(conclusion.includes('证据: 无') && conclusion.includes('遗留: 无'), '兜底四字段走同款合成拼装')
+    assert.ok(conclusion.includes('证据: 无') && conclusion.includes('遗留: 无'), '兜底字段走同款合成拼装')
     assert.ok(conclusion.includes('report_fetch childId=sess-1'), '取阅指针照常在')
     const rows = await readMetricsWhen(g.eventsFile, (list) => list.some((r) => r.kind === 'report-gate' && r.phase === 'pass-board-fallback'))
     assert.ok(rows.some((r) => r.kind === 'report-gate' && r.phase === 'pass-board-fallback' && r.childId === 'sess-1'), '观测口径与常规 pass 分开')

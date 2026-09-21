@@ -53,7 +53,7 @@
  *     为已知边界：结论按未交付落账，不比现状差。
  */
 
-import { buildOwnerSummary } from './report-format.mjs'
+import { buildOwnerSummary, REPORT_REPAIR_CLAUSE_HINT } from './report-format.mjs'
 import { laneOf } from './orchestration.mjs'
 
 export const DECISIONS = Object.freeze([
@@ -88,7 +88,7 @@ const DECISION_ADVANCE = {
 // 也依旧零 fs——板上是否有货这件事实由 broker 现算后喂进来。
 const NEVER_HAS_BOARD = () => false
 
-// 登记值缺席但板上有货时的最小四字段（回执内芯的合成原料）。措辞点名「登记表
+// 登记值缺席但板上有货时的最小兜底字段（回执内芯的合成原料）。措辞点名「登记表
 // 缺席」而非「未提交」：报告是真在板上的，主编照 report_fetch 取全文即可。
 const BOARD_ONLY_SUBMITTED = Object.freeze({
   conclusion: '(报告已在板，成功登记表缺席)',
@@ -299,7 +299,7 @@ export function attributeEnd({
     if (tableHit || hasBoard(childId)) {
       // 已交付：回执内芯 = 从已校验字段合成的概要（短），全文已在板上
       // （report_submit 落板成功是登记前提），无需落板兜底。
-      // 登记值缺席（仅板命中）→ 显式兜底一份最小四字段，phase 记成
+      // 登记值缺席（仅板命中）→ 显式兜底一份最小合成原料，phase 记成
       // 'pass-board-fallback' 与常规 'pass' 分开：统计上这是「板为准」的保守
       // 放行，不是真读到了提交值，两种口径不许混在一个 phase 里。
       const registered = tableHit ? reportGate.readSubmitted(childId) : undefined
@@ -370,9 +370,12 @@ export function attributeEnd({
 }
 
 // 补发 prompt（报告提交制）：措辞零参数化——未提交的唯一原因就是没调工具，
-// 四字段用法由工具描述与 REPORT_CLAUSE 自教，这里只点名补交什么与「不必重做」。
+// 这里只点名补交什么与「不必重做」。字段口径不在本文件复述：那份清单曾自带
+// 「四字段」措辞，条款六字段化后它就成了第二源，害施工层补交轮照旧口径再交
+// 四件、被闸门第二次拒收——现统一引用 report-format.mjs 的 REPORT_REPAIR_CLAUSE_HINT
+// （与 REPORT_CLAUSE / REPORT_TAIL_FIELDS 同一张名册派生，改表即改口径）。
 function buildRepairPrompt() {
-  return '[dsh-my-go] 你上一轮结束但未调用 report_submit 提交报告，视为未交付。请调用 report_submit 一次交齐四字段（report 完整报告全文 / conclusion 2-4 句结论 / evidence 裸『路径:行号』数组或 ["无"] / open 遗留或「无」）。内容可完全复用你已完成的工作，只补交报告。'
+  return `[dsh-my-go] 你上一轮结束但未调用 report_submit 提交报告，视为未交付。请调用 report_submit ${REPORT_REPAIR_CLAUSE_HINT}内容可完全复用你已完成的工作，只补交报告。`
 }
 
 // dispatcher 侧解释 facts.advance（协议第 2 条）。拆成独立导出是为了让「推进时机」

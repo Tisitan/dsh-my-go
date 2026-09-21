@@ -41,7 +41,7 @@ import { escapeXml, typeOfAgent } from '../shared/misc.mjs'
 import { rosterEntries as sharedRosterEntries, formatRosterRow as sharedFormatRosterRow } from '../shared/roles.mjs'
 import { reportToParent } from '../shared/adjacent.mjs'
 import { writeBoard, readBoardSlice } from '../shared/board.mjs'
-import { validateReportArgs } from '../shared/report-format.mjs'
+import { validateReportArgs, buildReportBoard } from '../shared/report-format.mjs'
 import { laneOf, nextId } from '../shared/orchestration.mjs'
 import { createChain, validateChainDeclaration, RELAY_CHAINS_CAP } from '../shared/relay-chain.mjs'
 
@@ -516,18 +516,24 @@ export function registerAllTools({
   // 身份只从 exec.agent 推导（childId = agent.id、sessionId = header.parentSession，
   // 两者皆由 harness 填写、不经参数面），子代不可能伪造他人板——防越权写是本
   // 工具的存在前提。子代 deny 闸不得 deny 本工具（它就是子代面向的上报通道）；
-  // 主编侧无 parentSession，运行时守卫直接抛错。四字段先过 validateReportArgs
-  //（唯一校验出处）：不过 → 逐条错误抛回原地重调，不落板、不登记；过 → 落板 +
-  // conclusion/evidence/open 登记成功事实（终局合成回执消费）。开关关 → 不注册。
+  // 主编侧无 parentSession，运行时守卫直接抛错。六字段先过 validateReportArgs
+  //（唯一校验出处）：不过 → 逐条错误抛回原地重调，不落板、不登记；过 → 正文与
+  // 两尾字段（deviation / unverified）经 buildReportBoard 拼成板面 markdown 落板 +
+  // conclusion/evidence/open 登记成功事实（终局合成回执消费）。两尾字段 schema 面
+  // 可选、闸门面按工种强制（施工层必填），强制语义单源在 REPORT_CLAUSE。
+  // 开关关 → 不注册。
   if (REPORT_EXT) {
     registerTool({
       name: 'report_submit',
       description: [
-        'Submit your COMPLETE task report to the report board, where the orchestrator reads it back with report_fetch. Sub-agent-only gate: orchestrators never submit. Call it ONCE when your task work is done, with all four fields (stable contract, never renamed):',
+        'Submit your COMPLETE task report to the report board, where the orchestrator reads it back with report_fetch. Sub-agent-only gate: orchestrators never submit. Call it ONCE when your task work is done, with all six fields (stable contract, never renamed):',
         '- report: the COMPLETE report text (implementation details, process, all evidence). Plain text or Markdown; goes to the board for sliced reading.',
         '- conclusion: 2-4 sentence self-contained conclusion (what was done, key decisions, outcome).',
         '- evidence: string array; each item is one bare "path:line" anchor (e.g. preset/tools/broker.mjs:87), a typed "test:"/"image:" line (e.g. test:npm test → exit 0, image:shots/a.png), or ["无"] when there is truly no file evidence — no other surrounding prose.',
         '- open: remaining/deferred items; write 「无」 if none.',
+        '- deviation: 偏差记录 — what deviated from the dispatched plan and why; write 「无」 if none.',
+        '- unverified: 未验项 — surfaces you did NOT verify (write 「无」 only if you truly verified everything).',
+        'deviation / unverified are optional in schema but MANDATORY for build-layer agents (hermes / hephaestus): missing or empty is rejected field-by-field. Never write these two as headings inside `report` — the board renders them as "## 偏差记录" / "## 未验项" sections itself.',
         'A successful submit IS the delivery — the orchestrator gets a system-synthesized summary receipt, and your final message can be one free-form sentence. Validation failures return per-item errors: fix and re-call in place. What you submit does NOT enter the orchestrator\'s context.',
       ].join('\n'),
       parameters: {
@@ -537,6 +543,8 @@ export function registerAllTools({
           conclusion: { type: 'string', description: '2-4 sentence self-contained conclusion: what was done, key decisions, outcome.' },
           evidence: { type: 'array', items: { type: 'string' }, description: 'One bare "path:line" anchor per item (e.g. preset/tools/broker.mjs:87), or a typed "test:"/"image:" line (e.g. test:npm test → exit 0). No other surrounding prose. Pass ["无"] when there is no file evidence.' },
           open: { type: 'string', description: 'Remaining/deferred items; 「无」 if none.' },
+          deviation: { type: 'string', description: '偏差记录: deviations from the dispatched plan and why; 「无」 if none. MANDATORY for hermes / hephaestus, optional elsewhere.' },
+          unverified: { type: 'string', description: '未验项: surfaces left unverified; 「无」 only if nothing is unverified. MANDATORY for hermes / hephaestus, optional elsewhere.' },
         },
         required: ['report', 'conclusion', 'evidence', 'open'],
         additionalProperties: false,
@@ -565,7 +573,7 @@ export function registerAllTools({
         }
         let written
         try {
-          written = await writeBoard(sessionId, child.id, args.report)
+          written = await writeBoard(sessionId, child.id, buildReportBoard(args))
         } catch (error) {
           console.warn(`[dsh-my-go] report_submit 落板失败 (${sessionId}/${child.id}): ${String(error)}`)
           throw new Error(`report_submit failed: ${String(error)}`)

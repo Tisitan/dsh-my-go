@@ -18,6 +18,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { attributeEnd, shouldAdvanceQueue, DECISIONS } from '../preset/shared/end-attribution.mjs'
+import { REPORT_REPAIR_CLAUSE_HINT } from '../preset/shared/report-format.mjs'
 
 // ── 夹具：一张 end 事件所需的全部外部事实，默认值 = 「正常在册」───────────────
 const CHAIN = [{ provider: 'p1', model: 'm1' }, { provider: 'p2', model: 'm2' }]
@@ -425,7 +426,7 @@ test('闸门·板兜底：表空+板有货 → pass-board-fallback 直通；表�
   assert.equal(byBoard.facts.advance, 'now', '照常腾槽推进')
   assert.equal(byBoard.facts.reportGate.phase, 'pass-board-fallback', '与常规 pass 分开记，统计不许混')
   assert.ok(byBoard.facts.conclusion.includes('(报告已在板，成功登记表缺席)'), '登记值缺席走显式最小兜底（不留空字段）')
-  assert.ok(byBoard.facts.conclusion.includes('证据: 无') && byBoard.facts.conclusion.includes('遗留: 无'), '兜底四字段仍走同款拼装')
+  assert.ok(byBoard.facts.conclusion.includes('证据: 无') && byBoard.facts.conclusion.includes('遗留: 无'), '兜底字段仍走同款拼装')
   assert.ok(byBoard.facts.conclusion.includes('report_fetch childId=sess-1'), '取阅指针照常在')
   const byTable = gateFixture({ submitted: true, gateOver: { hasBoard: () => true } })
   assert.equal(byTable.facts.reportGate.phase, 'pass', '表命中即真直通，不因板也在而改口径')
@@ -439,7 +440,16 @@ test('闸门·从未提交首次 → 第九出口：guard op 同步随行、固�
   assert.deepEqual(r.ops, [{ op: 'add-repair-guard', childId: 'sess-1' }], 'once-guard 随决策返回，dispatcher 第一时间落地')
   assert.equal(r.facts.reportFullText, '结论正文', '最后消息全文随 facts（补发投递失败时的落账材料）')
   assert.ok(r.facts.repairPrompt.includes('未调用 report_submit 提交报告，视为未交付'), '补发 prompt 点名未交付')
-  assert.ok(r.facts.repairPrompt.includes('四字段'), '补发 prompt 指路四字段')
+  // 字段口径不许在 end-attribution 里另抄一份：整段必须原样引用 REPORT_REPAIR_CLAUSE_HINT
+  // （与 REPORT_CLAUSE / REPORT_TAIL_FIELDS 同名册派生）——旧「四字段」措辞曾把施工层
+  // 补交轮钉成第二次拒收，这一钉就是防它换个数字回潮。
+  assert.ok(r.facts.repairPrompt.includes(REPORT_REPAIR_CLAUSE_HINT), '补发 prompt 引用同源字段口径（无第二源）')
+  assert.ok(r.facts.repairPrompt.includes('六字段'), '补发 prompt 指路六字段')
+  assert.ok(!r.facts.repairPrompt.includes('四字段'), '旧四字段口径零残留')
+  for (const key of ['deviation', 'unverified']) {
+    assert.ok(r.facts.repairPrompt.includes(key), `补发 prompt 点名两尾字段：${key}`)
+  }
+  assert.ok(r.facts.repairPrompt.includes('别往 report 正文里塞节标'), '补发 prompt 重申节标已退役')
   assert.ok(r.facts.repairPrompt.includes('只补交报告'), '补发 prompt 明示无需重做任务')
   assert.ok(ownerNotices(r)[0].includes('报告未提交'), '同步预告在 facts 组装期入列')
   assert.equal('repairErrors' in r.facts, false, '提交制无格式错误清单（判定源是登记表）')

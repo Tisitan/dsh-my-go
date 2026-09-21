@@ -22,6 +22,71 @@
 
 ## [Unreleased]
 
+### [0.5.0-tisitan.4] - 2026-09-21（report_submit 字段化：偏差/未验从正文节标升格为独立字段）
+
+维护者裁决：施工层的「偏差记录」「未验项」靠**在 report 大 blob 里 grep 节标**强制是
+设计倒退——文本钉与条款措辞两源打架（`REPORT_CLAUSE` 只字未提小节要求却自称压制
+prompts/*.md），首提几乎必摔一次。两小节就此升格为 toolcall 独立字段。
+
+### Added
+
+- **`deviation` / `unverified` 两字段**（`report_submit` 参数面）：schema 面可选、
+  闸门面按工种强制——`REPORT_FIELD_TYPES`（hermes / hephaestus）缺席或空串即逐条
+  拒收（写「无」合格），其余工种不强制（填了照样收）。单源表 `REPORT_TAIL_FIELDS`
+  （`preset/shared/report-format.mjs`）同时喂闸门校验、落板拼装与补发口径。
+- **`buildReportBoard`（落板拼装唯一出处）**：写板前把两字段渲成 `## 偏差记录` /
+  `## 未验项` 两节拼在 report 正文之后，`report_fetch` 读者看到的形状与节标时代
+  基本一致；两字段皆缺席时板面字节恒等于 report 原文（非施工层旧板零变化，
+  D14 `board-write` bytes 观测随之不变）。
+- **`REPORT_REPAIR_CLAUSE_HINT`（补发口径同源常量）**：报告闸门 E7' 的补发 prompt
+  改为整段引用它，字段名册从 `REPORT_TAIL_FIELDS` 现取——旧 `end-attribution.mjs`
+  自带一份「一次交齐四字段」清单，条款六字段化后它就是第二源，会让施工层补交轮
+  照旧口径再交四件、被闸门第二次拒收。
+
+### Changed
+
+- **正文节标 grep 整体退役**：`validateReportArgs` 不再查 report blob 里的小节，
+  旧 `REPORT_SECTIONS` 正则钉删除；报错文案同步改成「填字段而非补节标」。
+- **条款与工具描述六字段化**：`REPORT_CLAUSE` 四字段 → 六字段，并把施工层必填 /
+  其余选填 / 写「无」合格 / 不必往正文塞节标四件事在条款里说清一次（消灭双源
+  打架的正解就是让条款与闸门同源）；`report_submit` 工具描述同步。
+- **人设与文档对齐（九份人设口径统一）**：`prompts/hermes.md`、`prompts/hephaestus.md`
+  的「汇报格式」从「正文写节标」改成「填 deviation / unverified 字段」，交付收尾协议
+  升六字段；其余六个工种人设（`explore` / `oracle` / `librarian` / `looker` /
+  `prometheus` / `apelles`）的同一行同步升六字段并标注「后两字段本工种选填，填了
+  照样渲进报告板」——留着「人设四字段 vs 条款六字段」等于在原址再立一块双源碑，
+  选填语义零变化（consult 裁决 help-mu9xtzgw-hfrc14 批准的写集放宽）；
+  `prompts/sisyphus.md` 三处节标表述改成字段/板面节口径；`AGENTS.md` §5 结论表
+  补两行并删「report 正文须带两小节」旧口径；`docs/ARCHITECTURE.md` §2.8 报告
+  外部化节的条款/机械闸/落板三段换字段闸口径。
+
+### Fixed
+
+- **`scripts/dump-session.mjs:52` 取证陷阱**：`tool/result` 的 `isError` 读的是
+  `data.message.isError`，而宿主（`dsh-llm` 的 `createToolResultMessage`）把它挂在
+  `message.content[0]` 的 tool-result 块上——顶层恒 undefined，**所有被拒调用在取证
+  流里一律显示 `isError=false`**。改读 `data.message?.content?.[0]?.isError`，头注释
+  同步写清真实读位。
+- **归档档案名按格式代枚举**（`preset/shared/archive.mjs`）：宿主 Session 格式 v≥1 的
+  档案名带版本段（`session.v<N>.jsonl.zstd`，现行 N=3），本模块此前写死 v0 无版本后缀
+  旧名 ⇒ 按 childId 定位生产档案**永远不命中**。新增 `SESSION_ARCHIVE_NAME_RE` 判据与
+  `selectArchiveLog`（目录内枚举候选，取最高代、同代再取 mtime 最新），
+  `findArchivedLogByChildId` / `readArchivedTurnFailure` / `readArchivedUsage` 三处定位
+  全部改走枚举；两个显式名常量只喂「未命中」报错文案。`scripts/dump-session.mjs` 的
+  用法注释与未命中提示同步。
+
+测试 **612 → 622**：`report-format.test.mjs` 小节闸 5 例退役，换两字段存在性矩阵
+6 例（含「正文写了节标但字段缺席照拒」的退役回归钉）+ 落板拼装 3 例 + 条款强制
+语义 1 例；`report-submit.test.mjs` 六字段 schema pin 与施工层端到端「缺字段不落板、
+补齐首提即过且两节上板」；`dump-session.test.mjs` 换真宿主形状 pin；
+`host-parity.test.mjs` 加 `buildReportBoard(` 消费在册钉 + 补发口径同源钉（正向：
+`end-attribution.mjs` 引用 `REPORT_REPAIR_CLAUSE_HINT`；负向：该文件内 `一次交齐`
+出现次数必须为 0——把旧「四字段」措辞钉成规格的正是它在 `report-gate.test.mjs` /
+`end-attribution.test.mjs` 的两条现钉，已随同源改造换向，换回四件即红）；
+`report-clause.test.mjs` 加**人设 × 条款同源钉**（八份提交报告的人设必须写「一次交齐
+六字段」且点名 deviation / unverified，施工层两份必须写「本工种必填，缺失或空串即被
+闸门逐条拒收」、其余六份必须写「后两字段本工种选填」——人设口径与条款脱节即红）。
+
 ### [0.5.0-tisitan.3]（起草中，未发布——配置面全量迁官方插件页，写通道换宿主 settingsScope）
 
 「全插件配置入口统一官方化」第三单（前两单：dsh-web-search-deepseek、dsh-tts）。

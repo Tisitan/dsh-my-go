@@ -107,7 +107,7 @@
 
 报告外部化开启时（`reportExternalization: true`，装机口径，见
 `preset/agent.cordis.yml`），子 Agent 的完工交付**不是**「输出最后一段输出等
-Sisyphus 分析」，而是**调用 `report_submit` 一次交齐四字段**：
+Sisyphus 分析」，而是**调用 `report_submit` 一次交齐六字段**：
 
 | key        | value                                                          |
 | ---------- | -------------------------------------------------------------- |
@@ -115,14 +115,18 @@ Sisyphus 分析」，而是**调用 `report_submit` 一次交齐四字段**：
 | conclusion | 2-4 句自包含完工结论（做了什么、关键决策、结果）               |
 | evidence   | 字符串数组，每项一条裸「路径:行号」锚点，或 `test:`/`image:` 前缀行；确无文件证据传 `["无"]` |
 | open       | 未决/遗留事项，没有写「无」                                     |
+| deviation  | 偏差记录：与派工方案的偏离点及理由，没有写「无」（**施工层 Hermes/Hephaestus 必填**，其余工种选填） |
+| unverified | 未验项：没验证到的面，确实没有才写「无」（**施工层 Hermes/Hephaestus 必填**，其余工种选填） |
 
 提交成功即交付完成：报告全文落报告板，Sisyphus 收到的是插件从已校验字段
 **合成**的概要回执（conclusion + evidence + open + 取阅指引），需要细节时用
 `report_fetch` 按行切片取阅；子 Agent 的最后一条自由输出不参与结论解析。
 字段校验不过会逐条报错，原地修正重调即可；完工却未提交会触发报告闸门的
-补发链（视为未交付）。施工层工种（Hermes/Hephaestus）的 report 正文还须带
-「偏差记录」「未验项」两小节。该闸关闭时回落旧口径：插件转发最后一段输出
-作为结论注入 Sisyphus。
+补发链（视为未交付）。施工层工种（Hermes/Hephaestus）**必须**填 `deviation` /
+`unverified` 两个独立字段——缺席或空串即逐条拒收，写「无」合格；两小节由落板
+逻辑自动渲成报告板尾部的 `## 偏差记录` / `## 未验项`，**不再要求也不检查
+`report` 正文里的节标**（旧的正文节标 grep 已退役）。该闸关闭时回落旧口径：
+插件转发最后一段输出作为结论注入 Sisyphus。
 
 仍需注意：被驳回/追问走 `continue`（见下节质检规则），**不使用 forward** 交结论。
 

@@ -270,8 +270,9 @@ export function createEndingOps({
   // 前提：report-gate-repair 决策**不 finish**——记录留在 currentMap 实体占槽
   // （「补发期间槽位仍占」的实体化），repairRetried 已在同步段登记（防无限循环：
   // 本链不走 rearmChild，guard 存续到补发轮 end 的转裁决）。本链只做：台账照记
-  // 补发 prompt（followupPrompt，固定措辞点名补交四字段）→ queued 档投递（coldResume
-  // 唤醒已 settle 的子会话，D4 裁决）；投递失败兜底按「未交付（补发投递失败）」
+  // 补发 prompt（followupPrompt，固定措辞点名补交六字段——口径引 report-format 的
+  // REPORT_REPAIR_CLAUSE_HINT 同源常量，本文件不复述字段清单）→ queued 档投递
+  // （coldResume 唤醒已 settle 的子会话，D4 裁决）；投递失败兜底按「未交付（补发投递失败）」
   // 落账转裁决 + advanceQueue 解冻（仿 attemptFallbackRedeploy catch 失败终局回退
   // ——绝不留终局真空）。
   async function attemptReportRepair({ orch, ownerPid, type, childId, fullText, repairPrompt }) {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-my-go",
-  "version": "0.5.0-tisitan.3",
+  "version": "0.5.0-tisitan.4",
   "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 8 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle/Apelles) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
   "author": "Tisitan",
   "license": "MIT",

@@ -72,7 +72,7 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 | `go_work`（Sisyphus→新子智能体） | broker 注册给 Sisyphus 的工具；`subagents.startContinuable` 创建空上下文子智能体，返回 childId | `subagents.startContinuable` |
 | `continue`（Sisyphus→挂起子智能体） | `deliverToAdjacent` 适配层按档位投递驳回/追问：`queued` 走真 FIFO（alpha.4 internal 的 `queuePrompt` 符号 / alpha.2-3 的 `followup`），`steer` 同经该门面（alpha.4 的 `sendMessage` 即 next-step 插话；不再直调 `Agent.steer`），`abort` 先 `subagents.interrupt` 再排队 | alpha.4：`subagents[Symbol.for('dsh.subagent.queuePrompt')]` / `sendMessage`；alpha.2/3：`subagents.followup` |
 | `forward`（Sisyphus 转发 need_help） | 读 helpRequest 记录 → 对既有 childId 走 `deliverToAdjacent`（queued 档），对类型用 go_work | broker 状态 + 邻接适配 / startContinuable |
-| 结论（子→Sisyphus） | `reportExternalization` 开（装机口径，缺省即开）时：子代完工调 `report_submit` 四字段落板 + 成功登记，`subagent/end` 走 E7' 报告闸门——主编收到的终局摘要是 broker 从**已校验字段**合成的概要（`buildOwnerSummary`：conclusion 全文 + evidence 逐行 + open + `report_fetch` 取阅指引），子代最后一条消息不参与任何解析；全文在板上，主编按需切片取阅。闸关时回落旧口径：子智能体最后输出经 `subagent/end` 注入父会话（alpha.4 的完工通知自带 closing message），broker 落账带 conclusionId | `report_submit` 落板 + `subagent/end` 事件（E7' 闸门，见 §2.8）；回退面同左 |
+| 结论（子→Sisyphus） | `reportExternalization` 开（装机口径，缺省即开）时：子代完工调 `report_submit` 六字段落板 + 成功登记，`subagent/end` 走 E7' 报告闸门——主编收到的终局摘要是 broker 从**已校验字段**合成的概要（`buildOwnerSummary`：conclusion 全文 + evidence 逐行 + open + `report_fetch` 取阅指引），子代最后一条消息不参与任何解析；全文在板上，主编按需切片取阅。闸关时回落旧口径：子智能体最后输出经 `subagent/end` 注入父会话（alpha.4 的完工通知自带 closing message），broker 落账带 conclusionId | `report_submit` 落板 + `subagent/end` 事件（E7' 闸门，见 §2.8）；回退面同左 |
 
 > 五种通信之外，broker 注册的其余工具（现共 10 个编排/通信/报告/接力链工具，
 > 名单常量 `SELF_REGISTERED_TOOLS`，shared/constants 单源）：观测两枚
@@ -334,7 +334,7 @@ child-registry / adjacent 两档；0.3.0-tisitan.12 再拆出 end-attribution；
 | adjacent.mjs | 上游邻接消息面唯一耦合点：`planAdjacentDelivery`（**路由表单一出处**，0.3.0-tisitan.12 N15：route ∈ queue / steer / legacy / unavailable + invoke）+ `sessionEvents` / `canQueueAdjacent`（plan 薄壳）/ `deliverToAdjacent`（委托 plan）/ `reportToParent`，按方法存在性在 alpha.2/3 ↔ alpha.4 间特性探测分界；broker 独有（自 misc 独立，健康度批） |
 | board.mjs | 报告板存储层（报告外部化与接力链共用，0.5.0 线一期建、三期 D23 复用）：`writeBoard`（tmp+rename 原子写，覆盖留痕 `.prev.md`）/ `readBoardSlice`（行切片分页，offset/limit 越界钳制；not-found 回错误对象不抛）/ `hasBoardEntry`（同步 existsSync，E7' 闸门兜底判定）。根焊死 `boardRoot()` = `<DSH_HOME>/dsh-my-go/board`，sessionId/childId 双段编码防穿越；broker 独有（机制见 §2.8） |
 | paths.mjs | DSH_HOME / MyGO 数据目录路径解析（`dshHome` / `mygoHome` / `sessionsHome`，lib 与 broker 共用，0.5.0 线批次；DSH_HOME 缺席或空串一律回落 `~/.dsh`，空串语义有钉测） |
-| report-format.mjs | 报告外部化格式条款（`REPORT_CLAUSE` / `RELAY_CLAUSE` / `REDISPATCH_RESUME_PREFIX`）、report_submit 四字段校验 `validateReportArgs` 与主编回执合成 `buildOwnerSummary`（conclusion + evidence 逐行 + open + 取阅指引）；broker 独有 |
+| report-format.mjs | 报告外部化格式条款（`REPORT_CLAUSE` / `RELAY_CLAUSE` / `REDISPATCH_RESUME_PREFIX` / 补发口径 `REPORT_REPAIR_CLAUSE_HINT`）、report_submit 六字段校验 `validateReportArgs`、落板拼装 `buildReportBoard` 与主编回执合成 `buildOwnerSummary`（conclusion + evidence 逐行 + open + 取阅指引）；broker 独有 |
 | relay-chain.mjs | 接力链状态机纯函数（`createChain` / `advanceChain` / `matchChainForEnd` / `matchChainForWork` / `validateChainDeclaration` / 链恢复归一 `normalizeRestoredChain` / `RELAY_CHAINS_CAP`）；broker 独有（0.5.0 线三期 D21~D29，机制见 §2.10） |
 
 tisitan.21 起 lib 半只引存储/面板面符号（constants 的名册键集与键名
@@ -374,23 +374,34 @@ ESM 同一性 + 行为直测（逐字比源码的字符串对称断言早已退�
 ### 2.8 报告外部化（reportExternalization，0.4.0 线一期）
 
 子代报告不再走「最后一条消息 + 消息侧解析」，改为 **report_submit 一次交齐
-四字段落板 + broker 确定性合成回执**（规划 docs/plans/next-gen-architecture-0.4.0.md
-第一期；0.5.0-tisitan.1 起第一代退役）。总闸 `config.reportExternalization`
+字段落板 + broker 确定性合成回执**（规划 docs/plans/next-gen-architecture-0.4.0.md
+第一期；0.5.0-tisitan.1 起第一代退役、四件落板，0.5.0-tisitan.4 起加 deviation /
+unverified 成六件）。总闸 `config.reportExternalization`
 （缺省 `?? true`，挂载期读一次不做运行时切换；装机 yml 显式 `true`，防回潮
 哨兵站岗）：关 = `report_submit`/`report_fetch` 不注册、报告条款不注入、
 完工闸门不启用——三条同闸，编排退回 0.3.x 现状。
 
 - **报告条款（REPORT_CLAUSE）**：spawnChild 注入子代 prompt 尾部的提交条款
-  （`shared/report-format.mjs` 单源），机械闸措辞：完工 = 调用 `report_submit`
-  交齐 report（完整全文）/ conclusion（2-4 句）/ evidence（每项一条裸
+  （`shared/report-format.mjs` 单源），措辞：完工 = 调用 `report_submit` 交齐
+  report（完整全文）/ conclusion（2-4 句）/ evidence（每项一条裸
   「路径:行号」，或 `test:`/`image:` 前缀行，或 `["无"]`）/ open（无则写
-  「无」）；**本条款压制 prompts/*.md 中一切旧的收尾/交付约定**（条款第二行，
-  report-format.mjs:27）——运行时人设里的旧收尾口径与之冲突时以此为准。
-- **validateReportArgs（机械闸）**：四字段校验唯一出处（report-format.mjs）。
+  「无」）+ deviation（偏差记录）/ unverified（未验项）两尾字段——**两尾字段对
+  施工层 hermes/hephaestus 必填（写「无」合格、空串拒收），其余工种选填**；
+  **本条款压制 prompts/*.md 中一切旧的收尾/交付约定**（条款第二行）——运行时
+  人设里的旧收尾口径与之冲突时以此为准。闸门拒收的同一口径由
+  `REPORT_REPAIR_CLAUSE_HINT`（同文件、同一名册 `REPORT_TAIL_FIELDS` 派生）供
+  补发 prompt 引用，全仓不存在第二份字段清单。
+- **validateReportArgs（机械闸）**：字段校验唯一出处（report-format.mjs）。
   evidence 逐项按形态正则校验，非法项报错带数组索引，工具层原样回给子代
   原地修正重调；空数组/`["无"]` 归一化为「无」。施工层工种
-  （REPORT_SECTION_TYPES = hermes/hephaestus）的 report 正文另过**节标闸**：
-  缺「偏差记录」「未验项」任一小节即逐条拒收（写「无」也算合格）。
+  （`REPORT_FIELD_TYPES` = hermes/hephaestus）另过**两字段闸**：`deviation` /
+  `unverified` 缺席或空串即逐条拒收（写「无」合格），其余工种不强制。
+  **旧「在 report 正文里 grep 偏差记录/未验项节标」的文本钉已整体退役**——
+  条款没教却按正文查，首提几乎必摔一次，故两小节升格为 toolcall 独立字段。
+- **buildReportBoard（落板拼装，唯一出处）**：写板前把两尾字段渲成
+  `## 偏差记录` / `## 未验项` 两节拼在 report 正文之后（读者在 report_fetch 里
+  看到的形状与节标时代基本一致）；两字段皆缺席时板面字节恒等于 report 原文，
+  非施工层的旧板形态零变化。
 - **报告板（shared/board.mjs，读写唯一出处）**：路径焊死
   `<DSH_HOME>/dsh-my-go/board/<encodeSegment(sessionId)>/<encodeSegment(childId)>.md`
   （双段编码，穿越与盘符逃逸在编码层消除）；写入 tmp+rename 原子序，正板被
@@ -412,9 +423,9 @@ ESM 同一性 + 行为直测（逐字比源码的字符串对称断言早已退�
   finalize，主编收到的终局摘要是 `buildOwnerSummary` 从已校验字段合成的概要
   （conclusion 全文 + evidence 逐行 + open + 「全文落板，report_fetch
   childId=… 切片取阅」一行；harness 固有完工通知承担外包装）；登记值缺席仅
-  板命中 → 显式最小四字段兜底，phase 记 `pass-board-fallback` 与真登记的
+  板命中 → 显式最小兜底字段（合成原料三件），phase 记 `pass-board-fallback` 与真登记的
   `pass` 分开统计。从未提交 → **report-gate-repair**：once-guard 同步落地 +
-  同步预告 + queued 补发（固定措辞 repairPrompt，内容可完全复用已完成工作）；
+  同步预告 + queued 补发（固定措辞 repairPrompt 引 REPORT_REPAIR_CLAUSE_HINT 同源口径，内容可完全复用已完成工作）；
   补发期间记录留在 currentMap 实体占槽（advance='no'），guard 存续到补发轮
   end 的转裁决——防「补发 → 再补发」无限循环；已补发过仍不交 → 「未交付：」
   前缀转主编裁决落账，不再二次补发。failed 终局永不过闸。

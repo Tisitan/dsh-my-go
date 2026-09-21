@@ -3,8 +3,10 @@
 // 用法：
 //   node scripts/dump-session.mjs <childId>          在 <DSH_HOME>/sessions 下
 //     按 childId 全项目目录搜索定位档案（复用 preset/shared/archive.mjs 的
-//     findArchivedLogByChildId，多命中取 mtime 最新）
-//   node scripts/dump-session.mjs --file <path>      直读指定 session.jsonl.zstd
+//     findArchivedLogByChildId；档案名按 Session 格式代枚举——现行
+//     session.v3.jsonl.zstd 优先、旧档 session.jsonl.zstd 兜底；多命中取 mtime 最新）
+//   node scripts/dump-session.mjs --file <path>      直读指定会话档案（任一代
+//     session.vN.jsonl.zstd 皆可，路径自己给，本 CLI 对文件名不做假设）
 //
 // 输出：逐帧逐事件一行摘要流（#<seq> <type> <关键字段>）。帧界扫描复用共享层
 // scanZstdFrameRanges（多 zstd 帧追加容器，Node 单帧接口只吃首帧）；末帧不完整
@@ -16,7 +18,7 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { zstdDecompressSync } from 'node:zlib'
 
-import { findArchivedLogByChildId, scanZstdFrameRanges } from '../preset/shared/archive.mjs'
+import { findArchivedLogByChildId, scanZstdFrameRanges, SESSION_ARCHIVE_CURRENT_NAME, SESSION_ARCHIVE_LEGACY_NAME } from '../preset/shared/archive.mjs'
 import { sessionsHome } from '../preset/shared/paths.mjs'
 
 // 摘要只打单行：折叠换行再截断，避免 failure.message 里的多行 JSON 冲垮行格式。
@@ -27,7 +29,8 @@ function oneLine(text, limit) {
 
 // summarizeEvent：按事件类型取关键字段，其余类型只打 type（返回空串）。
 // 字段行号以 dsh-agent-loop/lib/index.js 为准：tool/call(:293, data.name)、
-// tool/result(:308, data.message.isError)、request/header(:733)、llm/retry
+// tool/result(:308, data.message.content[0].isError——isError 在 tool-result 内容块
+// 上，不在 message 顶层；读顶层会让被拒调用永远显示 false)、request/header(:733)、llm/retry
 // (dsh-llm-retry, data.retry/failure.message)、turn/end(:592, data.reason)。
 export function summarizeEvent(ev) {
   const data = ev?.data ?? {}
@@ -49,7 +52,7 @@ export function summarizeEvent(ev) {
     case 'tool/call':
       return `name=${data.name ?? '?'}`
     case 'tool/result':
-      return `isError=${data.message?.isError === true}`
+      return `isError=${data.message?.content?.[0]?.isError === true}`
     default:
       return ''
   }
@@ -128,7 +131,7 @@ function main(argv) {
   } else if (args[0] && !args[0].startsWith('-')) {
     const found = locateArchive(args[0])
     if (!found) {
-      console.error(`dump-session: 未找到 childId=${args[0]} 的会话档案（sessions 根全项目目录搜索无命中）`)
+      console.error(`dump-session: 未找到 childId=${args[0]} 的会话档案（sessions 根全项目目录搜索无命中：${SESSION_ARCHIVE_CURRENT_NAME} 及旧档 ${SESSION_ARCHIVE_LEGACY_NAME} 均不存在；可改用 --file <path> 直读）`)
       process.exitCode = 1
       return
     }

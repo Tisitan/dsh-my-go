@@ -24,8 +24,25 @@ import { sessionsHome } from './paths.mjs'
 //              DSH_HOME 缺省 join(homedir(), '.dsh')）
 //   项目目录 = root/<projectKey(cwd)>           （lib/index.js:106-124, 133-136）
 //   会话目录 = 项目目录/<encodeSegment(childId)>（lib/index.js:84-96, 145-147）
-//   日志文件 = 会话目录/session.jsonl.zstd      （lib/index.js:156-158）
+//   日志文件 = 会话目录/<档案名>                （lib/index.js:156-158；档案名按格式
+//              代版本变化，见下方 SESSION_ARCHIVE_NAME_RE，写死单名会全灭）
 const ZSTD_FRAME_MAGIC = 0xfd2fb528
+
+// 档案文件名按 Session 格式「代版本」命名，不是固定名：宿主
+// dsh-session-format/lib/index.js:472-475 `sessionFormatLogFilename(version)` 对
+// version===0 返回 `session.jsonl`，其余返回 `session.v${version}.jsonl`；再由
+// dsh-session-persistence-jsonl/lib/index.js:745-763 `generationLogFilename` 拼压缩
+// 后缀（zstd → `.zstd`）。宿主现行 SESSION_FORMAT_VERSION=3（dsh-session/lib/
+// index.js:56），故生产档案实为 `session.v3.jsonl.zstd`；`session.jsonl.zstd` 是
+// v0 无版本后缀旧名。此前本模块写死 v0 名 ⇒ 按 childId 定位生产档案永远不命中
+// （0.5.0-tisitan.4 修复：改「候选枚举」，现行名优先、旧名兜底，且天然兼容
+// 未来代升级）。规范名判据与宿主 parseGenerationLogFilename 一致：小写、无
+// 前导零、无 v0 标记、非临时文件。
+export const SESSION_ARCHIVE_NAME_RE = /^session(?:\.v([1-9][0-9]*))?\.jsonl\.zstd$/
+// 现行代档案名：仅用于「未命中」时报错文案里的期望路径（真实定位走上面的枚举）。
+export const SESSION_ARCHIVE_CURRENT_NAME = 'session.v3.jsonl.zstd'
+// v0 旧档名：同上，仅文案用；命中与否一律由 SESSION_ARCHIVE_NAME_RE 枚举决定。
+export const SESSION_ARCHIVE_LEGACY_NAME = 'session.jsonl.zstd'
 
 // projectKey：与 dsh-session-persistence-jsonl/lib/index.js:106-124 同算法。
 // 分隔符与盘符冒号折叠成单个 '-'，不安全码位转义 ~XXXX，'--...--' 包裹并截断
@@ -68,7 +85,7 @@ export function encodeSegment(raw) {
 }
 
 // scanZstdFrameRanges：与同文件 scanZstdFrames(:503-566) 同算法（裁掉 torn
-// 修复分支）。session.jsonl.zstd 是多 zstd 帧追加容器，Node 的 zlib 单帧接口
+// 修复分支）。会话档案是多 zstd 帧追加容器，Node 的 zlib 单帧接口
 // 只吃首帧，必须先扫描出完整帧界再逐帧解压；末帧不完整（追加写到一半）时截断，
 // 只读已完整的帧。
 export function scanZstdFrameRanges(buffer) {
@@ -119,9 +136,9 @@ export function scanZstdFrameRanges(buffer) {
 }
 
 // 兜底搜索（0.2.3-tisitan.16b）：枚举 root 下全部项目目录，找
-// <项目目录>/<encodeSegment(childId)>/session.jsonl.zstd 存在的候选；多命中
+// <项目目录>/<encodeSegment(childId)> 下任一规范档案名存在的候选；多命中
 // 取 mtime 最新。单个项目目录的 readdir/stat 失败（权限/竞态删除）跳过，
-// 不挡全局搜索。返回 { projectDir, logFile } 或 undefined。
+// 不挡全局搜索。返回 { projectDir, logFile, version, mtimeMs } 或 undefined。
 export function findArchivedLogByChildId(root, childId) {
   let entries
   try {
@@ -133,13 +150,42 @@ export function findArchivedLogByChildId(root, childId) {
   let best
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
-    const logFile = join(root, entry.name, segment, 'session.jsonl.zstd')
+    const found = selectArchiveLog(join(root, entry.name, segment))
+    if (!found) continue
+    if (!best || found.mtimeMs > best.mtimeMs) {
+      best = { projectDir: entry.name, ...found }
+    }
+  }
+  return best
+}
+
+// selectArchiveLog：在一个会话目录内枚举规范档案名候选（正则见
+// SESSION_ARCHIVE_NAME_RE 注释），取版本最高的一代——同目录并存的低代文件是
+// 宿主格式迁移遗留，非可信数据源；同版本再取 mtime 最新。目录不存在/不可读
+// → undefined（调用方按未命中处理）。
+export function selectArchiveLog(sessionDir) {
+  let names
+  try {
+    names = readdirSync(sessionDir)
+  } catch {
+    return undefined
+  }
+  let best
+  for (const name of names) {
+    const match = SESSION_ARCHIVE_NAME_RE.exec(name)
+    if (!match) continue
+    const version = match[1] === undefined ? 0 : Number(match[1])
+    const logFile = join(sessionDir, name)
+    let stat
     try {
-      const stat = statSync(logFile)
-      if (!best || stat.mtimeMs > best.mtimeMs) {
-        best = { projectDir: entry.name, logFile, mtimeMs: stat.mtimeMs }
-      }
-    } catch { /* 该项目目录无此 childId 档案 */ }
+      stat = statSync(logFile)
+    } catch {
+      continue
+    }
+    if (!stat.isFile()) continue
+    if (!best || version > best.version || (version === best.version && stat.mtimeMs > best.mtimeMs)) {
+      best = { logFile, version, mtimeMs: stat.mtimeMs }
+    }
   }
   return best
 }
@@ -156,7 +202,8 @@ export function findArchivedLogByChildId(root, childId) {
 export function readArchivedTurnFailure(childId, options = {}) {
   const root = options.root ?? sessionsHome()
   const cwd = options.cwd ?? process.cwd()
-  let logFile = join(root, projectKey(cwd), encodeSegment(childId), 'session.jsonl.zstd')
+  const defaultDir = join(root, projectKey(cwd), encodeSegment(childId))
+  let logFile = selectArchiveLog(defaultDir)?.logFile ?? join(defaultDir, SESSION_ARCHIVE_CURRENT_NAME)
   let buffer
   try {
     buffer = readFileSync(logFile)
@@ -222,7 +269,8 @@ export function readArchivedUsage(childId, fromSeq, options = {}) {
   const noEvents = { events: [], complete: false }
   const root = options.root ?? sessionsHome()
   const cwd = options.cwd ?? process.cwd()
-  let logFile = join(root, projectKey(cwd), encodeSegment(childId), 'session.jsonl.zstd')
+  const defaultDir = join(root, projectKey(cwd), encodeSegment(childId))
+  let logFile = selectArchiveLog(defaultDir)?.logFile ?? join(defaultDir, SESSION_ARCHIVE_CURRENT_NAME)
   let buffer
   try {
     buffer = readFileSync(logFile)

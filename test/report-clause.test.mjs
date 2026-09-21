@@ -171,3 +171,35 @@ test('提示词面旧机制字样归零：REPORT_CLAUSE 与 prompts/ 全目录�
     assert.ok(!text.includes('mygo_report'), `prompts/${file} 零出现`)
   }
 })
+
+// 人设 × 条款同源钉（0.5.0-tisitan.4 字段化批）：九份人设的交付收尾协议曾留
+// 「一次交齐四字段」，与注入条款的六字段口径并立 = 原址第二源（B2 回头追出来的
+// 那块 milder 碑）。本钉把「人设口径必须跟条款同步」升成机械闸——谁往人设里改回
+// 四字段、或施工层人设漏了 deviation/unverified 的必填交代，当场红。
+test('pin：prompts 全目录交付收尾口径与 REPORT_CLAUSE 同步（六字段 / 施工层两字段必填）', async () => {
+  const promptsDir = fileURLToPath(new URL('../prompts/', import.meta.url))
+  const files = (await readdir(promptsDir)).filter((f) => f.endsWith('.md'))
+  let submitted = 0
+  for (const file of files) {
+    const text = await readFile(join(promptsDir, file), 'utf-8')
+    if (!text.includes('一次交齐')) continue
+    submitted += 1
+    assert.ok(!/一次交齐四字段/.test(text), `prompts/${file} 旧四字段口径零残留`)
+    assert.match(text, /一次交齐六字段/, `prompts/${file} 收尾协议已升六字段`)
+    for (const tail of ['deviation', 'unverified']) {
+      assert.ok(text.includes(tail), `prompts/${file} 六字段清单点名 ${tail}`)
+    }
+  }
+  assert.equal(submitted, 8, '八份提交报告的人设全覆盖（sisyphus 主编侧不交报告）')
+  // 施工层两份：强制语义必须在人设里说死（必填 + 空串即拒），不能只靠注入条款
+  for (const buildLayer of ['hermes.md', 'hephaestus.md']) {
+    const text = await readFile(join(promptsDir, buildLayer), 'utf-8')
+    assert.match(text, /本工种必填，缺失或空串即被闸门逐条拒收/, `${buildLayer} 说清两字段强制面`)
+    assert.match(text, /不加分也不参与校验，只认字段/, `${buildLayer} 说清正文字段已退役`)
+  }
+  // 其余六份（非施工层）：必须写明「选填」，免得工种误以为自己也被闸门拒
+  for (const other of ['explore.md', 'oracle.md', 'librarian.md', 'looker.md', 'prometheus.md', 'apelles.md']) {
+    const text = await readFile(join(promptsDir, other), 'utf-8')
+    assert.match(text, /后两字段本工种选填/, `${other} 标明两尾字段选填`)
+  }
+})
