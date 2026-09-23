@@ -11,8 +11,10 @@
  *  - settings-core.js: the configuration card, injected into the official
  *    plugin page through `plugins.bundle.config` (0.5.0-tisitan.3) — the
  *    `settings.section` entry is retired. It reads/writes the 'dsh-my-go'
- *    namespace over `settingsScope`, and its model dropdowns ride the host's
- *    own `remote.session.modelCatalog()` face.
+ *    namespace over `configForms` (0.1.7: `settingsScope` is gone; the
+ *    per-entry form is `configForms.get(entryId)` and the shared describe
+ *    mirror `configForms.describe()`), and its model dropdowns ride the
+ *    host's own `remote.session.modelCatalog()` face.
  *
  * Built by scripts/build-client.mjs into dist/client.js (a
  * `__ModuleLoader__.load` wrapper around the esbuild CJS bundle). React is
@@ -29,7 +31,7 @@ import { SettingsCard } from './settings-core.js'
 
 export const name = 'dsh-my-go'
 
-export const inject = ['slots', 'settingsScope', 'connection', 'remote', 'remote.session']
+export const inject = ['slots', 'configForms', 'connection', 'remote', 'remote.session']
 
 // 宿主 timer 服务缺席时的回落（E2/A-01）：浏览器形态下 globalThis 即 window，
 // 故这就是 window.setInterval/clearInterval；每次建链返回自管 disposer，
@@ -92,11 +94,17 @@ export function apply(ctx) {
   const stopPanel = createOrchestrationPanel({ slots, connection, sessions, timer: panelTimer })
 
   // ── configuration card（官方插件页内的唯一配置入口）───────────────────────
-  const binder = client.get('settingsScope')
+  // 0.1.7：settingsScope 退役，命名空间条目改由 configForms 寻址——get(entryId)
+  // 交出该条目的表单控制器（快照形状与旧 settingsScope 逐字段相同：
+  // { status, value, base, user, revision, writable, mode }，故卡片逻辑零改动），
+  // describe() 交出跨命名空间的共享 describe 镜像（served 集合的读面）。
+  // get() 不再收 decode 参数：宿主默认拿 wire schema 校验 value，归一化在卡片
+  // 读快照处做（本卡读的是 schema 投影，无需额外解码）。
+  const binder = client.get('configForms')
   const remote = client.get('remote')
   if (binder && slots && typeof slots.inject === 'function') {
-    const scope = binder.bind({ namespace: NAMESPACE })
-    const face = binder.describe ? binder.describe() : null
+    const scope = binder.get(NAMESPACE)
+    const face = typeof binder.describe === 'function' ? binder.describe() : null
     const catalog = createCatalogStore(remote)
     // 只有宿主真的在服务这个命名空间时才挂卡：插件被停用 / 宿主半注册失败时，
     // 页面上不会出现一张读不到东西的空表单（官方内置插件卡同款门控）。

@@ -22,6 +22,21 @@
 
 ## [Unreleased]
 
+### [0.5.0-tisitan.5] - 2026-09-23（dsh 0.1.7 适配：configForms 配置面、声明行 preset 范式、.agent-presets 安装同步退役）
+
+#### Added
+- `lib/config.js`：0.1.7 Config 声明面（Config.dict 4 键），经 lib/index.js 导出，test/apply.mjs 冒烟断言配套
+- `preset/agent.patch.yml`：预设声明行 patch，broker 经 `dsh-my-go/preset/tools/broker.mjs` 包说明符挂载；package.json `dsh.bundle.patch` 升级为数组双 patch
+
+#### Changed
+- dsh 0.1.7 适配：client inject 由 `settingsScope` 迁移至 `configForms`（src/client.js，dist/client.js 同步重建）
+- peerDependencies 全量抬档 `>=0.1.7-alpha.1 <0.2.0`（7 个 @deepseek-ai/* 包）；exports 新增 `./preset/tools/broker.mjs`；schemastery ^3.18.3
+- 0.1.7 起 preset/ 不再整拷至 `$DSH_HOME/.agent-presets`：lib/index.js 拆除 `ensurePresetInstalled` / `compositionBase` 等安装同步机制
+- preset/tools 与 preset/shared 钉子批配套更新；19 个测试文件随适配口径更新
+
+#### Removed
+- `preset/agent.cordis.yml` / `preset/preset.yml`：旧目录范式预设文件退役
+
 ### [0.5.0-tisitan.4] - 2026-09-21（report_submit 字段化：偏差/未验从正文节标升格为独立字段）
 
 维护者裁决：施工层的「偏差记录」「未验项」靠**在 report 大 blob 里 grep 节标**强制是

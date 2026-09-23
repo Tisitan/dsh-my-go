@@ -1,9 +1,10 @@
 /**
  * dsh-my-go — Sisyphus 编排面真源（preset / agent 半）。
  *
- * 本文件承载全部编排实现：随 preset/ 目录由 ensurePresetInstalled 整拷到
- * ~/.dsh/.agent-presets/dsh-my-go/tools/，在会话组装时挂载；host 半
- * （lib/index.js）自 0.3.0-tisitan.0 起只做存储/安装/面板 RPC，零编排工具面。
+ * 本文件承载全部编排实现：作为包内 mjs 行由 preset/agent.patch.yml 的预设声明
+ * （config.plugins 的 broker 行，name 为包说明符 dsh-my-go/preset/tools/broker.mjs）
+ * 在会话组装时挂载；host 半（lib/index.js）自 0.3.0-tisitan.0 起只做存储/面板 RPC，
+ * 零编排工具面。0.1.7 起没有安装拷贝：本文件就地由已安装包解析，prompts/ 亦然。
  *
  * 提供：
  *   - 编排六件套（仅本层注册，其他会话不可见）：go_work / continue /
@@ -14,7 +15,7 @@
  *   - subagent/end：归因决策在 shared/end-attribution.mjs（纯函数出 decision/ops/
  *     notices/facts），本文件只做挂载；结论落账 + 失败备选链重派 + 单线
  *     队列推进；台账跨重启持久化
- *   - settings 命名空间 'dsh-my-go' 只读（注册与写面在 host 半）
+ *   - settings 段只读（配置面与写面在 host 半，经 Symbol.for 全局桥交出）
  *   - 面板快照经 globalThis[Symbol.for('dsh-my-go.snapshot')] 单向发布给 host 半
  *
  * 邻接投递统一走 preset/shared/adjacent.mjs 适配层（planAdjacentDelivery 一张
@@ -68,13 +69,15 @@ export const name = 'dsh-my-go-broker'
 // 'sessions' 入 inject：失败附因推送需读子会话事件档兜底（subagent/end
 // 的通知层载荷丢失 error.message）。显式声明依赖保证服务在本 scope 可用
 // （cordis ctx.get 仅沿 isolate 链可见）。
-export const inject = ['tools', 'subagents', 'systemPrompt', 'llm', 'settings', 'agents', 'sessions']
+// 'settings' 0.1.7 起摘除：preset 面没有可配置条目，配置段改经宿主半的全局桥读
+// （见下方 settings-backed bindings 段）——inject 里留着它只会让本插件被一个用不上
+// 的服务挡住点火。
+export const inject = ['tools', 'subagents', 'systemPrompt', 'llm', 'agents', 'sessions']
 
-import { SETTINGS_NAMESPACE } from '../shared/constants.mjs'
 // ── shared 源（0.2.3-tisitan.15）：与 lib 半共用的纯函数单一源 ──────────────────
 // broker 以 preset 内相对路径 import（../shared/），lib 以包内路径 import
-// （../preset/shared/）——两种部署形态下路径均成立（preset/ 由
-// ensurePresetInstalled 整拷，shared/ 随拷且安装后有存在性校验）。5.3 拆分后
+// （../preset/shared/）——两种拼法都落在同一个已安装包内（0.1.7 起不再有安装
+// 拷贝，两处指向同一批文件）。5.3 拆分后
 // 同目录簇模块（relay / tools / bootstrap）也按各自消费面直引 shared 纯函数层；
 // 5.4 波起调度核 / end 管线两簇同款（roles / misc / orchestration / report-
 // format / failure / archive / adjacent / board 按簇消费面直引，本体 import 面
@@ -130,10 +133,6 @@ export { normalizeTurnFailure, isFallbackable } from '../shared/failure.mjs'
 
 
 export async function apply(ctx, config = {}) {
-  // NOTE: ensurePresetInstalled runs from lib/index.js (npm package host
-  // bundle), not here — when this file loads from the preset copy,
-  // import.meta.url points to the copy, not the npm package source.
-
   // ══ 活状态与登记表（最先声明：一切簇接线都吃它的句柄）══════════════════════
   // 多会话编排隔离：每个 Sisyphus 编排会话一条独立流水线（队列/当前槽位/
   // 求助单/历史互不共享）， standing-scope 单例会让会话2的 go_work 被会话1
@@ -150,7 +149,7 @@ export async function apply(ctx, config = {}) {
   const { sessionTypes, childOwner, abortExpected, modelCache } = childRegistry
   // 能力缓存簇（5.1 拆分 → ./broker-capability.mjs）：effortCache/modelCacheEpoch
   // 本体随簇迁入模块，实例化必须保持在 settings 块之前——本 apply 中段有 await
-  // （loadLedger），settings/updated 若恰好在窗口里到达，处理器引用未初始化的
+  // （loadLedger），配置段热更若恰好在窗口里到达，处理器引用未初始化的
   // 接线 const 会撞 TDZ；失效入口 invalidateCaches 同理必须在处理器定义之前就位
   // （0.3.0-tisitan.7 N9/N10 时序约束）。modelCache 注入 childRegistry 的同一枚
   // Map 句柄（上方解构所得，不复制），llm 服务经回调逐点解析。
@@ -187,7 +186,7 @@ export async function apply(ctx, config = {}) {
   ctx.effect(() => () => { void METRICS.close() }, 'dsh-my-go-broker.metrics()')
   // 报告提交制开关（第一期，D5 已裁决一期默认开）：关 → report_submit 不注册、
   // 提交闸门不启用、条款不注入——三条同闸。config 在会话组装期固定，
-  // 挂载时读一次即可，不做运行时切换（规划 1.7 只补 agent.cordis.yml 与文档）。
+  // 挂载时读一次即可，不做运行时切换（规划 1.7 只补 preset/agent.patch.yml 与文档）。
   const REPORT_EXT = config.reportExternalization ?? true
   // 读平面并发容量（二期 2.3 接线，D5 已裁决）：?? 1 = 关闭 = 全局单线现状；
   // 2~3 启用读池（>3 钳制 3，钳制在 clampReadCapacity 内）。挂载期读一次，
@@ -206,7 +205,6 @@ export async function apply(ctx, config = {}) {
   // 合并基线：默认值 + 插件 config。settings 覆盖永远从基线起算，
   // 这样 WebUI 取消某字段后能正确回落默认，而不是残留旧的已合并值。
   const baseBindings = { ...defaultBindings(), ...(config.bindings ?? {}) }
-  let bindings = { ...baseBindings }
   const bindSisyphus = config.bindSisyphus === true
 
   // Track authorized orchestrators: any agent on this preset that is NOT
@@ -218,31 +216,55 @@ export async function apply(ctx, config = {}) {
   }
   const canOrchestrate = (agent) => agent && typeof agent.id === 'string' && !isSubAgent(agent)
 
-  // ══ settings-backed bindings（WebUI 可配；只读面）════════════════════════
-  // NOTE: the settings namespace 'dsh-my-go' is registered by the host bundle
-  // (lib/index.js). We only READ from it here — do NOT re-register it
-  // or it throws "already registered".
-  const settings = ctx.get('settings')
-  if (settings !== undefined) {
+  // ══ settings-backed bindings（WebUI 可配；只读面，经宿主半的全局桥）════════
+  // 0.1.7：preset 面没有可配置条目（settings 只服务 profile 条目），本半也不该直接
+  // 依赖 settings 服务。宿主半（lib/index.js）持有 'dsh-my-go' 条目的 volatile 配置面，
+  // 经 Symbol.for('dsh-my-go.bindings') 交出**已解析的 settings 段**——与旧
+  // settings.get(ns) 同形（{ sisyphus, roles, usagePrices, usageCurrency }），故
+  // mergeRoleBindings 的语义逐字不变。逐调用现读：宿主半的热更在桥的另一侧自动成立，
+  // 本半无需订阅任何事件。桥缺席（宿主半未装 / 旧宿主）＝ 沿用默认绑定，绝不裸炸。
+  //
+  // 缓存失效改「段版本号」驱动：旧写法把 invalidateCaches() 挂在 settings/updated 上，
+  // 而 0.1.7 的 loader/volatile-update 只在**宿主半自己的** fiber 上发，本半没有可订阅
+  // 的事件。宿主半因此把「每次 volatile 提交」记成一枚单调自增的段版本号，经
+  // Symbol.for('dsh-my-go.bindings-revision') 交出；本半逐调用比对，版本一变即执行同一枚
+  // 三连失效——N9（在飞 listModels 不回写）+ N10（能力表重解析）的语义因此逐条保住，
+  // 且仍不依赖任何事件通道（含「内容相同的保存也失效一次」这条旧语义）。
+  const readRevision = () => {
+    const read = globalThis[Symbol.for('dsh-my-go.bindings-revision')]
+    if (typeof read !== 'function') return undefined
     try {
-      const stored = settings.get(SETTINGS_NAMESPACE)
-      if (stored && typeof stored === 'object') {
-        bindings = mergeRoleBindings(baseBindings, stored)
-      }
-      ctx.on('settings/updated', (ns) => {
-        if (ns !== SETTINGS_NAMESPACE) return
-        const next = settings.get(SETTINGS_NAMESPACE)
-        if (next && typeof next === 'object') {
-          bindings = mergeRoleBindings(baseBindings, next)
-          // 模型能力缓存随绑定热更整体失效（5.1 拆分后三连收一线；注释细节
-          // 在 broker-capability.mjs 的 invalidateCaches）：modelCache 根治
-          // （0.3.0-tisitan.4，provider 模型清单随热更失效）+ epoch 自增作废
-          // 在飞 listModels（0.3.0-tisitan.7 N9）+ effortCache 清空（N10）。
-          invalidateCaches()
-        }
-      })
-    } catch (e) {
-      console.error('[dsh-my-go] settings load error:', e)
+      return read()
+    } catch (error) {
+      console.error('[dsh-my-go] settings bridge revision read failed:', error)
+      return undefined
+    }
+  }
+  let bindingsRevision
+  const readSection = () => {
+    const bridge = globalThis[Symbol.for('dsh-my-go.bindings')]
+    if (typeof bridge !== 'function') return undefined
+    try {
+      return bridge()
+    } catch (error) {
+      console.error('[dsh-my-go] settings bridge read failed, defaults apply:', error)
+      return undefined
+    }
+  }
+  const currentBindings = () => {
+    const section = readSection()
+    const revision = readRevision()
+    if (revision !== undefined && revision !== bindingsRevision) {
+      const first = bindingsRevision === undefined
+      bindingsRevision = revision
+      // 首读不清（挂载期本无缓存可言）；其后每次版本推进都走同一枚三连失效。
+      if (!first) invalidateCaches()
+    }
+    try {
+      return mergeRoleBindings(baseBindings, section)
+    } catch (error) {
+      console.error('[dsh-my-go] bindings merge failed, base bindings kept:', error)
+      return { ...baseBindings }
     }
   }
 
@@ -387,7 +409,7 @@ export async function apply(ctx, config = {}) {
   // 簇内只做纯组装」口径的实现：effect / registerSection / getSectionOrder / on
   // 四件在此各包一层，注册时机、effect 名、段定义与两代分支逐字节不变；
   // sessionTypes 传活句柄（roster 段儿童门控 + assemble 工种解析），bindings 经
-  // getter 现读（settings/updated 整表重建后必须看到新值，与原闭包直读时点一致）。
+  // getter 现读（宿主配置桥段变化后必须看到新值，与原闭包直读时点一致）。
   // 5.4 重排注：本簇接线点前移到调度簇之前（其产物 promptCache/loadPrompt 是
   // 调度簇 rolePersona 的注入源）——工厂体内只有纯组装与 fire-and-forget 预热，
   // 位移不改变任何注册序/时序。
@@ -397,7 +419,7 @@ export async function apply(ctx, config = {}) {
     getSectionOrder: (key) => ctx.systemPrompt?.getSectionOrder?.(key),
     on: (event, handler) => ctx.on(event, handler),
     sessionTypes,
-    getBindings: () => bindings,
+    getBindings: () => currentBindings(),
   })
   // ── 调度核簇接线（5.4 拆分；本体在 ./broker-scheduler.mjs）──────────────────
   // 名册路由薄壳（rosterKeys / rolePersona / resolveRoleToolFilter / liveToolNames）、
@@ -413,7 +435,7 @@ export async function apply(ctx, config = {}) {
     spawnChild, buildStallNotice, clearQueueRetryTimers, cancelQueueRetryTimer,
   } = createSchedulerOps({
     childRegistry,
-    getBindings: () => bindings,
+    getBindings: () => currentBindings(),
     getAgents: () => ctx.get('agents'),
     getTools: () => ctx.get('tools'),
     getSubagents: () => ctx.subagents,
@@ -499,7 +521,7 @@ export async function apply(ctx, config = {}) {
   const { processEnd } = createEndingOps({
     childRegistry,
     orchestrations,
-    getBindings: () => bindings,
+    getBindings: () => currentBindings(),
     orchOfChild,
     resolveParentAgent,
     notifyParent,
@@ -556,7 +578,7 @@ export async function apply(ctx, config = {}) {
   // 留在 broker 侧包一层，闸体对未 ready agent 的抛错仍落簇内同一个 try，N12 留痕
   // 口径不变）；活状态传句柄（orchestrations / sessionTypes / childRegistry /
   // abortExpected，Map/Set 本体不复制）；闭包可变值经 getter 现读（getBindings：
-  // settings/updated 整表重建后 roster 行投影必须看到新值）；delivery / relay 两簇
+  // 宿主配置桥段变化后 roster 行投影必须看到新值）；delivery / relay 两簇
   // 的工厂产物与本体侧共用件转注；5.4 波起调度核产物（dispatchWork /
   // rosterKeys / liveToolNames）同路径转注。挂载期固化的开关与截断常量按值注入。
   // 注册时序与原实现一致：工具与 agent/created 闸接在 delivery/relay 接线之后、
@@ -580,7 +602,7 @@ export async function apply(ctx, config = {}) {
     abortExpected,
     bump,
     metrics: METRICS,
-    getBindings: () => bindings,
+    getBindings: () => currentBindings(),
     notifyParent,
     notifyOwner,
     resolveParentAgent,
@@ -659,7 +681,7 @@ export async function apply(ctx, config = {}) {
   // ./broker-capability.mjs，5.1 拆分）────────────────────────────────────
   // reasoningEffort 的档位判定（supportedEfforts）与模型校验（modelExists）
   // 连同 effortCache/modelCacheEpoch 随簇迁出；实例化在 settings 块上方
-  // （N9/N10 时序约束），失效接线 settings/updated → invalidateCaches()。
+  // （N9/N10 时序约束），失效接线：段版本推进 → invalidateCaches()。
 
   ctx.on('agent/request', async (payload, next) => {
     const seed = await next()
@@ -671,7 +693,7 @@ export async function apply(ctx, config = {}) {
     // fallbacks 等其余字段）；spawn 解析前窗口按 label 命中 pending 登记
     //（棒2-Z2，优先级回退在 child-registry 内实现）；常规派发无登记 → 原样 bindings[type]
     const override = childRegistry.fallbackOverrideFor(agent.id, agent?.session?.header?.label)
-    const binding = resolveEffectiveBinding(bindings[type ?? 'sisyphus'] ?? {}, override)
+    const binding = resolveEffectiveBinding(currentBindings()[type ?? 'sisyphus'] ?? {}, override)
     const nextConfig = { ...seed }
     if (binding.provider !== undefined) nextConfig.provider = binding.provider
     if (binding.model !== undefined) {

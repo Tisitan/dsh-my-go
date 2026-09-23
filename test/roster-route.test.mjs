@@ -3,13 +3,14 @@
 // 避免 Symbol.for 快照桥被 host 半覆盖）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as broker from '../preset/tools/broker.mjs'
 import { REDISPATCH_RESUME_PREFIX } from '../preset/shared/report-format.mjs'
+import { rolePersona as sharedRolePersona } from '../preset/shared/roles.mjs'
 import { createMockCtx, withRealSignalContract, execOf, drain, snapOf, currentOf, waitFor } from './helpers/mock-ctx.mjs'
 
 const defaultSchemas = () => [{ name: 'read' }, { name: 'write' }, { name: 'glob' }, { name: 'bash' }]
@@ -113,7 +114,7 @@ test('toolFilter allow 全部为假名：丢弃 toolFilter（不传字段），�
   }
 })
 
-test('内置工种：persona 经 spawn 通道注入（prompts 缺档时兜底文案），prompt 无包装', async () => {
+test('内置工种：persona 经 spawn 通道注入（取自包内 prompts/），prompt 无包装', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   const specs = []
   const { ctx, tools } = mockCtxFull({
@@ -122,8 +123,21 @@ test('内置工种：persona 经 spawn 通道注入（prompts 缺档时兜底文
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'plain task' }, execOf(parent))
   assert.equal(typeof specs[0].request.persona, 'string', '内置工种恒有 persona 字段')
-  assert.ok(specs[0].request.persona.includes('hermes sub-agent'), 'prompts 档案缺席时回落兜底文案')
+  // 0.1.7 关键性质：读盘根从「安装副本」变成「已安装包根的 prompts/」——仓库形态下
+  // 该目录本就存在，故这里断言的是**真档案原文**而不是兜底文案（兜底分支由下方
+  // 纯函数用例覆盖，不再依赖「仓库里恰好没有 prompts/」这个旧前提）。
+  const hermesPrompt = await readFile(new URL('../prompts/hermes.md', import.meta.url), 'utf-8')
+  assert.equal(specs[0].request.persona, hermesPrompt, '包内 prompts/hermes.md 就地生效（新范式的核心性质）')
   assert.equal(specs[0].request.prompt[0].text, 'plain task', '首条 prompt 不再含 persona 包装')
+})
+
+test('内置工种兜底：档案缺席时回落兜底文案，非内置工种则不给 persona', async () => {
+  const cache = new Map()
+  const absent = async () => null
+  const builtin = await sharedRolePersona({}, cache, absent, 'hermes')
+  assert.match(builtin, /hermes sub-agent/, '内置工种档案缺席 → 兜底文案')
+  assert.equal(await sharedRolePersona({}, cache, absent, 'custom-x'), undefined, '非内置工种档案缺席 → 不给 persona（走无 persona 形态）')
+  assert.equal(await sharedRolePersona({ 'custom-x': { persona: '自定义人设' } }, cache, absent, 'custom-x'), '自定义人设', 'bindings 里的 persona 覆盖优先')
 })
 
 test('fallback 重派：persona/toolFilter 与首派同源（bindings[type]）', async () => {
@@ -664,15 +678,15 @@ test('continue 复活曾进备选评估的链首儿童：完工 end 不被 once-
 })
 
 // ── 人设档案负缓存（0.3.0-tisitan.7 N11）：失败不记账，下次现读重试 ──────────────
-// broker 的读盘根是「本 preset 相邻的 prompts/」（安装态由 ensurePresetInstalled
-// 后台拷贝生成）。仓库形态下该目录本就不存在——正可用来造「首读撞拷贝竞态失败、
+// broker 的读盘根是「已安装包根的 prompts/」（0.1.7：preset 不再整拷，包内
+// prompts/ 就地生效）。探针工种的人设档案起初不存在，正可用来造「首读失败、
 // 随后档案补齐」的真实两段时序；旧实现在失败分支写 null，那条负缓存随模块作用
 // 域钉死本进程所有挂载，儿童永久丢人设且无从自愈。
 
 test('prompt 档案首读失败不入缓存：档案补齐后下一派即正确加载人设（N11）', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   const specs = []
-  const promptsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'preset', 'prompts')
+  const promptsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'prompts')
   const probeType = `n11-probe-${process.pid}`
   const probeFile = join(promptsDir, `${probeType}.md`)
   const dirPreexisted = existsSync(promptsDir)

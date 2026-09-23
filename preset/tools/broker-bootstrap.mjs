@@ -18,7 +18,7 @@
  *   - effect / registerSection / getSectionOrder / on：broker 侧的 ctx 包壳
  *     （getSectionOrder 保留可选链语义：更老宿主无该方法时判假走旧名分支）；
  *   - sessionTypes：登记表活句柄（roster 段儿童门控 + assemble 的工种解析）；
- *   - getBindings：绑定表逐调用现读（settings/updated 整表重建后必须看到新值，
+ *   - getBindings：绑定表逐调用现读（宿主配置桥段变化后必须看到新值，
  *     与原闭包直读 `let bindings` 的时点一致）。
  * 纯函数层（loadAllPrompts / typeOfAgent / renderRosterBriefing）直引 ../shared/。
  * 接线位点注（5.4 声明重排）：本簇接线点前移至调度簇之前（promptCache/loadPrompt
@@ -40,21 +40,20 @@ import { typeOfAgent, loadAllPrompts as sharedLoadAllPrompts } from '../shared/m
 import { renderRosterBriefing as sharedRenderRosterBriefing } from '../shared/roles.mjs'
 
 // ── prompt file loading ───────────────────────────────────────────────────
-// Prompt files live in the prompts/ directory alongside the preset.
-// They are copied to ~/.dsh/.agent-presets/dsh-my-go/prompts/ by
-// ensurePresetInstalled (lib/index.js).
+// Prompt files live in the installed package's prompts/ directory (two levels up
+// from preset/tools/, i.e. <pkg>/prompts). 0.1.7 retired the preset-directory
+// copy (ensurePresetInstalled), so the package layout is the only layout.
 // 读盘与缓存分离（0.3.0-tisitan.7 N11）：本函数只回答「读得到就给文本、读不到给
 // null」，缓存策略见工厂体内的 promptCache/loadPrompt。
-// import.meta.url 解析点从 broker.mjs 换到本模块：两者同在 preset/tools/，
-// dirname(import.meta.url) 两级上跳落点逐字节一致（prompts/ 与 tools/ 平级）。
+// 解析点：dirname(import.meta.url) = <pkg>/preset/tools，两级上跳 = <pkg>，
+// prompts/ 与 preset/ 平级。
 async function readPromptFile(agentType) {
   try {
-    const here = dirname(fileURLToPath(import.meta.url)) // .../dsh-my-go/tools
-    const presetRoot = dirname(here) // .../dsh-my-go
-    const promptsDir = join(presetRoot, 'prompts')
-    return await readFile(join(promptsDir, `${agentType}.md`), 'utf-8')
+    const here = dirname(fileURLToPath(import.meta.url)) // <pkg>/preset/tools
+    const packageRoot = dirname(dirname(here)) // <pkg>
+    return await readFile(join(packageRoot, 'prompts', `${agentType}.md`), 'utf-8')
   } catch {
-    return null // 档案缺席 / 安装拷贝竞态：由调用方决定是否记账
+    return null // 档案缺席：由调用方决定是否记账
   }
 }
 
@@ -67,11 +66,10 @@ export function createBootstrapOps({
   getBindings,
 }) {
   // 人设缓存随挂载建立（0.3.0-tisitan.7 N11）：原本它是模块级的，失败还写 null——
-  // 首次加载撞上 ensurePresetInstalled 的后台拷贝竞态（prompts/ 尚未落全）时，
-  // 那条 null 就把本进程所有挂载的人设一起永久钉死，儿童带着「无 persona」
-  // 上岗且无从自愈。两条改动同点落地：① 缓存壳从模块作用域移进挂载作用域（一次
-  // 挂载一份，重挂载即重新现读）；② 失败不写缓存（下次现读重试，与
-  // effortCache / modelCache 的「只缓存成功结果」同一纪律）。
+  // 那条 null 会把本进程所有挂载的人设一起永久钉死，儿童带着「无 persona」上岗且
+  // 无从自愈。两条纪律：① 缓存壳从模块作用域移进挂载作用域（一次挂载一份，重挂载
+  // 即重新现读）；② 失败不写缓存（下次现读重试，与 effortCache / modelCache 的
+  // 「只缓存成功结果」同一纪律）。
   const promptCache = new Map()
   async function loadPrompt(agentType) {
     if (promptCache.has(agentType)) return promptCache.get(agentType)
@@ -167,7 +165,7 @@ export function createBootstrapOps({
   // 名册简报段（0.2.3-tisitan.18）：向根编排会话现渲活名册 + 失败通知协议指路
   // （harness 原生 failed 通知先于 broker 异步处置到达，真空期内主流程需
   // 知道备选链存在才不会自行报死）。函数态 text 每次 assemble 现调——
-  // bindings 由 settings/updated 整表重建，经 getBindings 逐调用现读最新值，
+  // bindings 由宿主配置桥逐调用现读（段一变即新值），经 getBindings 转出，
   // 天然免刷新管道。
   // 儿童门控：子代理（parentSession 直达 + typeOfAgent 冷恢复 label 兜底）
   // 返回空串，不消费子代理上下文预算。字节稳定：渲染器（shared 单一源）

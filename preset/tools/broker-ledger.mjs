@@ -4,7 +4,7 @@
  * history 记录（done/failed，每桶上限 HISTORY_CAP）落盘为 JSON，
  * 插件加载时读回：进程重启后 continue 一个已完工 childId 仍能命中台账
  * （revive → harness coldResume 续聊），而不是报 unknown sub-agent id。
- * 存放位置沿用 ensurePresetInstalled 的 DSH_HOME 惯例，独立插件状态目录，
+ * 存放位置沿用本插件的 DSH_HOME 惯例，独立插件状态目录，
  * 不进 preset 同步目录（避免被版本同步覆盖语义污染）。
  *
  * 放 preset/tools/ 扁平文件而不进 shared/（对齐 metrics.mjs 先例）：本模块

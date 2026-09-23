@@ -2,7 +2,7 @@
  * 配置卡的浏览器侧行为档（0.5.0-tisitan.3）。
  *
  * 不起浏览器、不装 jsdom：假的 __ModuleLoader__ + 假 React（含一级错误边界语义）
- * + 假 settingsScope（照宿主 compose：value = base ⊕ user，且**写被拒时不抛**，
+ * + 假 configForms（照宿主 compose：value = base ⊕ user，且**写被拒时不抛**，
  * 只静默重读——这正是官方信道的真实行为，也是上一单抓出的 bug 类）+ 假 remote /
  * 假 connection，跑真产物 dist/client.js。
  *
@@ -437,7 +437,7 @@ function openCard({ user = {}, base = {}, revision = 0, view = 'page', served = 
     on: () => () => {},
     get(name) {
       if (name === 'slots') return slots
-      if (name === 'settingsScope') return { bind: () => scope, describe: () => face }
+      if (name === 'configForms') return { get: () => scope, describe: () => face }
       if (name === 'remote') return remote
       if (name === 'connection') return connection
       // 面板轮询必须走假定时器：真 setInterval 会让测试进程永远不退（600ms 一颗）
@@ -480,7 +480,7 @@ test('产物形状：只 require react，导出口齐备', () => {
   assert.equal(spec.id, 'dsh-my-go')
   const exported = spec.factory((id) => (id === 'react' ? makeReact() : {}))
   assert.equal(exported.name, NS)
-  for (const need of ['slots', 'settingsScope', 'connection', 'remote', 'remote.session']) {
+  for (const need of ['slots', 'configForms', 'connection', 'remote', 'remote.session']) {
     assert.ok(exported.inject.includes(need), `inject 声明缺 ${need}`)
   }
   assert.equal(typeof exported.apply, 'function')
@@ -760,7 +760,7 @@ test('错误边界：卡内抛错只糊这一块，不白整页', () => {
     effect: (fn) => fn(),
     on: () => () => {},
     get: (name) => {
-      if (name === 'settingsScope') return { bind: () => scope, describe: () => face }
+      if (name === 'configForms') return { get: () => scope, describe: () => face }
       if (name === 'remote') return { session: { modelCatalog: async () => ({ ok: true, value: {} }) }, $on: () => () => {} }
       if (name === 'connection') return makeConnection()
       if (name === 'timer') return { interval: () => () => {} }

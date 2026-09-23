@@ -2,7 +2,7 @@
  * 配置卡写面（0.5.0-tisitan.3）：浏览器侧 ops 编译层。
  *
  * 这批规则原本住私有 RPC `saveSettings` 闭包里（lib 半唯一权威），随配置面迁
- * 官方 settingsScope 一起搬到 src/settings-ops.js——原 lib 侧同名用例逐条搬来，
+ * 官方 configForms 一起搬到 src/settings-ops.js——原 lib 侧同名用例逐条搬来，
  * 判据一字未改（脏键 fail-closed、显式携带才写、整键删除、sisyphus 恒顶级、
  * 单价四桶口径），只是被测对象从「宿主替身收到的 ops」变成「编译器的返回值」。
  * 纯函数层：不起浏览器、不 mock 宿主。

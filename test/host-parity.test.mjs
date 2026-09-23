@@ -24,7 +24,7 @@ import * as sharedFailure from '../preset/shared/failure.mjs'
 import * as sharedArchive from '../preset/shared/archive.mjs'
 import * as sharedRoles from '../preset/shared/roles.mjs'
 import * as sharedMisc from '../preset/shared/misc.mjs'
-import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
+import { createPanelRpcTransport, resolvedHostConfig, createSettingsStub } from './helpers/mock-ctx.mjs'
 import { buildSettingsOps, draftFromSection } from '../src/settings-ops.js'
 import { AGENT_TYPES as SHARED_AGENT_TYPES, PRICE_KEY_PATTERN as SHARED_PRICE_PATTERN, ROLE_KEY_PATTERN as SHARED_ROLE_PATTERN } from '../preset/shared/constants.mjs'
 import { AGENT_TYPES as CLIENT_AGENT_TYPES } from '../src/client-constants.js'
@@ -35,20 +35,22 @@ import { PRICE_KEY_PATTERN as ROWS_PRICE_PATTERN } from '../src/usage-price-rows
 const layersOf = (value) => ({ value: value ?? {}, user: value ?? {}, base: {} })
 
 // 测试隔离：DSH_HOME 指向独立临时目录（getBuiltinPersona 读盘用），并且全部
-// lib.apply 都带 NO_INSTALL —— 一次性安装同步由 config 闸**真**短路（0.3.0-tisitan.8
+// lib.apply 都带 ROW_CONFIG —— 0.1.7 起安装同步机制整体退役，行 config 经真 resolveConfig 解析（0.3.0-tisitan.8
 // E3/B-01）：旧写法全靠「版本标记碰巧已写」躲开那次后台拷贝，而 marker 语义本
 // 批换成 version+内容摘要，那种侥幸会当场失效并让测试与安装器抢同一批文件。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-host-home-'))
 
-const NO_INSTALL = { installPreset: false }
+// 0.1.7：行 config 经真 cordis resolveConfig 解析（Config 的 volatile 顶层字段换活访问器）
+const ROW_CONFIG = resolvedHostConfig({})
 
 function mockHostCtx({ llm, settings, toolsRegistry } = {}) {
   const listeners = new Map()
   const panel = createPanelRpcTransport()
+  const service = settings ?? createSettingsStub()
   const ctx = {
     get: (name) => {
       if (name === 'llm') return llm
-      if (name === 'settings') return settings
+      if (name === 'settings') return service
       if (name === 'tools') return toolsRegistry
       if (name === 'connection') return panel.connection
       if (name === 'webServer') return panel.webServer
@@ -165,9 +167,12 @@ test('lib 半零编排面（反向 parity）：编排身份标记 grep=0，broke
 
 test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有，broker 半只读', async () => {
   const [brokerSrc, hostSrc] = await readBothHalves()
-  // lib 半：settings 注册面 + RPC 单通道全端点
-  assert.ok(countOf(hostSrc, 'settings.installSection(') >= 1, 'lib 半以 installSection 挂 composition base（官方姿势）')
-  assert.equal(countOf(hostSrc, 'settings.register('), 1, '老宿主回落路径保留且仅此一处')
+  // lib 半：0.1.7 声明式配置面（顶层 Config）+ RPC 单通道全端点
+  assert.ok(countOf(hostSrc, "export { Config } from './config.js'") >= 1, 'lib 半顶层转出 Config（0.1.7 声明式配置面唯一入口）')
+  assert.equal(countOf(hostSrc, 'settings.installSection('), 0, 'installSection 随 0.1.7 契约退役，不得复活')
+  assert.equal(countOf(hostSrc, 'settings.register('), 0, '老宿主回落姿态一并退役（单模式 0.1.7，不留双姿态）')
+  assert.ok(countOf(hostSrc, 'settings.configure(') >= 1, '关自动页经子 fiber 的 inject 调 configure')
+  assert.equal(countOf(hostSrc, "ctx.on('loader/volatile-update'"), 1, '热更监听单点（0.1.7 事件）')
   assert.equal(countOf(hostSrc, 'path: PANEL_CHANNEL'), 1, 'lib 半面板通道经 webServer 直注册（唯一注册点）')
   assert.equal(countOf(hostSrc, "rpc.handle('/dsh-my-go'"), 0, '宿主缺陷面 connection.rpc.handle 不得复活（0.1.5-alpha.1 下通道静默失踪）')
   // 批次 4+6 端点收口后，lib 半分发比较改为 PANEL_ENDPOINTS.*（shared/constants
@@ -175,13 +180,17 @@ test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有
   for (const endpoint of ['snapshot', 'listTools', 'getBuiltinPersona', 'getUsage']) {
     assert.equal(countOf(hostSrc, `endpoint === PANEL_ENDPOINTS.${endpoint}`), 1, `lib 半保留端点: ${endpoint}`)
   }
-  // 设置面三端点随配置页迁官方 settingsScope 退役：留负向，混合通道不许复活
+  // 设置面三端点随配置页迁官方 configForms 退役：留负向，混合通道不许复活
   for (const endpoint of ['loadSettings', 'saveSettings', 'listModels']) {
     assert.equal(countOf(hostSrc, `endpoint === '${endpoint}'`), 0, `端点已退役，不得复活: ${endpoint}`)
   }
   assert.ok(countOf(hostSrc, "Symbol.for('dsh-my-go.snapshot')") >= 1, 'lib 半消费快照桥')
-  // broker 半：只读 settings、零 RPC，快照桥唯一发布者
-  assert.equal(countOf(brokerSrc, 'settings.register('), 0, 'broker 半不重复注册 settings（只读）')
+  // broker 半：经全局桥只读配置段、零 RPC，快照桥唯一发布者
+  assert.equal(countOf(brokerSrc, 'settings.register('), 0, 'broker 半不注册 settings（只读）')
+  assert.equal(brokerHalf.inject.includes('settings'), false, 'broker 半 inject 不含 settings（服务门禁声明面）')
+  assert.equal(countOf(brokerSrc, 'ctx.get(\'settings\')'), 0, 'broker 半不再 ctx.get settings（配置段只经全局桥）')
+  assert.ok(countOf(brokerSrc, "Symbol.for('dsh-my-go.bindings')") >= 1, 'broker 半经配置桥读段')
+  assert.ok(countOf(brokerSrc, "Symbol.for('dsh-my-go.bindings-revision')") >= 1, 'broker 半经段版本号驱动缓存失效（N9/N10）')
   assert.equal(countOf(brokerSrc, 'rpc.handle('), 0, 'broker 半零 RPC 端点')
   assert.equal(countOf(brokerSrc, 'webServer.register('), 0, 'broker 半零 webServer 路由注册（通道唯一归属 lib 半）')
   assert.ok(countOf(brokerSrc, "globalThis[Symbol.for('dsh-my-go.snapshot')]") >= 1, 'broker 半发布快照桥')
@@ -239,29 +248,21 @@ test('host/broker 接线分界：共享通路降级为存在性在册，两半�
 
 test('lib 半本批修复在册（源码断言）：留痕/失败隔离/参数化安装/裁剪/信封合规', async () => {
   const hostSrc = await readFile(new URL('../lib/index.js', import.meta.url), 'utf-8')
-  // E1/B-02：注册失败必须留痕，且与读盘接线分两个 try（同 try 罩住 = 注册一抛
-  // 热更监听就失联）
-  assert.equal(countOf(hostSrc, 'console.error(`[dsh-my-go] settings namespace registration failed'), 1, 'E1 注册失败留痕单点')
-  assert.equal(countOf(hostSrc, 'console.error(`[dsh-my-go] settings readout failed'), 1, 'E1 读盘/接线失败独立留痕单点')
-  assert.ok(countOf(hostSrc, 'compositionBase(') >= 1, '0.5.0-tisitan.3 行 config 挂成 composition base')
-  // E3/B-01：安装同步可关（测试真短路），且安装器接受注入的 packageRoot/dshHome
-  assert.equal(countOf(hostSrc, 'config.installPreset !== false'), 1, 'E3 config 闸单点')
-  assert.equal(countOf(hostSrc, 'export async function ensurePresetInstalled('), 1, 'E3 安装器参数化导出（定义唯一）')
-  // E8/B-08：marker 是「版本+内容摘要」，不是裸版本号
-  assert.equal(countOf(hostSrc, 'const marker = `${version}+${digest}`'), 1, 'E8 marker 含内容摘要')
-  assert.equal(countOf(hostSrc, 'await writeFile(markerPath, version'), 0, 'E8 裸版本号 marker 写法不得复活')
-  // B-09：整拷退役为逐文件比对（写窗口只剩真改过的），prompts 走镜像删净
-  // （C-10：原先还钉 `await syncTreeFilewise(` = 2「preset + prompts 两处」——
-  // 调用点计数不是不变量，且 host-lib-fixes 已有「未变更文件不重写」「prompts
-  // 孤儿清净」两例行为档直接兜住整拷回潮，故退役计数、只留写法负向 + 清场单点）
-  assert.equal(countOf(hostSrc, 'await cp('), 0, 'B-09 无差别整拷不得复活')
-  assert.equal(countOf(hostSrc, 'await rm(promptsTarget'), 1, 'B-09 prompts 镜像先删净')
+  // E1/B-02（0.1.7 改判）：读面失败留痕单点仍在；注册失败那条随注册面整体退役
+  assert.equal(countOf(hostSrc, 'console.error(`[dsh-my-go] settings readout failed'), 1, 'E1 读面失败独立留痕单点')
+  assert.equal(countOf(hostSrc, 'settings namespace registration failed'), 0, '注册面退役后该留痕点一并退役')
+  assert.ok(countOf(hostSrc, 'sectionOf(') >= 1, '行 config 的 volatile 访问器即读面（宿主挂 base，本半不再自算）')
+  // 0.1.7 退役面（安装同步安装器整条）：$DSH_HOME/.agent-presets 已无代码读取
+  for (const retired of ['installPreset', 'ensurePresetInstalled', 'presetInstallRoot', 'BROKER_CLUSTER_ROSTER', 'syncTreeFilewise', 'presetTreeDigest', 'const marker = ']) {
+    assert.equal(countOf(hostSrc, retired), 0, `安装面退役后不得复活：${retired}`)
+  }
+  assert.equal(countOf(hostSrc, 'await cp('), 0, 'B-09 无差别整拷不得复活（机制整体退役）')
   // E5/A-02：快照出口裁剪在册（定义 + 出口消费，只钉「在不在」）
   assert.equal(countOf(hostSrc, 'const PANEL_HISTORY_TAIL = 8'), 1, 'E5 面板 history 末 8 裁剪')
   assert.ok(countOf(hostSrc, 'trimSnapshotForPanel(') >= 1, 'E5 裁剪通路在册')
-  // B-10：安装根单一来源，DSH_HOME/.agent-presets 不得再被手抄
-  assert.equal(countOf(hostSrc, "'.agent-presets'"), 1, 'B-10 预设根唯一出处（presetInstallRoot）')
-  assert.equal(countOf(hostSrc, 'function presetInstallRoot('), 1, 'B-10 安装根函数单点')
+  // B-10（0.1.7 改判）：getBuiltinPersona 单一来源 = 包内 prompts/（安装副本候选退役）
+  assert.equal(countOf(hostSrc, "join(PACKAGE_ROOT, 'prompts'"), 1, 'B-10 人设读盘单点：包内 prompts/')
+  assert.equal(countOf(hostSrc, 'installedPresetRoot('), 0, '安装副本候选路径退役')
   // E9/B-07 → F1 换壳：rpc.handle 的 arity 探测随宿主缺陷面一起退役（现在连
   // rpc.handle 都不再调），注册点的唯一性由上方 P2 钉，此处只钉新壳在册。
   assert.ok(countOf(hostSrc, 'createPanelRpcHandler(') >= 1, 'F1 通道壳（鉴权直出 + 信封封装）在册')
@@ -792,8 +793,9 @@ test('S-1 broker 导出面快照闸：16 键逐名 + inject 值锁定（import(b
   // 对应回调在挂载期 ctx.get 静默拿到 undefined，比改名更难发现。合法变更（增删
   // 依赖服务）时的更新方式：改 broker.mjs 的 `export const inject`，然后把新值逐名
   // 抄进下面的清单。两侧各自 sort 后比对：清单里手写顺序错了也不会假红。
+  // 0.1.7：settings 摘除（preset 面无可配置条目，配置段改经宿主半的全局桥读）
   const expectedInject = [
-    'tools', 'subagents', 'systemPrompt', 'llm', 'settings', 'agents', 'sessions',
+    'tools', 'subagents', 'systemPrompt', 'llm', 'agents', 'sessions',
   ]
   assert.ok(Array.isArray(mod.inject), 'inject 是数组（cordis 声明面形状不变）')
   assert.deepEqual([...mod.inject].sort(), [...expectedInject].sort(), 'broker.mjs inject 值逐名不变（S-1 机器闸）')
@@ -911,7 +913,7 @@ test('snapshot RPC：preset 未装配（无桥）回落降级空态，桥在席�
   try {
     delete globalThis[bridgeKey]
     const { ctx, rpc } = mockHostCtx({})
-    await host.apply(ctx, NO_INSTALL)
+    await host.apply(ctx, ROW_CONFIG)
     // 无桥 = preset 未装配（lib-only 降级形态）：空态形状 + rosterLines 常驻
     const degraded = await rpc('/dsh-my-go', 'snapshot', {})
     assert.equal(degraded.ok, true)
@@ -934,16 +936,10 @@ test('snapshot RPC：preset 未装配（无桥）回落降级空态，桥在席�
 // ── ② 存储/面板面行为批（0.3.0-tisitan.0 后 lib 半的全部行为面，原样保留）──────
 
 test('lib 半 settings schema：fallbacks 数组被接受并原样带出', async () => {
-  let registered
-  const settings = {
-    register: (ns, schema) => { registered = schema; return {} },
-    get: () => undefined,
-  }
-  const { ctx } = mockHostCtx({ settings })
-  await host.apply(ctx, NO_INSTALL)
-  assert.ok(registered, 'settings.register 应被调用且捕获 schema')
-  const parsed = registered({ roles: { hermes: { provider: 'a', model: 'b', fallbacks: [{ provider: 'x', model: 'y' }] } } })
-  assert.deepEqual(parsed.roles.hermes.fallbacks, [{ provider: 'x', model: 'y' }], 'schema 接受 fallbacks 且保持数组形状')
+  assert.ok(host.Config !== undefined, 'schema 由顶层 Config 声明（0.1.7），宿主直接读它')
+  const parsed = resolvedHostConfig({ roles: { hermes: { provider: 'a', model: 'b', fallbacks: [{ provider: 'x', model: 'y' }] } } })
+  assert.deepEqual(parsed.roles.get().hermes.fallbacks, [{ provider: 'x', model: 'y' }], 'schema 接受 fallbacks 且保持数组形状')
+  assert.deepEqual(parsed.roles.get().hermes.toolFilter, { allow: [], deny: [] }, '未给的字段取 schema 默认（宿主解析语义）')
 })
 
 test('写面：fallbacks 空数组转 unset，非空数组原样 set', () => {
@@ -989,7 +985,7 @@ test('lib 半 listTools：花名册返回全局工具名且滤保留名（mock �
       ],
     },
   })
-  await host.apply(ctx, NO_INSTALL)
+  await host.apply(ctx, ROW_CONFIG)
   const res = await rpc('/dsh-my-go', 'listTools', {})
   assert.equal(res.ok, true)
   assert.deepEqual(res.value, ['mcp__demo__alpha', 'mcp__demo__beta', 'read'], '保留名 run_code 不返回，名单排序去重')
@@ -997,7 +993,7 @@ test('lib 半 listTools：花名册返回全局工具名且滤保留名（mock �
 
 test('lib 半 listTools：tools 服务缺席回落空名单（ok:true）', async () => {
   const { ctx, rpc } = mockHostCtx({})
-  await host.apply(ctx, NO_INSTALL)
+  await host.apply(ctx, ROW_CONFIG)
   const res = await rpc('/dsh-my-go', 'listTools', {})
   assert.equal(res.ok, true)
   assert.deepEqual(res.value, [], '设置页降级为纯编辑器而非报错')
@@ -1006,18 +1002,14 @@ test('lib 半 listTools：tools 服务缺席回落空名单（ok:true）', async
 // ── 内置卡「载入文件默认」（0.2.3-tisitan.16b）：getBuiltinPersona RPC 端点 ────
 
 test('lib 半 getBuiltinPersona：正常读取 / 非法 type / 目录穿越 / 文件缺失全结构化', async () => {
-  const { writeFileSync, mkdirSync } = await import('node:fs')
-  // 用哨兵内容占住安装副本路径：安装同步已被 config.installPreset 闸真关掉
-  // （NO_INSTALL，见文件头），后台拷贝不会再覆写它，故断言读到的是磁盘原文
-  // 而非任何缓存——这里读的是安装位，不是包内兜底路径（B-10 的回落次序）。
-  const promptsDir = join(process.env.DSH_HOME, '.agent-presets', 'dsh-my-go', 'prompts')
-  mkdirSync(promptsDir, { recursive: true })
-  writeFileSync(join(promptsDir, 'hermes.md'), 'SENTINEL hermes 人设原文')
+  // 0.1.7：读盘根 = 包内 prompts/（安装副本这条候选随机制退役），故断言的是包内
+  // 真档案原文——直读磁盘、不走缓存。
   const { ctx, rpc } = mockHostCtx({})
-  await host.apply(ctx, NO_INSTALL)
+  await host.apply(ctx, ROW_CONFIG)
   const ok = await rpc('/dsh-my-go', 'getBuiltinPersona', { type: 'hermes' })
   assert.equal(ok.ok, true)
-  assert.deepEqual(ok.value, { type: 'hermes', persona: 'SENTINEL hermes 人设原文' }, '直读磁盘原文返回')
+  const hermesPrompt = await readFile(new URL('../prompts/hermes.md', import.meta.url), 'utf-8')
+  assert.deepEqual(ok.value, { type: 'hermes', persona: hermesPrompt }, '直读包内磁盘原文返回')
   const illegal = await rpc('/dsh-my-go', 'getBuiltinPersona', { type: 'Hermes' })
   assert.equal(illegal.ok, false, '大写非法 type 拒绝')
   assert.equal(illegal.error.code, 'bad-request')

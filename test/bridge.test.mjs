@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
 import * as broker from '../preset/tools/broker.mjs'
-import { createMockCtx, withRealSignalContract, execOf, snapshotNow, snapOf, currentOf, waitFor, removeHomeWithRetry } from './helpers/mock-ctx.mjs'
+import { createMockCtx, setHostBindings, withRealSignalContract, execOf, snapshotNow, snapOf, currentOf, waitFor, removeHomeWithRetry } from './helpers/mock-ctx.mjs'
 
 // 测试隔离：台账持久化（0.2.3-tisitan.8）会在 apply 时从 DSH_HOME 读回 history——
 // 指向独立临时目录，避免宿主机真实台账污染本文件的 history 断言。
@@ -301,28 +301,31 @@ test('configured model is applied only when modelExists passes', async () => {
   assert.deepEqual(specs[1].request.agentOptions, { provider: 'beta' })
 })
 
-test('settings/updated rebases from baseBindings: unset field falls back to defaults', async () => {
+test('host bindings rebase from baseBindings: unset field falls back to defaults', async () => {
   // 0.2.3-tisitan.1 修复的回归保护：settings 覆盖永远从 baseBindings（默认值 +
-  // 插件 config）起算。WebUI 取消某字段后（stored 变空对象 + settings/updated），
-  // 后续派发不得残留旧的已合并值。
+  // 插件 config）起算。0.1.7 起覆盖的到达方式变了——宿主半的配置桥逐调用现读，
+  // 桥返回的段一变，下一次派发即见新值（旧 settings/updated 事件通道退役），
+  // 但「整表重建 + 回落基线」的语义逐字不变。
   const parent = { id: 'parent-1', session: { header: {} } }
-  let stored = { roles: { hermes: { model: 'm1' } } }
-  const specs = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
-    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
-    settings: { get: (ns) => (ns === 'dsh-my-go' ? stored : undefined) },
-    startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
-  })
-  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
-  const goWork = tools.get('go_work')
-  await goWork.execute({ agent: 'hermes', prompt: 'first' }, execOf(parent))
-  assert.equal(specs[0].request.agentOptions?.model, 'm1')
-  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
-  // WebUI 取消该字段
-  stored = {}
-  dispatch('settings/updated', 'dsh-my-go')
-  await goWork.execute({ agent: 'hermes', prompt: 'second' }, execOf(parent))
-  assert.equal(specs[1].request.agentOptions?.model, undefined)
+  const restore = setHostBindings({ roles: { hermes: { model: 'm1' } } })
+  try {
+    const specs = []
+    const { ctx, dispatch, tools } = mockCtxFull({
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
+    })
+    await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
+    const goWork = tools.get('go_work')
+    await goWork.execute({ agent: 'hermes', prompt: 'first' }, execOf(parent))
+    assert.equal(specs[0].request.agentOptions?.model, 'm1')
+    dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
+    // WebUI 取消该字段：宿主半解析出的段随之变空
+    setHostBindings({})
+    await goWork.execute({ agent: 'hermes', prompt: 'second' }, execOf(parent))
+    assert.equal(specs[1].request.agentOptions?.model, undefined)
+  } finally {
+    restore()
+  }
 })
 
 test('settings rows with fallbacks merge and rebase without disturbing existing fields', async () => {
@@ -331,23 +334,25 @@ test('settings rows with fallbacks merge and rebase without disturbing existing 
   // fallbacks 值本身尚无派发出口（step-2 接入），其带出语义由 host-parity 的
   // schema/saveSettings 断言与四处对称锁覆盖。
   const parent = { id: 'parent-1', session: { header: {} } }
-  let stored = { roles: { hermes: { model: 'm1', fallbacks: [{ provider: 'fb', model: 'fm1' }] } } }
-  const specs = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
-    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
-    settings: { get: (ns) => (ns === 'dsh-my-go' ? stored : undefined) },
-    startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
-  })
-  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
-  const goWork = tools.get('go_work')
-  await goWork.execute({ agent: 'hermes', prompt: 'first' }, execOf(parent))
-  assert.equal(specs[0].request.agentOptions?.model, 'm1')
-  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
-  // WebUI 清空 fallbacks（空数组按 unset 落库 → row 无该键）→ rebase 回落 base
-  stored = { roles: { hermes: { model: 'm1' } } }
-  dispatch('settings/updated', 'dsh-my-go')
-  await goWork.execute({ agent: 'hermes', prompt: 'second' }, execOf(parent))
-  assert.equal(specs[1].request.agentOptions?.model, 'm1', 'rebase 后既有字段语义不变')
+  const restore = setHostBindings({ roles: { hermes: { model: 'm1', fallbacks: [{ provider: 'fb', model: 'fm1' }] } } })
+  try {
+    const specs = []
+    const { ctx, dispatch, tools } = mockCtxFull({
+      agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+      startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
+    })
+    await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
+    const goWork = tools.get('go_work')
+    await goWork.execute({ agent: 'hermes', prompt: 'first' }, execOf(parent))
+    assert.equal(specs[0].request.agentOptions?.model, 'm1')
+    dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
+    // WebUI 清空 fallbacks（空数组按 unset 落库 → row 无该键）→ rebase 回落 base
+    setHostBindings({ roles: { hermes: { model: 'm1' } } })
+    await goWork.execute({ agent: 'hermes', prompt: 'second' }, execOf(parent))
+    assert.equal(specs[1].request.agentOptions?.model, 'm1', 'rebase 后既有字段语义不变')
+  } finally {
+    restore()
+  }
 })
 
 // ── 可观测性批次（0.2.3-tisitan.8 回归批） ─────────────────────────────────────

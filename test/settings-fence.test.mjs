@@ -10,14 +10,16 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { updateVolatile } from '@deepseek-ai/cosmokit'
 import * as host from '../lib/index.js'
 import { rosterEntries, formatRosterRow, renderRosterBriefing } from '../preset/shared/roles.mjs'
-import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
+import { createPanelRpcTransport, createSettingsStub, resolvedHostConfig } from './helpers/mock-ctx.mjs'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-fence9-'))
 
-const NO_INSTALL = { installPreset: false }
 const bridgeKey = Symbol.for('dsh-my-go.snapshot')
+const bindingsKey = Symbol.for('dsh-my-go.bindings')
+const revisionKey = Symbol.for('dsh-my-go.bindings-revision')
 
 function mockHostCtx({ llm, settings } = {}) {
   const listeners = new Map()
@@ -31,45 +33,10 @@ function mockHostCtx({ llm, settings } = {}) {
       return undefined
     },
     on: (event, fn) => { listeners.set(event, fn) },
-    inject: panel.inject,
+    inject: (_deps, cb) => cb({ settings: ctx.get('settings'), effect: (fn) => fn(), get: (n) => ctx.get(n) }),
+    fiber: { id: 'dsh-my-go-fiber' },
   }
   return { ctx, listeners, rpc: panel.rpc }
-}
-
-// settings 替身：revision 由 describe 供真源（对齐宿主 SettingsDescriptor），
-// mutate 记录收到的全部实参，便于断言 expectedRevision 是否透传。
-// described / stored 故意可分叉：宿主侧「describe 读到 r5、提交时已是 r7」这段
-// TOCTOU 窗只能靠分叉复现（不分叉就永远走本半预检，映射分支永远测不到）。
-function settingsMock({ stored = {}, revision = 0, mutateBehavior } = {}) {
-  const calls = []
-  let described = revision
-  let stored_ = revision
-  return {
-    service: {
-      register: () => ({}),
-      get: () => stored,
-      describe: () => [{ ns: 'other-ns', revision: 999 }, { ns: 'dsh-my-go', revision: described }],
-      // 三参签名：让 hostTakesExpectedRevision() 探测为真（旧宿主是两参）
-      mutate: async (ns, ops, expectedRevision) => {
-        calls.push({ ns, ops, expectedRevision })
-        if (expectedRevision !== undefined && expectedRevision !== stored_) {
-          const error = new Error('namespace moved')
-          error.code = 'SETTINGS_CONFLICT'
-          error.name = 'SettingsConflictError'
-          error.expected = expectedRevision
-          error.actual = stored_
-          throw error
-        }
-        if (mutateBehavior) mutateBehavior()
-        stored_ += 1 // 宿主语义：一次提交推一格
-        described = stored_
-      },
-    },
-    calls,
-    // 只推真实版本、不动 describe = 复现「预检通过但提交时已被他处抢先」
-    moveStoreOnly: (next) => { stored_ = next },
-    getRevision: () => stored_,
-  }
 }
 
 function withBridge(replace) {
@@ -82,77 +49,101 @@ function withBridge(replace) {
   }
 }
 
-// ── 0.5.0-tisitan.3 改判：设置面写通道整体迁宿主 settingsScope ──────────────
-// 本半不再自造 revision（loadSettings / saveSettings / listModels 三个端点退役，
-// 判据搬到 test/settings-ops.test.mjs 与 test/client-card.test.mjs）。此处只留
-// 宿主半还剩的真东西：命名空间以 installSection 挂 composition base、老宿主回落、
-// 活源热更驱动 bindings，以及「本半不再 mint 版本号」这条负向。
+// ── 0.1.7 改判：配置面改声明式（顶层 Config），settings 注册面整体退役 ────────
+// 旧写法（installSection / register(ns, schema, {base}) 双姿态）在 0.1.7 已不存在：
+// 插件顶层导出 `Config`，宿主据此生成官方插件页表单，把行 config 里 schema 认得的
+// 那层挂成 composition base、用户层覆盖其上，并在 volatile 字段变更时就地换引用。
+// 本半因此只剩四件事：关自动页、现读段、经桥把段交给 broker、热更时刷新。
 
-test('installSection 在册：行 config 的 settings 形状部分挂成 composition base', async () => {
-  const calls = []
-  const settings = {
-    installSection: (_owner, ns, schema, entry, hooks) => {
-      calls.push({ ns, entry, hasSchema: typeof schema === 'function', hooks: Object.keys(hooks ?? {}).sort() })
-      hooks.setSource(() => ({ roles: { hermes: { provider: 'from-host', model: 'm' } } }))
-      hooks.onChange(() => {})
-    },
-    get: () => undefined,
-    mutate: async () => {},
+test('Config 在册：四个顶层字段各自 volatile，且无嵌套 volatile（0.1.7 启动硬约束）', () => {
+  const Config = host.Config
+  assert.ok(Config !== undefined, 'lib 半必须顶层导出 Config（0.1.7 声明式配置面）')
+  assert.deepEqual(Object.keys(Config.dict).sort(), ['roles', 'sisyphus', 'usageCurrency', 'usagePrices'])
+  for (const key of Object.keys(Config.dict)) {
+    assert.equal(Config.dict[key].meta.volatile, true, `${key} 必须标 volatile（不标则 WebUI 改完不生效）`)
   }
+  // 嵌套 volatile 会在启动期以 "volatile fields require a fixed object path" 抛穿，
+  // 故 dict 值 / 数组元素 / union 分支内部一律不得再标——这里把该约束走一遍。
+  const walk = (schema, path, blocked = false) => {
+    if (schema.meta?.volatile && blocked) throw new Error(`${path}: nested volatile`)
+    const nowBlocked = blocked || Boolean(schema.meta?.volatile)
+    for (const [key, child] of Object.entries(schema.dict ?? {})) walk(child, `${path}.${key}`, nowBlocked)
+    if (schema.inner) walk(schema.inner, `${path}[]`, nowBlocked)
+  }
+  assert.doesNotThrow(() => walk(Config, 'Config'), 'volatile 只能落在顶层字段上')
+})
+
+test('关自动页：settings 服务经子 fiber 的 inject 取用，entry inject 不含 settings', async () => {
+  const presentations = []
+  const settings = createSettingsStub({ configure: (p, owner) => { presentations.push({ p, owner }); return () => {} } })
   const { ctx } = mockHostCtx({ settings })
-  await host.apply(ctx, { installPreset: false, usagePrices: { 'a/b': { input: 1, output: 2 } } })
-  assert.deepEqual(calls.map((c) => c.ns), ['dsh-my-go'], '命名空间经 installSection 注册一次')
-  assert.deepEqual(calls[0].entry, { usagePrices: { 'a/b': { input: 1, output: 2 } } }, 'base = 行 config 的 settings 形状部分')
-  assert.deepEqual(calls[0].hooks, ['onChange', 'setSource', 'validate'].filter((k) => k === 'onChange' || k === 'setSource'), 'hooks 只交 setSource/onChange（校验归页面）')
-  assert.equal(calls[0].hasSchema, true, 'schema 是可调用的')
+  await host.apply(ctx, resolvedHostConfig({}))
+  assert.deepEqual(presentations.map((c) => c.p), [{ auto: false }], '官方插件页是唯一编辑面，自动页必须关掉')
+  assert.equal(presentations[0].owner, ctx.fiber, 'presentation 归本插件的 fiber')
+  assert.ok(!host.inject.includes('settings'), '配置面改声明式后 settings 不该进 entry inject')
+  assert.deepEqual(host.inject, ['tools'], 'inject 面收敛为 tools')
 })
 
-test('installSection 缺席的老宿主：回落 register(ns, schema, {base})，语义不退化', async () => {
-  const calls = []
-  const settings = {
-    register: (ns, schema, options) => { calls.push({ ns, options }) },
-    get: () => ({ roles: { hermes: { provider: 'p1', model: 'm1' } } }),
-    mutate: async () => {},
+test('读面现读：行 config 的 roles 段直接进 snapshot.roster（base 由宿主挂，本半不再自算）', async () => {
+  const { ctx, rpc } = mockHostCtx({ settings: createSettingsStub() })
+  await host.apply(ctx, resolvedHostConfig({ roles: { hermes: { provider: 'from-row', model: 'm' } } }))
+  const res = await rpc('/dsh-my-go', 'snapshot', {})
+  const hermes = res.value.roster.find((entry) => entry.role === 'hermes')
+  assert.match(hermes.modelText, /from-row/, '行 config 的 roles 段即读面来源')
+})
+
+test('热更：loader/volatile-update 刷新 bindings，并经桥把段与版本号交给 broker', async () => {
+  const config = resolvedHostConfig({ roles: { hermes: { provider: 'p-a', model: 'm-a' } } })
+  const { ctx, listeners, rpc } = mockHostCtx({ settings: createSettingsStub() })
+  await host.apply(ctx, config)
+  const before = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((e) => e.role === 'hermes')
+  assert.match(before.modelText, /p-a/, '初始读面来自行 config')
+  assert.equal(typeof globalThis[bindingsKey], 'function', '跨平面配置桥必须在册（broker 的唯一读面）')
+  assert.equal(globalThis[bindingsKey]().roles.hermes.provider, 'p-a', '桥交出的是已解析的 settings 段')
+  const revisionBefore = globalThis[revisionKey]()
+  // 模拟宿主 volatile 提交：loader 用 cosmokit 的 updateVolatile 就地换掉字段引用，
+  // 值真变了才发事件（与 dsh-app-boot 的 _commitVolatile 同一枚调用）。
+  updateVolatile(config.roles, resolvedHostConfig({ roles: { hermes: { provider: 'p-b', model: 'm-b' } } }).roles)
+  listeners.get('loader/volatile-update')([['roles']])
+  const after = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((e) => e.role === 'hermes')
+  assert.match(after.modelText, /p-b/, '热更一次即重建 bindings')
+  assert.equal(globalThis[bindingsKey]().roles.hermes.provider, 'p-b', '桥现读，桥的另一侧自动跟上')
+  assert.equal(globalThis[revisionKey](), revisionBefore + 1, '段版本号随 volatile 提交自增（broker 缓存失效的信号）')
+})
+
+test('读面降级：段访问器抛错只留痕并回落基线，绝不炸穿宿主回调', async () => {
+  // 访问器对象是冻结的（宿主侧引用），故这里自建一枚可切换的访问器壳：初读正常，
+  // 热更时抛错——复现「settings provider 被摘」那条路径。
+  const base = resolvedHostConfig({ roles: { hermes: { provider: 'p-a', model: 'm-a' } } })
+  let detached = false
+  const config = {
+    ...base,
+    roles: { get: () => { if (detached) throw new Error('provider detached'); return base.roles.get() } },
   }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await host.apply(ctx, { installPreset: false, bindings: undefined })
-  assert.equal(calls.length, 1, '老宿主仍注册命名空间（否则 WebUI 根本没有这一层）')
-  assert.equal(calls[0].ns, 'dsh-my-go')
-  assert.deepEqual(calls[0].options, { base: {} }, '行 config 无 settings 形状键时 base 为空对象')
-  const snap = await rpc('/dsh-my-go', 'snapshot', {})
-  assert.ok(snap.value.roster.some((entry) => entry.role === 'hermes' && entry.modelText?.includes('p1')), '回落路径的读面与 bindings 照常工作')
-})
-
-test('活源热更：installSection 的 onChange 驱动 bindings 重建（provider 被摘也不炸）', async () => {
-  let notify = null
-  let source = () => ({ roles: { hermes: { provider: 'p-a', model: 'm-a' } } })
-  const settings = {
-    installSection: (_owner, _ns, _schema, _entry, hooks) => {
-      hooks.setSource(() => source())
-      notify = hooks.onChange
-    },
-    get: () => undefined,
-    mutate: async () => {},
+  const { ctx, listeners, rpc } = mockHostCtx({ settings: createSettingsStub() })
+  await host.apply(ctx, config)
+  detached = true
+  const errors = []
+  const origError = console.error
+  console.error = (...a) => { errors.push(a.map(String).join(' ')) }
+  try {
+    assert.doesNotThrow(() => listeners.get('loader/volatile-update')([['roles']]), '读面抛错不炸宿主回调')
+  } finally {
+    console.error = origError
   }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await host.apply(ctx, NO_INSTALL)
-  const before = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((entry) => entry.role === 'hermes')
-  assert.match(before.modelText, /p-a/, '初始读面来自活源')
-  source = () => ({ roles: { hermes: { provider: 'p-b', model: 'm-b' } } })
-  notify()
-  const after = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((entry) => entry.role === 'hermes')
-  assert.match(after.modelText, /p-b/, 'onChange 一次即重建 bindings')
-  source = () => { throw new Error('provider detached') }
-  assert.doesNotThrow(() => notify(), '读面抛错只留痕，绝不炸穿宿主回调')
-  const kept = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((entry) => entry.role === 'hermes')
-  assert.match(kept.modelText, /p-b/, '失败时保留上一份 bindings，名册仍可渲染')
+  assert.ok(errors.some((l) => l.includes('settings readout failed')), '失败必须留痕（静默降级是违禁）')
+  const kept = (await rpc('/dsh-my-go', 'snapshot', {})).value.roster.find((e) => e.role === 'hermes')
+  assert.match(kept.modelText, /p-a/, '失败时保留上一份 bindings，名册仍可渲染')
 })
 
-test('本半不再自造版本号：revision 唯一真源是宿主 describe（两处真相必然漂移）', async () => {
+test('负向：settings 注册面与旧命名空间通道零残留（单模式 0.1.7，不留双姿态）', async () => {
   const hostSrc = await import('node:fs').then((fs) => fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf-8'))
-  assert.equal(hostSrc.includes('localRevision'), false, '进程内计数器不得复活')
-  assert.equal(hostSrc.includes('function currentRevision'), false, '自造 revision 出口不得复活')
-  assert.equal(hostSrc.includes('hostTakesExpectedRevision'), false, 'mutate arity 探测随围栏上移一起退役')
+  // 只钉**调用形态**：说明性注释里出现旧名字（对比旧设计）是允许的。
+  for (const retired of ["installSection", "settings.register(", "ctx.on('settings/updated'", "compositionBase(", "ensurePresetInstalled(", "settingsScope", "settings.get("]) {
+    assert.equal(hostSrc.includes(retired), false, `退役面不得复活：${retired}`)
+  }
+  assert.equal(hostSrc.includes('loader/volatile-update'), true, '热更走 0.1.7 事件')
+  assert.equal(hostSrc.includes("Symbol.for('dsh-my-go.bindings')"), true, '跨平面配置桥在册')
 })
 
 // ── A-06 改判：模型目录来自宿主官方面，逐渠道失败显式化的形状锁在客户端 ──────
@@ -237,9 +228,8 @@ const FENCE_BINDINGS = {
 test('snapshot.roster：结构化字段齐备，表头/计数不再由 host 代劳', async () => {
   const restore = withBridge(() => { globalThis[bridgeKey] = () => ({ seq: 1, parents: {} }) })
   try {
-    const settings = settingsMock({ stored: { roles: FENCE_BINDINGS }, revision: 0 })
-    const { ctx, rpc } = mockHostCtx({ settings: settings.service })
-    await host.apply(ctx, NO_INSTALL)
+    const { ctx, rpc } = mockHostCtx({ settings: createSettingsStub() })
+    await host.apply(ctx, resolvedHostConfig({ roles: FENCE_BINDINGS }))
     const res = await rpc('/dsh-my-go', 'snapshot', {})
     const byRole = Object.fromEntries(res.value.roster.map((e) => [e.role, e]))
     assert.equal(byRole.hermes.modelText, 'p1·m1')

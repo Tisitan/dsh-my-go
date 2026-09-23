@@ -12,7 +12,7 @@ import { zstdCompressSync } from 'node:zlib'
 import { projectKey, readArchivedUsage } from '../preset/shared/archive.mjs'
 import { createUsageAggregator } from '../lib/usage-aggregator.mjs'
 import { apply as hostApply } from '../lib/index.js'
-import { removeHomeWithRetry, createPanelRpcTransport } from './helpers/mock-ctx.mjs'
+import { removeHomeWithRetry, createPanelRpcTransport, resolvedHostConfig, createSettingsStub } from './helpers/mock-ctx.mjs'
 
 const ALL_NULL_BUCKETS = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null }
 
@@ -273,13 +273,9 @@ test('getUsage 端点：台账/档案默认路径聚合 + 价格实时 join（R6
       [header(0, 'prov-a', 'm1'), msg(1, { inputTokens: 100, outputTokens: 50 })],
       [header(2, 'prov-b', 'm2'), msg(3, { inputTokens: 1, outputTokens: 1 })],
     ])
-    const settings = {
-      register: () => ({}),
-      get: (ns) => (ns === 'dsh-my-go' ? { usagePrices: { 'prov-a/m1': { input: 2, output: 8 } }, usageCurrency: 'CNY' } : undefined),
-      mutate: async () => {},
-    }
+    const settings = createSettingsStub()
     const { ctx, rpc } = mockHostCtx({ settings })
-    await hostApply(ctx, { installPreset: false })
+    await hostApply(ctx, resolvedHostConfig({ usagePrices: { 'prov-a/m1': { input: 2, output: 8 } }, usageCurrency: 'CNY' }))
 
     const { ok, value } = await rpc('/dsh-my-go', 'getUsage', { parentSessionId: 'p9' })
     assert.equal(ok, true)
@@ -309,8 +305,8 @@ test('getUsage 端点：台账/档案默认路径聚合 + 价格实时 join（R6
     }
 
     // D1a 降级：settings 无 usageCurrency 键（存量配置）→ 响应回落 USD
-    const { ctx: ctxB, rpc: rpcB } = mockHostCtx({ settings: { register: () => ({}), get: (ns) => (ns === 'dsh-my-go' ? { usagePrices: {} } : undefined), mutate: async () => {} } })
-    await hostApply(ctxB, { installPreset: false })
+    const { ctx: ctxB, rpc: rpcB } = mockHostCtx({ settings: createSettingsStub() })
+    await hostApply(ctxB, resolvedHostConfig({ usagePrices: {} }))
     const noCur = await rpcB('/dsh-my-go', 'getUsage', { parentSessionId: 'p9' })
     assert.equal(noCur.value.currency, 'USD', '未知/缺席币种回落 USD，绝不渲染裸数字')
   } finally {

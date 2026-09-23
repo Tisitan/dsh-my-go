@@ -7,10 +7,11 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  Config,
   PRICE_KEY_PATTERN,
   apply as hostApply,
 } from '../lib/index.js'
-import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
+import { createPanelRpcTransport, resolvedHostConfig, createSettingsStub } from './helpers/mock-ctx.mjs'
 import { buildSettingsOps, draftFromSection } from '../src/settings-ops.js'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-usage-prices-home-'))
@@ -26,15 +27,16 @@ const USAGE_PRICES = {
 function mockHostCtx({ settings } = {}) {
   const listeners = new Map()
   const panel = createPanelRpcTransport()
+  const service = settings ?? createSettingsStub()
   const ctx = {
     get: (name) => {
-      if (name === 'settings') return settings
+      if (name === 'settings') return service
       if (name === 'connection') return panel.connection
       if (name === 'webServer') return panel.webServer
       return undefined
     },
     on: (event, fn) => { listeners.set(event, fn) },
-    inject: panel.inject,
+    inject: (_deps, cb) => cb({ settings: service, effect: (fn) => fn(), get: (n) => ctx.get(n) }),
     effect: (fn) => { try { fn() } catch { /* section mocks */ } },
     systemPrompt: { section: () => {} },
     tools: { register: () => {} },
@@ -43,67 +45,64 @@ function mockHostCtx({ settings } = {}) {
   return { ctx, listeners, rpc: panel.rpc }
 }
 
+// 0.1.7：schema 由插件顶层 `Config` 声明（宿主直接读 entry.runtime.Config），
+// 行 config 经 cordis resolveConfig 解析。故「解析一段配置」= resolvedHostConfig(row)，
+// 抛错即宿主挂载期拒收。直接调用 volatile 字段所在的 schema（`Config(row)`）返回的是
+// 默认值而非解析结果——`.volatile()` 换掉了该字段的可调用语义——故不用调用式校验。
 async function captureSchema() {
-  let registered
-  const settings = {
-    register: (ns, schema) => { registered = schema; return {} },
-    get: () => undefined,
-    mutate: async () => {},
-  }
-  const { ctx } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  assert.ok(registered, 'settings.register 应被调用且捕获 schema')
-  return registered
+  assert.ok(Config !== undefined, 'lib 半必须顶层导出 Config（0.1.7 声明式配置面）')
+  return Config
 }
+const resolveSection = (row) => resolvedHostConfig(row)
 
 // ── schema：dict 形状 / 空表默认 / round-trip ─────────────────────────────
 
 test('schema：usagePrices 合法表原样解析，model 含 / 的键与可选桶缺省行均保留', async () => {
-  const schema = await captureSchema()
-  const parsed = schema({ usagePrices: USAGE_PRICES })
-  assert.deepEqual(parsed.usagePrices['newapi/k3-256k'], PRICE_ROW_FULL, '四桶齐全的行原样保留')
-  assert.deepEqual(parsed.usagePrices['openrouter/deepseek/deepseek-chat'], PRICE_ROW_NO_CACHE, 'model 余部含 / 的键原样保留')
-  assert.deepEqual(Object.keys(parsed.usagePrices['openrouter/deepseek/deepseek-chat']), ['input', 'output'], '可选桶缺省 = 输出行键省略（PriceInfo 语义）')
+  await captureSchema()
+  const parsed = resolveSection({ usagePrices: USAGE_PRICES }).usagePrices.get()
+  assert.deepEqual(parsed['newapi/k3-256k'], PRICE_ROW_FULL, '四桶齐全的行原样保留')
+  assert.deepEqual(parsed['openrouter/deepseek/deepseek-chat'], PRICE_ROW_NO_CACHE, 'model 余部含 / 的键原样保留')
+  assert.deepEqual(Object.keys(parsed['openrouter/deepseek/deepseek-chat']), ['input', 'output'], '可选桶缺省 = 输出行键省略（PriceInfo 语义）')
 })
 
 test('schema：usagePrices 缺省解析为空 dict（空表 = 不计成本），既有顶级键行为不变', async () => {
-  const schema = await captureSchema()
+  await captureSchema()
   const legacy = { sisyphus: { provider: 'p', model: 'm', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] }, toolMask: { deny: ['mcp__a__x'] } }
-  const parsed = schema(legacy)
-  assert.deepEqual(parsed.usagePrices, {}, '无 usagePrices 键 = 空表默认，不 undefined 不炸')
-  assert.deepEqual(parsed.sisyphus, legacy.sisyphus, '既有字段不受新字段影响')
+  const parsed = resolveSection(legacy)
+  assert.deepEqual(parsed.usagePrices.get(), {}, '无 usagePrices 键 = 空表默认，不 undefined 不炸')
+  assert.deepEqual(parsed.sisyphus.get(), legacy.sisyphus, '既有字段不受新字段影响')
   assert.deepEqual(parsed.toolMask, legacy.toolMask, '旧 toolMask 键原样透传（schemastery 未知键透传，消费面已拆除不再读它），存量文件解析不炸')
 })
 
 test('schema：键违反「第一个 / 切分、两段非空」被拒；PRICE_KEY_PATTERN 与 re-export 同源', async () => {
-  const schema = await captureSchema()
+  await captureSchema()
   const good = { 'p/m': PRICE_ROW_NO_CACHE, 'a/b/c': PRICE_ROW_NO_CACHE }
-  assert.doesNotThrow(() => schema({ usagePrices: good }), 'provider 不含 /、model 余部可含 /')
+  assert.doesNotThrow(() => resolveSection({ usagePrices: good }), 'provider 不含 /、model 余部可含 /')
   for (const badKey of ['/model', 'provider/', 'noslash', '/']) {
-    assert.throws(() => schema({ usagePrices: { [badKey]: PRICE_ROW_NO_CACHE } }), `非法键 "${badKey}" 必须被拒绝`)
+    assert.throws(() => resolveSection({ usagePrices: { [badKey]: PRICE_ROW_NO_CACHE } }), `非法键 "${badKey}" 必须被拒绝`)
   }
   for (const k of Object.keys(good)) assert.ok(PRICE_KEY_PATTERN.test(k))
   assert.ok(!PRICE_KEY_PATTERN.test('/model') && !PRICE_KEY_PATTERN.test('provider/'))
 })
 
 test('schema：input/output 必填缺失即拒；负数拒；0 价合法（schemastery 层）', async () => {
-  const schema = await captureSchema()
-  assert.throws(() => schema({ usagePrices: { 'p/m': { output: 8 } } }), '缺 input 拒（required）')
-  assert.throws(() => schema({ usagePrices: { 'p/m': { input: 2 } } }), '缺 output 拒（required）')
-  assert.throws(() => schema({ usagePrices: { 'p/m': { input: -1, output: 8 } } }), 'input 负数拒（min 0）')
-  assert.throws(() => schema({ usagePrices: { 'p/m': { input: 2, output: 8, cacheRead: -0.5 } } }), '可选桶负数拒')
-  assert.doesNotThrow(() => schema({ usagePrices: { 'p/m': { input: 0, output: 0 } } }), '0 价合法（免费渠道）')
+  await captureSchema()
+  assert.throws(() => resolveSection({ usagePrices: { 'p/m': { output: 8 } } }), '缺 input 拒（required）')
+  assert.throws(() => resolveSection({ usagePrices: { 'p/m': { input: 2 } } }), '缺 output 拒（required）')
+  assert.throws(() => resolveSection({ usagePrices: { 'p/m': { input: -1, output: 8 } } }), 'input 负数拒（min 0）')
+  assert.throws(() => resolveSection({ usagePrices: { 'p/m': { input: 2, output: 8, cacheRead: -0.5 } } }), '可选桶负数拒')
+  assert.doesNotThrow(() => resolveSection({ usagePrices: { 'p/m': { input: 0, output: 0 } } }), '0 价合法（免费渠道）')
 })
 
 // ── usageCurrency（D1a 全局币种）──────────────────────────────────────────
 
 test('schema：usageCurrency 缺省 USD、CNY 合法、非法枚举拒（D1a 全局单选）', async () => {
-  const schema = await captureSchema()
-  assert.equal(schema({}).usageCurrency, 'USD', '缺省 = USD（存量配置零迁移）')
-  assert.equal(schema({ usageCurrency: 'CNY' }).usageCurrency, 'CNY')
-  assert.equal(schema({ usageCurrency: 'USD' }).usageCurrency, 'USD')
-  assert.throws(() => schema({ usageCurrency: 'EUR' }), '枚举外拒')
-  assert.throws(() => schema({ usageCurrency: 42 }), '非串拒')
+  await captureSchema()
+  assert.equal(resolveSection({}).usageCurrency.get(), 'USD', '缺省 = USD（存量配置零迁移）')
+  assert.equal(resolveSection({ usageCurrency: 'CNY' }).usageCurrency.get(), 'CNY')
+  assert.equal(resolveSection({ usageCurrency: 'USD' }).usageCurrency.get(), 'USD')
+  assert.throws(() => resolveSection({ usageCurrency: 'EUR' }), '枚举外拒')
+  assert.throws(() => resolveSection({ usageCurrency: 42 }), '非串拒')
 })
 
 // ── round-trip：读面投影 / 写面不触碰存量 ─────────────────────────────────
@@ -199,17 +198,13 @@ test('写面（usageCurrency）：合法值 set 顶级键、无键零触碰、�
   assert.equal(ops3.filter((op) => op.path?.[0] === 'usageCurrency').length, 0, '枚举外丢弃（不毒杀整批）')
 })
 
-// ── 热更通路：字段随 settings/updated 到达消费端，不炸不丢 ────────────────
+// ── 热更通路：字段随 loader/volatile-update 到达消费端，不炸不丢 ──────────
 
-test('热更通路：lib 侧 settings/updated 消费带 usagePrices 的存储不炸，迁移不误伤单价表', async () => {
+test('热更通路：lib 侧 volatile 热更消费带 usagePrices 的段不炸，迁移不误伤单价表', async () => {
   let latest
-  const settings = {
-    register: () => ({}),
-    get: (ns) => (ns === 'dsh-my-go' ? structuredClone(STORED_WITH_PRICES) : undefined),
-    mutate: async (_ns, ops) => { latest = ops },
-  }
+  const settings = createSettingsStub({ mutate: async (_ns, ops) => { latest = ops } })
   const { ctx, listeners } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  assert.doesNotThrow(() => listeners.get('settings/updated')('dsh-my-go'))
+  await hostApply(ctx, resolvedHostConfig(structuredClone(STORED_WITH_PRICES)))
+  assert.doesNotThrow(() => listeners.get('loader/volatile-update')([['usagePrices']]))
   assert.equal(latest, undefined, 'usagePrices 不是旧顶级工种键，迁移零 ops（不搬不删）')
 })

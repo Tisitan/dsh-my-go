@@ -4,9 +4,8 @@
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx.
  * The former closure dependencies are now explicit injection parameters:
  * `bindings` (mutable per-half state), `promptCache`/`loadPrompt` (prompt
- * loading chain — broker uses its own preset root, lib uses the
- * .agent-presets install root; that Δ is the essential one and stays
- * per-half), and `knownTools` (live tool catalog snapshot).
+ * loading chain — each half owns its own cache instance), and `knownTools`
+ * (live tool catalog snapshot).
  */
 
 import { AGENT_TYPES } from './constants.mjs'

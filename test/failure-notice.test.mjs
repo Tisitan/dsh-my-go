@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as broker from '../preset/tools/broker.mjs'
 import { renderRosterBriefing } from '../preset/shared/roles.mjs'
-import { createMockCtx, withRealSignalContract, waitFor } from './helpers/mock-ctx.mjs'
+import { createMockCtx, setHostBindings, clearHostBindings, withRealSignalContract, waitFor } from './helpers/mock-ctx.mjs'
 
 // 测试隔离：台账持久化在 apply 时从 DSH_HOME 读回——指向独立临时目录。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-fnotice-home-'))
@@ -147,26 +147,29 @@ test('名册简报字节稳定：同 settings 两次渲染逐字节全等（渲�
   assert.equal(a, b, '键插入序不影响渲染结果')
 })
 
-test('名册简报 bindings 取法：沿用 settings/updated 整表重建，函数态天然免刷新管道', async () => {
-  let stored = { roles: { hermes: { provider: 'p0', model: 'm0' } } }
-  const settings = {
-    register: () => ({}),
-    get: () => stored,
+test('名册简报 bindings 取法：宿主配置桥逐调用现读，函数态天然免刷新管道', async () => {
+  // 0.1.7：bindings 不再靠 settings/updated 事件整表重建，而是每次消费现读宿主半的
+  // 配置桥（getBindings → currentBindings）。函数态 text 每次渲染现调，故配置一变
+  // 即见新值——「无需刷新管道」这条性质比旧写法更强。
+  const restore = setHostBindings({ roles: { hermes: { provider: 'p0', model: 'm0' } } })
+  try {
+    const { ctx, sections } = mockCtxFull()
+    await broker.apply(ctx, { reportExternalization: false })
+    const def = rosterSectionOf(sections)
+    const root = { agent: { id: 'root-1', session: { header: {} } } }
+    assert.ok(def.text(root).includes('- hermes → p0·m0'), '初载桥段合并生效')
+    // WebUI 改配置 → 宿主半解析出的段变 → 下一次渲染直读新值
+    setHostBindings({ roles: { hermes: { provider: 'p9', model: 'm9', fallbacks: [{ provider: 'p8', model: 'm8' }] } } })
+    const next = def.text(root)
+    assert.ok(next.includes('- hermes → p9·m9 → 备选链 1 条（p8·m8）'), '桥段更新后无需任何刷新管道即反映新绑定')
+    // 桥缺席（宿主半未装 / 旧宿主）＝ 沿用默认绑定，绝不裸炸
+    clearHostBindings()
+    const degraded = def.text(root)
+    assert.ok(!degraded.includes('p9·m9'), '桥缺席时不得残留旧桥值')
+    assert.ok(degraded.includes('- hermes'), '桥缺席时回落默认名册（角色行仍在）')
+  } finally {
+    restore()
   }
-  const { ctx, listeners, dispatch, sections } = mockCtxFull({ settings })
-  await broker.apply(ctx, { reportExternalization: false })
-  const def = rosterSectionOf(sections)
-  const root = { agent: { id: 'root-1', session: { header: {} } } }
-  assert.ok(def.text(root).includes('- hermes → p0·m0'), '初载 settings 合并生效')
-  // WebUI 改配置 → settings/updated → bindings 整表重建 → 函数态现调直读新值
-  stored = { roles: { hermes: { provider: 'p9', model: 'm9', fallbacks: [{ provider: 'p8', model: 'm8' }] } } }
-  dispatch('settings/updated', 'dsh-my-go')
-  const next = def.text(root)
-  assert.ok(next.includes('- hermes → p9·m9 → 备选链 1 条（p8·m8）'), 'settings 更新后无需任何刷新管道即反映新绑定')
-  // 非本命名空间的更新事件被忽略
-  stored = { roles: { hermes: { provider: 'pX', model: 'mX' } } }
-  dispatch('settings/updated', 'other-plugin')
-  assert.ok(!def.text(root).includes('pX·mX'), '异命名空间 settings/updated 不触发重绑')
 })
 
 // ── ③ 失败同步预告 + 终局显式通知 ────────────────────────────────────────

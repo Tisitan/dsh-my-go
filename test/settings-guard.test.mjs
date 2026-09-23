@@ -1,4 +1,5 @@
-// 配置卡守卫纯函数（0.5.0-tisitan.3 起对着 settingsScope 快照工作）：
+// 配置卡守卫纯函数（0.5.0-tisitan.3 起对着宿主配置表单快照工作，0.1.7 起该快照由
+// configForms.get(entryId) 交出）：
 // src/settings-guard.js 的三件出口——读面四态归一（resolveCardView）、写面读回
 // 回执（describeSaveOutcome）、beforeunload 守卫的注册与解除。
 // 旧两件吃的是私有 RPC 信封（interpretLoadResult / interpretSaveResult），端点

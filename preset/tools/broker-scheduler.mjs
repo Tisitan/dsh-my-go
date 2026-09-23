@@ -34,7 +34,7 @@
  *
  * 依赖注入面（对齐既有九簇范式）：零 ctx（agents/tools 注册表、subagents 门面
  * 经回调逐调用现取，与原读 ctx 的时点一致）；bindings 是 broker 侧闭包可变值
- * （settings/updated 整表重建）经 getBindings 现读；childRegistry / bump /
+ * （宿主配置桥逐调用现读）经 getBindings 转出；childRegistry / bump /
  * metrics / notifyParent / modelExists / promptCache / loadPrompt 传活句柄或
  * 工厂产物；claimBufferedEnd / processEnd / backfillHopOnArrival /
  * handleQueueWorkDropped 是兄弟簇件的包壳闭包（工厂产物不可 import）。
@@ -207,7 +207,7 @@ export function createSchedulerOps({
 
   // ── 名册路由辅助（0.2.3-tisitan.14 数据层 roles dict 的消费面） ────────────────
   // 核心逻辑在 shared/roles.mjs，这里是注入每半可变状态的薄壳。bindings 经
-  // getBindings 现读（settings/updated 整表重建后必须看到新值，与原闭包直读
+  // getBindings 现读（宿主配置桥段变化后必须看到新值，与原闭包直读
   // `let bindings` 的时点逐调用一致）。
   const rosterKeys = () => sharedRosterKeys(getBindings())
 
@@ -243,7 +243,7 @@ export function createSchedulerOps({
       rolePersona(agentType),
       // toolFilter 由调用方按**进入本路径时**的绑定快照传入（直派取 entry-time
       // 的 `binding.toolFilter`，重派取当时的 `bindings[type]?.toolFilter`）——
-      // 此处不重读 bindings，否则一次 settings/updated 热更夹在两次 await 之间
+      // 此处不重读 bindings，否则一次配置段热更夹在两次 await 之间
       // 就会改变本次派发已经定下的工具面。
       Promise.resolve(resolveRoleToolFilter(agentType, toolFilter)),
     ])

@@ -4,7 +4,7 @@
  * The small pure layer behind the page's read/write defenses, kept out of
  * settings-core.js so `node --test` covers it without a DOM:
  *
- *  - resolveCardView: a settingsScope snapshot → which face the page shows, with
+ *  - resolveCardView: a configForms snapshot → which face the page shows, with
  *    the copy that tells the user *why* an editor is missing;
  *  - describeSaveOutcome: the post-write read-back verdict → receipt copy;
  *  - attachBeforeUnloadGuard: the browser's own "unsaved edits" interception.
@@ -21,7 +21,7 @@ const MEMORY_HINT = '当前页面按进程内内存档打开（非本机回环�
 
 /**
  * Decide the read face from a scope snapshot.
- * @param snapshot - `{ status, writable, mode }` as the settingsScope mirror
+ * @param snapshot - `{ status, writable, mode }` as the configForms form
  *   answers it (undefined until the first subscription tick).
  * @returns {{kind: 'loading'|'ready'|'unavailable', hint: string, retryable: boolean}}
  */

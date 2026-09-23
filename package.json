@@ -1,6 +1,6 @@
 {
   "name": "dsh-my-go",
-  "version": "0.5.0-tisitan.4",
+  "version": "0.5.0-tisitan.5",
   "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 8 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle/Apelles) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
   "author": "Tisitan",
   "license": "MIT",
@@ -33,6 +33,7 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./dist/client.js",
+    "./preset/tools/broker.mjs": "./preset/tools/broker.mjs",
     "./package.json": "./package.json"
   },
   "files": [
@@ -59,7 +60,10 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": [
+        "./cordis.patch.yml",
+        "./preset/agent.patch.yml"
+      ]
     },
     "client": {
       "platform": "web",
@@ -73,23 +77,23 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": ">=0.1.2-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-subagent": ">=0.1.2-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-agent": ">=0.1.2-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-llm": ">=0.1.2-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-settings": ">=0.1.2-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-client-locale": ">=0.1.2-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.2-alpha.2 <0.1.7",
+    "@deepseek-ai/dsh-tools": ">=0.1.7-alpha.1 <0.2.0",
+    "@deepseek-ai/dsh-subagent": ">=0.1.7-alpha.1 <0.2.0",
+    "@deepseek-ai/dsh-agent": ">=0.1.7-alpha.1 <0.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.7-alpha.1 <0.2.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-alpha.1 <0.2.0",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.7-alpha.1 <0.2.0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.7-alpha.1 <0.2.0",
     "react": "^18.2.0"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/schemastery": "^3.18.3"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "^0.1.2-alpha.4",
-    "@deepseek-ai/dsh-llm": "^0.1.2-alpha.4",
-    "@deepseek-ai/dsh-subagent": "^0.1.2-alpha.4",
+    "@deepseek-ai/cordis": "^4.0.3",
+    "@deepseek-ai/dsh-agent": "^0.1.7-alpha.1",
+    "@deepseek-ai/dsh-llm": "^0.1.7-alpha.1",
+    "@deepseek-ai/dsh-subagent": "^0.1.7-alpha.1",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
     "js-yaml": "^4.1.0",

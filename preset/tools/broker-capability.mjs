@@ -11,17 +11,17 @@
  *
  * 放 preset/tools/ 扁平文件而不进 shared/（对齐 metrics.mjs 先例）：零 ctx——
  * llm 服务经 getLlm 回调注入，modelCache 注入的是 childRegistry.modelCache
- * 这同一枚 Map 句柄（本体仍住 child-registry，随 settings/updated 热更整体
+ * 这同一枚 Map 句柄（本体仍住 child-registry，随配置段版本推进整体
  * 清空；此处绝不复制）。
  *
  * 形态：createCapabilityOps({ getLlm, modelCache }) → { supportedEfforts,
  * modelExists, invalidateCaches }。
  *   - effortCache 本体与 modelCacheEpoch 归本模块持有；两者都必须在 broker
  *     apply 的 settings 块之前就位（N9/N10 时序说明）——本 apply 中段有 await
- *     （loadLedger），settings/updated 若恰好在窗口里到达，处理器按尾部落在
+ *     （loadLedger），段版本推进若恰好在窗口里到达，处理器按尾部落在
  *     的 const 取值会撞 TDZ；缓存本体与失效计数都必须在处理器定义之前就位，
  *     失效入口即 invalidateCaches。
- *   - invalidateCaches：settings/updated 的同点失效三连（modelCache.clear +
+ *   - invalidateCaches：段版本推进时的同点失效三连（modelCache.clear +
  *     epoch 自增 + effortCache.clear），顺序与语义与拆分前逐行一致。
  */
 
@@ -31,7 +31,7 @@ export function createCapabilityOps({ getLlm, modelCache }) {
   // 保持逐调用现取（原函数体内 ctx.get('llm')）——两处读取时点与拆分前一致。
   const llm = getLlm()
   const effortCache = new Map() // `${provider}/${model}` -> Set<effortId>（只存非 null 成功结果）
-  let modelCacheEpoch = 0 // settings/updated 时 +1：在飞的 listModels 响应据此作废
+  let modelCacheEpoch = 0 // 段版本推进时 +1：在飞的 listModels 响应据此作废
   async function supportedEfforts(provider, model) {
     const key = `${provider}/${model}`
     const cached = effortCache.get(key)
@@ -60,7 +60,7 @@ export function createCapabilityOps({ getLlm, modelCache }) {
   }
 
   // ── model validation ─────────────────────────────────────────────────
-  // 缓存本体在 childRegistry.modelCache（随 settings/updated 热更整体清空）。
+  // 缓存本体在 childRegistry.modelCache（随配置段版本推进整体清空）。
   async function modelExists(provider, model) {
     const key = String(provider)
     let set = modelCache.get(key)
@@ -79,7 +79,7 @@ export function createCapabilityOps({ getLlm, modelCache }) {
       // 区分两种「清单为空」（0.3.0-tisitan.7 N9）：列举**成功**但里面没有绑定的模型
       // 是真结论，缓存它（含空集）——否则每次模型请求都对同一个坏 provider 重
       // 拉一遍清单；抛错/服务缺席是「不知道」，不缓存，留待下次重试。
-      // epoch 比对挡在飞响应：本函数 await 期间若发生 settings/updated，那次
+      // epoch 比对挡在飞响应：本函数 await 期间若发生段版本推进，那次
       // 陈旧清单不得回写（回写等于把刚清掉的缓存原样塞回去，热更失效无声撤销）。
       // 无论回写与否，本次请求仍按已读到的结果作答——语义与旧实现一致。
       if (listed && modelCacheEpoch === epoch) modelCache.set(key, set)
@@ -87,7 +87,7 @@ export function createCapabilityOps({ getLlm, modelCache }) {
     return set.has(String(model))
   }
 
-  // settings/updated 同点失效三连（注释细节见 broker.mjs settings 块的接线点）：
+  // 段版本推进的同点失效三连（注释细节见 broker.mjs settings 块的接线点）：
   // modelCache 根治（0.3.0-tisitan.4）→ provider 模型清单缓存随绑定热更失效；
   // epoch 同点自增（0.3.0-tisitan.7 N9）→ clear 只清已落账的条目，清不掉此刻
   // 正在飞的 listModels，不回查就会让那次陈旧响应把旧清单又塞回来；effortCache

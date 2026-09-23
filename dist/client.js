@@ -2804,7 +2804,7 @@ function emptyDraft() {
 
 // src/client.js
 var name = "dsh-my-go";
-var inject = ["slots", "settingsScope", "connection", "remote", "remote.session"];
+var inject = ["slots", "configForms", "connection", "remote", "remote.session"];
 function createSelfManagedTimer() {
   let warned = false;
   return {
@@ -2844,11 +2844,11 @@ function apply(ctx) {
   const timer = client.get("timer");
   const panelTimer = timer && typeof timer.interval === "function" ? timer : createSelfManagedTimer();
   const stopPanel = createOrchestrationPanel({ slots, connection, sessions, timer: panelTimer });
-  const binder = client.get("settingsScope");
+  const binder = client.get("configForms");
   const remote = client.get("remote");
   if (binder && slots && typeof slots.inject === "function") {
-    const scope = binder.bind({ namespace: SETTINGS_NAMESPACE });
-    const face = binder.describe ? binder.describe() : null;
+    const scope = binder.get(SETTINGS_NAMESPACE);
+    const face = typeof binder.describe === "function" ? binder.describe() : null;
     const catalog = createCatalogStore(remote);
     client.effect(() => {
       let off = null;

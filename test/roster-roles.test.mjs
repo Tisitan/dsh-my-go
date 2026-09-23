@@ -7,12 +7,13 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  Config,
   ROLE_KEY_PATTERN,
   migrateLegacyRolesOps,
   mergeRoleBindings,
   apply as hostApply,
 } from '../lib/index.js'
-import { createPanelRpcTransport } from './helpers/mock-ctx.mjs'
+import { createPanelRpcTransport, resolvedHostConfig, createSettingsStub } from './helpers/mock-ctx.mjs'
 import { buildSettingsOps, draftFromSection } from '../src/settings-ops.js'
 
 // 写面判据用的层形状：value/user 同源、base 空——与被测编译器单测同口径。
@@ -38,15 +39,16 @@ const WORKER_KEYS = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', '
 function mockHostCtx({ settings } = {}) {
   const listeners = new Map()
   const panel = createPanelRpcTransport()
+  const service = settings ?? createSettingsStub()
   const ctx = {
     get: (name) => {
-      if (name === 'settings') return settings
+      if (name === 'settings') return service
       if (name === 'connection') return panel.connection
       if (name === 'webServer') return panel.webServer
       return undefined
     },
     on: (event, fn) => { listeners.set(event, fn) },
-    inject: panel.inject,
+    inject: (_deps, cb) => cb({ settings: service, effect: (fn) => fn(), get: (n) => ctx.get(n) }),
     effect: (fn) => { try { fn() } catch { /* section mocks */ } },
     systemPrompt: { section: () => {} },
     tools: { register: () => {} },
@@ -63,18 +65,17 @@ const MIGRATED_STORED = {
 
 // ── schema：roles dict + 键名 pattern ────────────────────────────────────
 
+// 0.1.7：schema 不再经 settings.register 上交，而是插件顶层导出的 `Config`——
+// 宿主挂载期直接读它（entry.runtime.Config），并用 cordis resolveConfig 解析行
+// config。故「校验一段配置」的忠实姿势是走同一条真路径：resolvedHostConfig(row)
+// 抛错 = 宿主挂载期拒收。**注意**：直接调用 volatile 字段所在的 schema
+// （`Config(row)`）返回的是默认值而非解析结果——`.volatile()` 会换掉该字段的可调用
+// 语义（loader 经 updateVolatile 换引用），故测试不再用调用式校验。
 async function captureSchema() {
-  let registered
-  const settings = {
-    register: (ns, schema) => { registered = schema; return {} },
-    get: () => undefined,
-    mutate: async () => {},
-  }
-  const { ctx } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
-  assert.ok(registered, 'settings.register 应被调用且捕获 schema')
-  return registered
+  assert.ok(Config !== undefined, 'lib 半必须顶层导出 Config（0.1.7 声明式配置面）')
+  return Config
 }
+const resolveSection = (row) => resolvedHostConfig(row)
 
 test('schema：roles dict 接受 persona/toolFilter 且保持形状', async () => {
   const schema = await captureSchema()
@@ -84,28 +85,29 @@ test('schema：roles dict 接受 persona/toolFilter 且保持形状', async () =
     persona: '你是自定义角色',
     toolFilter: { allow: ['read', 'glob'], deny: [] },
   }
-  const parsed = schema({ roles: { 'custom-x': row } })
-  assert.deepEqual(parsed.roles['custom-x'].persona, '你是自定义角色', 'persona 原样保留')
-  assert.deepEqual(parsed.roles['custom-x'].toolFilter, { allow: ['read', 'glob'], deny: [] }, 'toolFilter 原样保留')
-  assert.deepEqual(parsed.roles['custom-x'].fallbacks, [], 'agent 基础字段与 agentSchema 同构')
+  await captureSchema()
+  const parsed = resolveSection({ roles: { 'custom-x': row } }).roles.get()
+  assert.deepEqual(parsed['custom-x'].persona, '你是自定义角色', 'persona 原样保留')
+  assert.deepEqual(parsed['custom-x'].toolFilter, { allow: ['read', 'glob'], deny: [] }, 'toolFilter 原样保留')
+  assert.deepEqual(parsed['custom-x'].fallbacks, [], 'agent 基础字段与 agentSchema 同构')
 })
 
 test('schema：角色键名违反 ^[a-z][a-z-]*$ 在 schema 层拒绝', async () => {
-  const schema = await captureSchema()
+  await captureSchema()
   for (const badKey of ['Hermes', 'r2d2', 'a_b', '中文角色', '-lead']) {
-    assert.throws(() => schema({ roles: { [badKey]: { provider: 'p', model: 'm' } } }), `非法键 "${badKey}" 必须被拒绝`)
+    assert.throws(() => resolveSection({ roles: { [badKey]: { provider: 'p', model: 'm' } } }), `非法键 "${badKey}" 必须被拒绝`)
   }
-  assert.doesNotThrow(() => schema({ roles: { 'custom-x': {}, vision: {} } }), '小写+连字符合法')
+  assert.doesNotThrow(() => resolveSection({ roles: { 'custom-x': {}, vision: {} } }), '小写+连字符合法')
   assert.ok(ROLE_KEY_PATTERN.test('custom-x') && ROLE_KEY_PATTERN.test('vision'))
   assert.ok(!ROLE_KEY_PATTERN.test('R2D2') && !ROLE_KEY_PATTERN.test('a_b'))
 })
 
 test('schema 回归：sisyphus 顶级键不变；旧 toolMask 键透传不炸（消费面已拆）', async () => {
-  const schema = await captureSchema()
-  const parsed = schema({ sisyphus: LEGACY_STORED.sisyphus, toolMask: { deny: ['mcp__a__x'] } })
-  assert.deepEqual(parsed.sisyphus, LEGACY_STORED.sisyphus, 'sisyphus 恒为顶级键')
+  await captureSchema()
+  const parsed = resolveSection({ sisyphus: LEGACY_STORED.sisyphus, toolMask: { deny: ['mcp__a__x'] } })
+  assert.deepEqual(parsed.sisyphus.get(), LEGACY_STORED.sisyphus, 'sisyphus 恒为顶级键')
   assert.deepEqual(parsed.toolMask, { deny: ['mcp__a__x'] }, '旧 toolMask 键原样透传（schemastery 未知键透传，消费面已拆除不再读它）')
-  assert.ok(typeof parsed.roles === 'object', 'roles 缺省为空 dict')
+  assert.ok(typeof parsed.roles.get() === 'object', 'roles 缺省为空 dict')
 })
 
 // ── 迁移：旧 9 键 → roles dict，无损、幂等 ───────────────────────────────
@@ -203,33 +205,28 @@ test('merge：roles.sisyphus 死数据不消费——sisyphus 恒为顶级键（
 // ── apply 行为级：初载迁移真实发生 + 热更幂等 + bindings 消费 roles ────────
 
 test('apply：旧 9 键存储触发一次迁移 mutate，热更后不再重复迁移', async () => {
-  let current = LEGACY_STORED
   const mutates = []
-  const settings = {
-    register: () => ({}),
-    get: () => current,
-    mutate: async (ns, ops) => { mutates.push({ ns, ops }) },
-  }
+  const settings = createSettingsStub({ mutate: async (ns, ops) => { mutates.push({ ns, ops }) } })
   const { ctx, listeners } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
+  await hostApply(ctx, resolvedHostConfig(LEGACY_STORED))
   assert.equal(mutates.length, 1, '初载恰好迁移一次')
   assert.equal(mutates[0].ns, 'dsh-my-go')
   assert.equal(mutates[0].ops.filter((op) => op.op === 'unset').length, WORKER_KEYS.length, '七个旧键 unset')
-  // 模拟落盘后热更：存储已变（settings/updated 再入），不得二次迁移
-  current = MIGRATED_STORED
-  listeners.get('settings/updated')('dsh-my-go')
+  // 模拟迁移落盘后的重入：行 config 已无旧顶级键（迁移 ops 已把它们 unset 掉）。
+  const after = mockHostCtx({ settings })
+  await hostApply(after.ctx, resolvedHostConfig(MIGRATED_STORED))
+  assert.equal(mutates.length, 1, '迁移幂等：迁移后形状重入不产生第二次 mutate')
+  // 本插件自己的 volatile 字段热更（宿主发 loader/volatile-update）同样不得重复迁移
+  after.listeners.get('loader/volatile-update')([['roles']])
   await new Promise((r) => setTimeout(r, 10))
-  assert.equal(mutates.length, 1, '迁移幂等：热更重入不产生第二次 mutate')
+  assert.equal(mutates.length, 1, '迁移幂等：volatile 热更重入不产生第二次 mutate')
+  assert.ok(listeners.has('loader/volatile-update'), '热更监听挂在外层 ctx（settings 缺席也照挂）')
 })
 
 test('apply：迁移失败保留原配置且 apply 不中断（mutate 抛错）', async () => {
-  const settings = {
-    register: () => ({}),
-    get: () => LEGACY_STORED,
-    mutate: async () => { throw new Error('settings-rejected') },
-  }
+  const settings = createSettingsStub({ mutate: async () => { throw new Error('settings-rejected') } })
   const { ctx } = mockHostCtx({ settings })
-  await assert.doesNotReject(() => hostApply(ctx, {}), '迁移失败只 warn，不炸插件装载')
+  await assert.doesNotReject(() => hostApply(ctx, resolvedHostConfig(LEGACY_STORED)), '迁移失败只 warn，不炸插件装载')
 })
 
 // ── 读面投影 + 写面泛化（0.5.0-tisitan.3 起随 ops 编译层搬到浏览器侧）──────
@@ -311,13 +308,8 @@ test('写面：只带 persona 的部分行不产生 5 字段 ops（已配绑定�
 })
 
 test('snapshot 响应恒附 rosterLines：桥未就绪（无编排会话）也产出', async () => {
-  const settings = {
-    register: () => ({}),
-    get: () => undefined,
-    mutate: async () => {},
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
-  await hostApply(ctx, {})
+  const { ctx, rpc } = mockHostCtx({ settings: createSettingsStub() })
+  await hostApply(ctx, resolvedHostConfig({}))
   const res = await rpc('/dsh-my-go', 'snapshot', {})
   assert.equal(res.ok, true)
   assert.deepEqual(res.value.parents, {}, '无编排会话时回落空编排状态')

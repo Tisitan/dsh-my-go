@@ -22,7 +22,7 @@ import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import * as broker from '../preset/tools/broker.mjs'
 import { apply as hostApply } from '../lib/index.js'
-import { createMockCtx, createPanelRpcTransport } from './helpers/mock-ctx.mjs'
+import { createMockCtx, createPanelRpcTransport, setHostBindings, resolvedHostConfig } from './helpers/mock-ctx.mjs'
 import { sessionEvents, deliverToAdjacent, canQueueAdjacent, reportToParent, planAdjacentDelivery } from '../preset/shared/adjacent.mjs'
 
 // 上游 internal 的排队投递符号（queueHostSubagentPrompt 的运行时直取形态）。
@@ -575,17 +575,18 @@ test('broker/alpha.4：steer 被门面拒收 → warn 留痕并回落 queued 通
   }
 })
 
-// ── ③ modelCache 根治：settings/updated 后模型清单缓存失效 ─────────────────
+// ── ③ modelCache 根治：宿主配置段变化后模型清单缓存失效 ─────────────────────
+// 0.1.7：broker 不再订阅 settings/updated（该事件通道退役），改由现读时的段签名比对
+// 触发同一枚三连失效——用例只需改「宿主半桥返回的段」，语义与旧写法逐条对齐。
 
-test('modelCache：settings/updated 热更后重新拉取 provider 模型清单，无需重启即感知', async () => {
-  let stored = { sisyphus: { provider: 'p1', model: 'm-old' } }
+test('modelCache：宿主段热更后重新拉取 provider 模型清单，无需重启即感知', async (t) => {
   let catalog = ['m-old']
   let listCalls = 0
-  const settings = { get: (ns) => (ns === 'dsh-my-go' ? stored : undefined) }
+  t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'm-old' } }))
   const llm = {
     listModels: async (pid) => { listCalls += 1; assert.equal(pid, 'p1'); return catalog.map((id) => ({ id })) },
   }
-  const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
+  const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   // C-09：listeners 的值是 fn[] 多播数组——重复注册不再互相覆盖，而是当场数得出来
   const onRequestHandlers = listeners.get('agent/request') ?? []
@@ -599,14 +600,13 @@ test('modelCache：settings/updated 热更后重新拉取 provider 模型清单�
   assert.equal(first.model, 'm-old')
   assert.equal(listCalls, 1)
 
-  // provider 侧换成 m-new（模拟使用者刚在别处配好模型），settings 同步改绑定
+  // provider 侧换成 m-new（模拟使用者刚在别处配好模型），宿主段同步改绑定
   catalog = ['m-new']
-  stored = { sisyphus: { provider: 'p1', model: 'm-new' } }
-  dispatch('settings/updated', 'dsh-my-go')
+  setHostBindings({ sisyphus: { provider: 'p1', model: 'm-new' } })
 
-  // 第二发：缓存已随热更失效 → 重新拉清单，m-new 校验通过即绑定
+  // 第二发：缓存已随段版本推进失效 → 重新拉清单，m-new 校验通过即绑定
   const second = await onRequest({ agent }, next)
-  assert.equal(listCalls, 2, 'settings/updated 必须清掉 modelCache（不清则沿用旧清单、误判 m-new 不存在）')
+  assert.equal(listCalls, 2, '段版本推进必须清掉 modelCache（不清则沿用旧清单、误判 m-new 不存在）')
   assert.equal(second.model, 'm-new')
 
   // 第三发：缓存重建后同清单内复用，不每请求重拉
@@ -626,12 +626,11 @@ const seedNext = async () => ({ provider: 'p1', model: 'seed-model' })
 // waterfall 链的返回值 = 最外层 handler 的结果（替身 dispatch 已按真宿主串法实现）
 const askWaterfall = (dispatch) => dispatch('agent/request', sisyphusPayload, seedNext)
 
-test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoch 竞态，N9）', async () => {
-  let stored = { sisyphus: { provider: 'p1', model: 'm-old' } }
+test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoch 竞态，N9）', async (t) => {
   let catalog = ['m-old']
   let listCalls = 0
   let release
-  const settings = { get: (ns) => (ns === 'dsh-my-go' ? stored : undefined) }
+  t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'm-old' } }))
   const llm = {
     listModels: async () => {
       listCalls += 1
@@ -640,14 +639,13 @@ test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoc
       return snapshot
     },
   }
-  const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
+  const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   const inflight = askWaterfall(dispatch)
   await settle()
-  // 窗口内热更：provider 侧换模型 + settings 改绑定 → 缓存整体作废
+  // 窗口内热更：provider 侧换模型 + 宿主段改绑定
   catalog = ['m-new']
-  stored = { sisyphus: { provider: 'p1', model: 'm-new' } }
-  dispatch('settings/updated', 'dsh-my-go')
+  setHostBindings({ sisyphus: { provider: 'p1', model: 'm-new' } })
   release()
   const first = await inflight
   assert.equal(first.model, 'm-old', '本次请求按已读到的清单作答（既有语义不变）')
@@ -658,15 +656,15 @@ test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoc
   assert.equal(second.model, 'm-new')
 })
 
-test('modelCache：列举成功但绑定的模型不在（含空清单）是结论 → 缓存之，不逐请求重拉（N9）', async () => {
+test('modelCache：列举成功但绑定的模型不在（含空清单）是结论 → 缓存之，不逐请求重拉（N9）', async (t) => {
   const warnings = []
   const origWarn = console.warn
   console.warn = (...a) => { warnings.push(a.map(String).join(' ')) }
+  t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'ghost-m' } }))
   try {
     let listCalls = 0
-    const settings = { get: (ns) => (ns === 'dsh-my-go' ? { sisyphus: { provider: 'p1', model: 'ghost-m' } } : undefined) }
     const llm = { listModels: async () => { listCalls += 1; return [] } }
-    const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
+    const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
     await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
     const first = await askWaterfall(dispatch)
     assert.equal(first.model, 'seed-model', '校验不过 → 保留种子模型（行为不变）')
@@ -679,14 +677,14 @@ test('modelCache：列举成功但绑定的模型不在（含空清单）是结�
   }
 })
 
-test('modelCache：listModels 抛错 / llm 服务缺席属「不知道」→ 不缓存，逐请求重试（N9）', async () => {
+test('modelCache：listModels 抛错 / llm 服务缺席属「不知道」→ 不缓存，逐请求重试（N9）', async (t) => {
   const origWarn = console.warn
   console.warn = () => {}
+  t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'm1' } }))
   try {
     let listCalls = 0
-    const settings = { get: (ns) => (ns === 'dsh-my-go' ? { sisyphus: { provider: 'p1', model: 'm1' } } : undefined) }
     const llm = { listModels: async () => { listCalls += 1; throw new Error('provider offline') } }
-    const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
+    const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
     await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
     assert.equal((await askWaterfall(dispatch)).model, 'seed-model')
     assert.equal((await askWaterfall(dispatch)).model, 'seed-model')
@@ -696,38 +694,36 @@ test('modelCache：listModels 抛错 / llm 服务缺席属「不知道」→ 不
   }
 })
 
-test('effortCache：能力表热更后重新解析，改好的档位即刻生效（此前无任何清理点，N10）', async () => {
-  let stored = { sisyphus: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } }
+test('effortCache：能力表热更后重新解析，改好的档位即刻生效（此前无任何清理点，N10）', async (t) => {
   let efforts = [{ id: 'low' }]
   let infoCalls = 0
-  const settings = { get: (ns) => (ns === 'dsh-my-go' ? stored : undefined) }
+  t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } }))
   const llm = {
     listModels: async () => [{ id: 'm1' }],
     resolveModelInfo: async () => { infoCalls += 1; return { reasoning: { efforts } } },
   }
-  const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
+  const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   const first = await askWaterfall(dispatch)
   assert.equal(first.reasoningEffort, undefined, 'high 不在能力表内 → 不设档位（既有纪律）')
   await askWaterfall(dispatch)
   assert.equal(infoCalls, 1, '成功结果（非空档位表）照常缓存')
-  // provider 侧补齐能力表 + 热更（缓存必须随绑定一起作废）
+  // provider 侧补齐能力表 + 宿主段热更（缓存必须随绑定一起作废）
   efforts = [{ id: 'low' }, { id: 'high' }]
-  stored = { sisyphus: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } }
-  dispatch('settings/updated', 'dsh-my-go')
+  setHostBindings({ sisyphus: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } })
   const after = await askWaterfall(dispatch)
-  assert.equal(infoCalls, 2, 'settings/updated 必须清 effortCache')
+  assert.equal(infoCalls, 2, '段版本推进必须清 effortCache')
   assert.equal(after.reasoningEffort, 'high', '热更后 effort 绑定重新生效（修复前旧表永挂，绑定静默失效）')
 })
 
-test('effortCache：resolveModelInfo 成功但读不到档位表 → null 不缓存（不把「没读到」判成永久不支持，N10）', async () => {
+test('effortCache：resolveModelInfo 成功但读不到档位表 → null 不缓存（不把「没读到」判成永久不支持，N10）', async (t) => {
   let infoCalls = 0
-  const settings = { get: (ns) => (ns === 'dsh-my-go' ? { sisyphus: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } } : undefined) }
+  t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } }))
   const llm = {
     listModels: async () => [{ id: 'm1' }],
     resolveModelInfo: async () => { infoCalls += 1; return {} }, // 无 reasoning 段
   }
-  const { ctx, listeners, dispatch } = mockCtxAlpha4({ settings, llm })
+  const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   assert.equal((await askWaterfall(dispatch)).reasoningEffort, undefined)
   assert.equal((await askWaterfall(dispatch)).reasoningEffort, undefined)
@@ -893,7 +889,7 @@ test('0.1.5-alpha.1 web 面对账：lib 半手工信封的每个端点响应都�
     on: () => {},
     inject: panel.inject,
   }
-  await hostApply(ctx, { installPreset: false })
+  await hostApply(ctx, resolvedHostConfig({}))
   assert.ok(panel.routes.has('prefix /dsh-my-go'), '面板通道挂在 webServer 上')
   let index = 0
   for (const [endpoint, payload] of PANEL_ENDPOINT_CALLS) {
@@ -917,7 +913,7 @@ test('0.1.5-alpha.1 验收口径：未认证的面板请求直出 401（不再�
       on: () => {},
       inject: panel.inject,
     }
-    await hostApply(ctx, { installPreset: false })
+    await hostApply(ctx, resolvedHostConfig({}))
     const res = await panel.request({ endpoint: 'loadSettings', payload: {} })
     assert.equal(res.status, rejection)
     assert.equal(res.body, expect)

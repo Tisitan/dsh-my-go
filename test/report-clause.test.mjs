@@ -109,18 +109,20 @@ test('备选重派路径同样注入条款（attemptFallbackRedeploy → spawnCh
   }
 })
 
-// ── 1.7 装机 yml 防回潮 pin（方案 A，help-mtn8uwgr-ds1fes 裁决）──────────────
+// ── 装机 yml 防回潮 pin（方案 A，help-mtn8uwgr-ds1fes 裁决；0.1.7 起指向
+// preset/agent.patch.yml —— 预设声明的 config.plugins）────────────────────────
 // 用真 yml 解析（tool-mask.test.mjs 同款 schema 扩展），不走「正则扫行用眼睛读」
 // ——缩进一变或改成 flow 风格都要照样红。2026-09-07 基线关窗、外部化点亮，pin 换向
 // 站岗：外部化实战期口径 broker 行显式 true，若有人误关回 false 本 pin 红。
-test('pin：agent.cordis.yml 的 broker 行必须显式 reportExternalization: true（外部化实战期口径）', async () => {
+test('pin：agent.patch.yml 的 broker 行必须显式 reportExternalization: true（外部化实战期口径）', async () => {
   const cordisSchema = yaml.DEFAULT_SCHEMA.extend([
     new yaml.Type('tag:yaml.org,2002:js', { kind: 'scalar', construct: (data) => data }),
   ])
-  const text = await readFile(new URL('../preset/agent.cordis.yml', import.meta.url), 'utf-8')
+  const text = await readFile(new URL('../preset/agent.patch.yml', import.meta.url), 'utf-8')
   const doc = yaml.load(text, { schema: cordisSchema })
-  const brokerRow = doc.find((row) => row?.id === 'broker')
-  assert.ok(brokerRow, 'broker 行在册')
+  // 0.1.7 声明行范式：预设是一枚 insert 行，插件列表在 config.plugins 里
+  const brokerRow = doc.find((patch) => patch?.insert)?.insert?.[0]?.config?.plugins?.find((row) => row?.id === 'broker')
+  assert.ok(brokerRow, 'broker 行在册（预设声明的 config.plugins 内）')
   assert.equal(brokerRow?.config?.reportExternalization, true,
     'broker 行必须显式 reportExternalization: true——显式配置优先于代码默认，2026-09-07 基线关窗、外部化点亮后实战期保持显式开；若有人误关回 false（含同步 preset 覆盖回旧 false 装机）本 pin 红')
 })
@@ -128,14 +130,14 @@ test('pin：agent.cordis.yml 的 broker 行必须显式 reportExternalization: t
 // 同范式第二钉（2026-09-18 读平面扩池批）：装机 yml 显式 readPoolSize 必须为 3
 // （钳制上限顶格）。同步 preset 覆盖回保守起步的 2、删行回落代码缺省 1、或写超
 // 上限被钳制口径掩盖，本 pin 都红——显式值是唯一可审计的装机面。
-test('pin：agent.cordis.yml 的 broker 行必须显式 readPoolSize: 3（读平面扩池装机口径）', async () => {
+test('pin：agent.patch.yml 的 broker 行必须显式 readPoolSize: 3（读平面扩池装机口径）', async () => {
   const cordisSchema = yaml.DEFAULT_SCHEMA.extend([
     new yaml.Type('tag:yaml.org,2002:js', { kind: 'scalar', construct: (data) => data }),
   ])
-  const text = await readFile(new URL('../preset/agent.cordis.yml', import.meta.url), 'utf-8')
+  const text = await readFile(new URL('../preset/agent.patch.yml', import.meta.url), 'utf-8')
   const doc = yaml.load(text, { schema: cordisSchema })
-  const brokerRow = doc.find((row) => row?.id === 'broker')
-  assert.ok(brokerRow, 'broker 行在册')
+  const brokerRow = doc.find((patch) => patch?.insert)?.insert?.[0]?.config?.plugins?.find((row) => row?.id === 'broker')
+  assert.ok(brokerRow, 'broker 行在册（预设声明的 config.plugins 内）')
   assert.equal(brokerRow?.config?.readPoolSize, 3,
     'broker 行必须显式 readPoolSize: 3——2026-09-18 扩池批装机口径（读平面并发上限顶格）；被同步 preset 覆盖回 2/1 或删行回落代码缺省 1，本 pin 红')
 })

@@ -26,10 +26,73 @@
  *   - `settings.get(ns)` 返回 structuredClone + 深度冻结的副本：写变异宿主存储
  *     在真宿主上要么被 schema 拒、要么污染别人，替身里必须当场红。
  *   - `tools.register` 重名抛错（同一 scope 注册两次是实打实的冲突）。
+ *
+ * 0.1.7 契约改造（本次）：settings 命名空间注册整块退役，配置面由插件顶层 `Config`
+ * 声明，宿主经 `apply(ctx, config)` 把**已解析的段**交进来。替身随之改三处：
+ *   - `resolvedHostConfig(row)`：用真 cordis resolveConfig + 真 lib/config.js 复现
+ *     宿主挂载期那一步，测试里的 config 与宿主交进 apply 的 config 逐字段同形；
+ *   - `settings` 选项语义从「带 get(ns) 的存储面」改为「settings 服务替身」
+ *     （configure / mutate），并补上 `ctx.inject`（宿主半经子 fiber 的 inject 才
+ *     拿 settings 服务）；
+ *   - `setHostBindings(section)`：宿主半配置桥（Symbol.for('dsh-my-go.bindings')）
+ *     的替身。broker 半逐调用现读它，改 section 即等价于一次热更——旧
+ *     `settings.get` + `settings/updated` 那套驱动方式随之退役。
  */
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { resolveConfig } from '@deepseek-ai/cordis'
+
+import { Config as HostConfig } from '../../lib/config.js'
+
+const BINDINGS_BRIDGE = Symbol.for('dsh-my-go.bindings')
+const REVISION_BRIDGE = Symbol.for('dsh-my-go.bindings-revision')
+
+/**
+ * 宿主半的行 config 解析（0.1.7 契约）：真宿主在挂载期经
+ * `resolveConfig(fiber.runtime, raw)` 把 Config 声明的 volatile 顶层字段换成活访问器
+ * （`config.<field>.get()`），schema 不认的键（bindings / installPreset / legacy 顶级
+ * 工种键）原样带出。替身走**同一份真代码 + 同一份真 schema**，于是测试里的 config
+ * 与宿主交给 apply 的 config 逐字段同形，不是手抄的形状近似。
+ */
+export const resolvedHostConfig = (row = {}) => resolveConfig({ Config: HostConfig }, row)
+
+/** settings 服务替身：宿主半只用它两件事——关自动页（configure）与 legacy roles 迁移落盘（mutate）。 */
+export const createSettingsStub = (overrides = {}) => ({
+  configure: () => () => {},
+  mutate: async () => {},
+  ...overrides,
+})
+
+/**
+ * 宿主半配置桥的替身（两个符号一对）：段访问器 + 段版本号。每次 setHostBindings
+ * 等价于宿主半的一次 volatile 提交（版本号自增），broker 半逐调用比对版本号——
+ * 所以「再调一次 setHostBindings」就是一次热更，无需任何事件。
+ * @param source 段值或返回段的函数。
+ * @returns 卸载函数（用例结束还原，避免跨文件串味）。
+ */
+let hostBindingsRevision = 0
+export const setHostBindings = (source) => {
+  const read = typeof source === 'function' ? source : () => source
+  const previousSection = globalThis[BINDINGS_BRIDGE]
+  const previousRevision = globalThis[REVISION_BRIDGE]
+  hostBindingsRevision += 1
+  globalThis[BINDINGS_BRIDGE] = read
+  globalThis[REVISION_BRIDGE] = () => hostBindingsRevision
+  return () => {
+    if (previousSection === undefined) delete globalThis[BINDINGS_BRIDGE]
+    else globalThis[BINDINGS_BRIDGE] = previousSection
+    if (previousRevision === undefined) delete globalThis[REVISION_BRIDGE]
+    else globalThis[REVISION_BRIDGE] = previousRevision
+  }
+}
+
+/** 清掉配置桥（模拟宿主半未装配/旧宿主：broker 必须优雅降级，不许裸炸）。 */
+export const clearHostBindings = () => {
+  delete globalThis[BINDINGS_BRIDGE]
+  delete globalThis[REVISION_BRIDGE]
+}
 
 const deepFreeze = (value) => {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value
@@ -129,6 +192,19 @@ export function createMockCtx({
     },
   }
   const subagents = { startContinuable, ...subagentsExtra }
+  // ctx.inject 替身：0.1.7 起宿主半经子 fiber 的 inject 才拿 settings 服务
+  // （配置面已改声明式，settings 不入 entry inject）。替身按依赖名交出子 ctx，
+  // effect / on 与父 ctx 同源（清理函数照旧进 captureEffects）。
+  const inject = (deps, cb) => {
+    const wanted = Array.isArray(deps) ? deps : [deps]
+    const child = {
+      settings: wanted.includes('settings') ? settingsView : undefined,
+      get: (name) => (wanted.includes(name) ? ctx.get(name) : undefined),
+      on,
+      effect: (fn, name) => ctx.effect(fn, name),
+    }
+    return cb(child)
+  }
   const ctx = {
     get: (name) => {
       if (name === 'agents') return agents
@@ -140,6 +216,7 @@ export function createMockCtx({
       return undefined
     },
     on,
+    inject,
     effect: (fn, name) => {
       // 不再吞异常（C-09）：真宿主里这段抛错就是 apply 失败，替身 swallow 一次
       // 就把「section 注册写错」这类真 bug 永久藏起来。
@@ -313,7 +390,12 @@ export function createPanelRpcTransport({ rejection, channel = '/dsh-my-go' } = 
       call: () => { throw new Error('connection.rpc is a host-side registry, not a caller') },
     },
   }
-  const childCtx = { effect: (fn) => fn() }
+  // 子 fiber 替身：0.1.7 起宿主半经 ctx.inject(['settings'], child => ...) 关自动页，
+  // 故 child 必须带 settings 服务（configure 返回清理函数，effect 收下它）。
+  const childCtx = {
+    settings: createSettingsStub(),
+    effect: (fn) => fn(),
+  }
   const inject = (_deps, cb) => cb(childCtx)
   /** 低层驱动：自定义 method / url / headers / 原始 body，回 HTTP 现场 + 解出的信封。 */
   const request = async (spec = {}) => {

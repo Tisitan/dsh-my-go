@@ -3,8 +3,11 @@
  *
  * The plugin's single configuration entry, rendered inside the official plugin
  * page through the `plugins.bundle.config` slot. It reads and writes the
- * 'dsh-my-go' namespace over the host's `settingsScope` — the private
- * `loadSettings` / `saveSettings` RPC pair is retired, so nothing about the
+ * 'dsh-my-go' namespace over the host's `configForms` (0.1.7: `settingsScope`
+ * retired — the entry's form comes from `configForms.get(entryId)`, whose
+ * snapshot is field-for-field the one `settingsScope.bind` used to answer, so
+ * nothing below this line changed with the migration). The private
+ * `loadSettings` / `saveSettings` RPC pair stays retired, so nothing about the
  * stored shape is decided twice.
  *
  * Information architecture: two blocks, each a two-column master/detail grid

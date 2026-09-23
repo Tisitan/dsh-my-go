@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.5.0-tisitan.4",
+  "version": "0.5.0-tisitan.5",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -49,8 +49,8 @@ _真正实现 “按量付费”_
 
 ### 理论最低要求
 
-- DeepSeek Harness `0.1.2-alpha.2`+（与 package.json peer `>=0.1.2-alpha.2 <0.1.7` 一致；基于 `agent/request` waterfall 与 continuable subagent API）
-  peer 上界在 0.5.0-tisitan.2 从 `<0.2.0` 收到 `<0.1.6`，现为 `<0.1.7`：Web 设置面板的通道注册现在依赖
+- DeepSeek Harness `0.1.7-alpha.1`+（与 package.json peer `>=0.1.7-alpha.1 <0.2.0` 一致；基于 `agent/request` waterfall 与 continuable subagent API）
+  peer 上界在 0.5.0-tisitan.2 从 `<0.2.0` 收到 `<0.1.6`、0.5.0-tisitan.4 收到 `<0.1.7`，现随 0.1.7 适配放开回 `<0.2.0`。当初收紧的理由是：Web 设置面板的通道注册依赖
   `dsh-host-webserver` 的 `WebRoute{kind,path,handler(req,res)}` 与 `connection.requestRejection`
   两枚公开面，它们只在 `0.1.5-alpha.1` 上真机验过——没验过的版本不号称支持。
 - Node.js 22.15+（`node:zlib` 的 zstd 压缩接口实需 22.15+/23.8+，与 package.json `engines` 一致）

@@ -1,13 +1,13 @@
-// lib 半存储/安装面回归（0.3.0-tisitan.8 lib/client 修复批）：
-//   E1/B-02  settings 注册静默塌方 → 失败面隔离 + 留痕
+// lib 半存储/面板面回归（0.3.0-tisitan.8 lib/client 修复批，0.1.7 契约改造后）：
 //   E4/B-04  读面失败不许谎报成功 → 端点退役后改判为「旧设置面端点不再存在」
 //   E7/B-05  脏键整批毒杀 → ROLE_KEY_PATTERN 过滤（ops 编译层已搬浏览器侧）
 //   E10/B-03 snapshot 端点无 try → 桥抛错回结构化 internal
 //   E5/A-02  snapshot 出口裁剪（history 末 8 / 剔 prompt）
 //   E9/B-07  面板通道注册壳（原 rpc.handle arity 探测 → F1 换 webServer 直注册）
-//   E8/B-08  marker 内容摘要逃生口（同版本内容漂移仍重拷）
-//   E3/B-01  安装器参数化 + config.installPreset 真短路
-//   B-09     prompts 镜像清孤儿 / 未变更文件不重写
+//   B-10     getBuiltinPersona 单一来源（0.1.7：包内 prompts/ 就地生效）
+// 0.1.7 退役面（随预设声明行范式一并删除）：安装同步安装器（ensurePresetInstalled /
+// presetInstallRoot / BROKER_CLUSTER_ROSTER）与其全部用例——$DSH_HOME/.agent-presets
+// 在 0.1.7 已无任何代码读取，整条拷贝机制连同 config.installPreset 闸一起退役。
 // 每进程独立（node --test 按文件分进程），DSH_HOME 指向本文件专属临时目录。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -15,14 +15,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as host from '../lib/index.js'
-import { createPanelRpcTransport, callWebRouteHandler } from './helpers/mock-ctx.mjs'
+import { createPanelRpcTransport, callWebRouteHandler, resolvedHostConfig, createSettingsStub } from './helpers/mock-ctx.mjs'
 import { buildSettingsOps } from '../src/settings-ops.js'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-lib8-'))
 
-// 安装同步关掉：本文件全部走 config 闸（E3/B-01 的新开关），不再靠版本标记
-// 「碰巧」短路——后台拷贝与断言抢同一批文件是旧测试的隐性竞态。
-const NO_INSTALL = { installPreset: false }
+// 0.1.7：行 config 经真 cordis resolveConfig 解析（Config 声明的 volatile 顶层字段
+// 换成活访问器）——宿主交进 apply 的就是这个形状。空行 config = 全默认。
+const ROW_CONFIG = resolvedHostConfig({})
 
 function mockHostCtx({ llm, settings, toolsRegistry, rejection } = {}) {
   const listeners = new Map()
@@ -51,48 +51,36 @@ function captureConsole() {
   return { lines, restore: () => Object.assign(console, prev) }
 }
 
-// ── E1/B-02：settings 注册失败面隔离 ──────────────────────────────────────
+// ── 0.1.7 契约：配置面不依赖 settings 服务在席 ─────────────────────────────
 
-test('settings.register 抛错：error 留痕在册，且热更监听与 RPC 面照常接线', async () => {
-  const settings = {
-    register: () => { throw new Error('schemastery unavailable') },
-    get: () => ({ roles: { hermes: { provider: 'p1', model: 'm1' } } }),
-    mutate: async () => {},
-  }
-  const { ctx, listeners, rpc } = mockHostCtx({ settings })
+test('settings 服务缺席：apply 照常挂载，RPC 面与热更监听都在', async () => {
+  // 配置面改声明式（顶层 Config）后，settings 服务不再是 entry inject 的硬依赖：
+  // 宿主把已解析的段经 apply(ctx, config) 交进来，子 fiber 的 inject 只负责关自动页。
+  const { ctx, listeners, rpc } = mockHostCtx({})
   const cap = captureConsole()
   try {
-    await host.apply(ctx, NO_INSTALL)
-    assert.ok(
-      cap.lines.error.some((l) => l.includes('settings namespace registration failed') && l.includes('schemastery unavailable')),
-      '注册失败必须留一行 console.error（旧写法 catch 体零日志）',
-    )
-    assert.ok(listeners.has('settings/updated'), '热更监听仍挂上（旧写法同 try 罩住，注册一抛就整段失联）')
-    assert.ok(await rpc('/dsh-my-go', 'listTools', {}), 'RPC 面仍可用')
-    assert.equal((await rpc('/dsh-my-go', 'snapshot', {})).ok, true, '面板端点不受注册失败影响')
-    // 热更链路真的活着：改一次存储，快照花名册立刻反映新绑定
-    settings.get = () => ({ roles: { hermes: { provider: 'p2', model: 'm2' } } })
-    listeners.get('settings/updated')('dsh-my-go')
-    const snap = await rpc('/dsh-my-go', 'snapshot', {})
-    assert.ok(snap.value.rosterLines.some((line) => line.includes('p2·m2')), '热更后 bindings 确实更新')
+    await host.apply(ctx, ROW_CONFIG)
+    assert.ok(listeners.has('loader/volatile-update'), '热更监听必须挂上（与 settings 是否在席无关）')
+    assert.ok(await rpc('/dsh-my-go', 'listTools', {}), 'RPC 面可用')
+    assert.equal((await rpc('/dsh-my-go', 'snapshot', {})).ok, true, '面板端点照常')
   } finally {
     cap.restore()
   }
 })
 
-test('settings.get 抛错：注册成功也独立留痕，RPC 面不受牵连', async () => {
-  const settings = {
-    register: () => ({}),
-    get: () => { throw new Error('settings store unreadable') },
-    mutate: async () => {},
-  }
-  const { ctx, rpc } = mockHostCtx({ settings })
+test('段访问器抛错：独立留痕，RPC 面不受牵连', async () => {
+  const base = resolvedHostConfig({ roles: { hermes: { provider: 'p1', model: 'm1' } } })
+  let broken = false
+  const config = { ...base, roles: { get: () => { if (broken) throw new Error('settings store unreadable'); return base.roles.get() } } }
+  const { ctx, listeners, rpc } = mockHostCtx({ settings: createSettingsStub() })
   const cap = captureConsole()
   try {
-    await host.apply(ctx, NO_INSTALL)
+    await host.apply(ctx, config)
+    broken = true
+    listeners.get('loader/volatile-update')([['roles']])
     assert.ok(
       cap.lines.error.some((l) => l.includes('settings readout failed') && l.includes('settings store unreadable')),
-      '读盘/接线面失败单独留痕（与注册失败不同因）',
+      '读面失败单独留痕',
     )
     assert.equal((await rpc('/dsh-my-go', 'listTools', {})).ok, true, 'RPC 面活着')
   } finally {
@@ -109,7 +97,7 @@ test('loadSettings / saveSettings / listModels 端点已退役：一律 bad-requ
     mutate: async () => {},
   }
   const { ctx, rpc } = mockHostCtx({ settings })
-  await host.apply(ctx, NO_INSTALL)
+  await host.apply(ctx, ROW_CONFIG)
   for (const endpoint of ['loadSettings', 'saveSettings', 'listModels']) {
     const res = await rpc('/dsh-my-go', endpoint, { hermes: { model: 'x' } })
     assert.equal(res.ok, false, `${endpoint} 不再受理`)
@@ -145,7 +133,7 @@ test('snapshot：桥函数抛错回结构化 internal，不再抛穿 RPC 框架'
     const { ctx, rpc } = mockHostCtx({})
     const cap = captureConsole()
     try {
-      await host.apply(ctx, NO_INSTALL)
+      await host.apply(ctx, ROW_CONFIG)
       const res = await rpc('/dsh-my-go', 'snapshot', {})
       assert.equal(res.ok, false)
       assert.equal(res.error.code, 'internal', '桥在但读挂了：与「桥未注册」可区分')
@@ -188,7 +176,7 @@ test('snapshot：每桶 history 裁到末 8 且全形状剔 prompt，helpRequest
       },
     })
     const { ctx, rpc } = mockHostCtx({})
-    await host.apply(ctx, NO_INSTALL)
+    await host.apply(ctx, ROW_CONFIG)
     const res = await rpc('/dsh-my-go', 'snapshot', {})
     assert.equal(res.ok, true)
     assert.equal(res.value.seq, 42, 'seq 原样透出（面板增量判定靠它）')
@@ -219,7 +207,7 @@ test('snapshot：桥缺席仍是降级空态（裁剪对空形状零副作用）
   try {
     delete globalThis[bridgeKey]
     const { ctx, rpc } = mockHostCtx({})
-    await host.apply(ctx, NO_INSTALL)
+    await host.apply(ctx, ROW_CONFIG)
     const res = await rpc('/dsh-my-go', 'snapshot', {})
     assert.equal(res.ok, true)
     assert.deepEqual({ seq: res.value.seq, parents: res.value.parents }, { seq: 0, parents: {} })
@@ -241,7 +229,7 @@ test('snapshot：桥缺席仍是降级空态（裁剪对空形状零副作用）
 
 test('F1 注册形态：connection + webServer 齐备时挂 prefix 路由，端点经完整 HTTP 壳往返', async () => {
   const { ctx, panel } = mockHostCtx({ toolsRegistry: { schemas: () => [{ name: 'read' }] } })
-  await host.apply(ctx, NO_INSTALL)
+  await host.apply(ctx, ROW_CONFIG)
   const route = panel.routes.get('prefix /dsh-my-go')
   assert.ok(route, 'webServer 上挂出一条 prefix /dsh-my-go 路由')
   assert.equal(route.kind, 'prefix')
@@ -256,7 +244,7 @@ test('F1 注册形态：connection + webServer 齐备时挂 prefix 路由，端�
 test('F1 鉴权直出：requestRejection 给 401/403 时绝不进业务分发（未认证不再 405）', async () => {
   for (const [rejection, body] of [[401, 'unauthorized'], [403, 'forbidden']]) {
     const { ctx, panel } = mockHostCtx({ rejection })
-    await host.apply(ctx, NO_INSTALL)
+    await host.apply(ctx, ROW_CONFIG)
     const res = await panel.request({ endpoint: 'snapshot', payload: {} })
     assert.equal(res.status, rejection, `未认证请求直出 ${rejection}`)
     assert.equal(res.body, body)
@@ -266,7 +254,7 @@ test('F1 鉴权直出：requestRejection 给 401/403 时绝不进业务分发（
 
 test('F1 传输面：GET / 无 endpoint / 非 JSON content-type 各回 404 / 404 / 415', async () => {
   const { ctx, panel } = mockHostCtx({})
-  await host.apply(ctx, NO_INSTALL)
+  await host.apply(ctx, ROW_CONFIG)
   assert.equal((await panel.request({ httpMethod: 'GET', endpoint: 'snapshot' })).status, 404)
   assert.equal((await panel.request({ url: '/dsh-my-go', endpoint: 'snapshot' })).status, 404, '裸通道路径不认领任何端点')
   assert.equal((await panel.request({ url: '/dsh-my-go/../etc', endpoint: 'snapshot' })).status, 404, '穿越形态的 pathname 解析不出 endpoint')
@@ -277,7 +265,7 @@ test('F1 传输面：GET / 无 endpoint / 非 JSON content-type 各回 404 / 404
 
 test('F1 信封面：坏 JSON 400；缺字段/错 method 回 gateway/bad-request 合法帧；未知端点回 bad-request', async () => {
   const { ctx, panel } = mockHostCtx({})
-  await host.apply(ctx, NO_INSTALL)
+  await host.apply(ctx, ROW_CONFIG)
   assert.equal((await panel.request({ endpoint: 'snapshot', body: 'not json' })).status, 400)
   const noId = await panel.request({ endpoint: 'snapshot', body: { type: 'client-request', method: 'snapshot' } })
   assert.equal(noId.status, 200, '信封不合法仍是 2xx + server-response（与宿主 rpcFetchHandler 同形）')
@@ -346,7 +334,7 @@ test('F1 降级形态：无 webServer 服务时 warn 留痕并跳过注册，存
   console.warn = (...a) => { warned.push(a.map(String).join(' ')) }
   try {
     const panel = createPanelRpcTransport()
-    const settings = { register: () => ({}), get: () => undefined, mutate: async () => {} }
+    const settings = createSettingsStub()
     const ctx = {
       get: (name) => {
         if (name === 'settings') return settings
@@ -354,9 +342,9 @@ test('F1 降级形态：无 webServer 服务时 warn 留痕并跳过注册，存
         return undefined // headless / CLI profile：webServer 服务不存在
       },
       on: () => {},
-      inject: (_deps, cb) => cb({ effect: (fn) => fn() }),
+      inject: (_deps, cb) => cb({ settings, effect: (fn) => fn() }),
     }
-    await host.apply(ctx, NO_INSTALL)
+    await host.apply(ctx, ROW_CONFIG)
     assert.equal(panel.routes.size, 0, '零注册（不是抛错，也不是半挂）')
     assert.ok(warned.some((l) => /webServer service unavailable/.test(l)), '跳过必须留痕')
   } finally {
@@ -389,224 +377,30 @@ test('F1 回归闸：宿主缺陷面 connection.rpc.handle 仍会抛，本半不
   const panel = createPanelRpcTransport()
   assert.throws(() => panel.connection.rpc.handle('/dsh-my-go', () => {}), /without inject/)
   const { ctx, rpc } = mockHostCtx({})
-  await host.apply(ctx, NO_INSTALL)
+  await host.apply(ctx, ROW_CONFIG)
   assert.equal((await rpc('/dsh-my-go', 'listTools', {})).ok, true, '通道靠 webServer 直注册存活')
 })
 
-// ── E3/B-01 + E8/B-08 + B-09：安装器（参数化 / 摘要 marker / 镜像语义）────
+// ── B-10（0.1.7 改判）：getBuiltinPersona 单一来源 = 包内 prompts/ ─────────
 
-function fakePackage({ shared = true, prompts = { hermes: 'HERMES' }, presetFile = 'export default 1' } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'dsh-my-go-pkg8-'))
-  mkdirSync(join(root, 'preset', 'tools'), { recursive: true })
-  if (shared) mkdirSync(join(root, 'preset', 'shared'), { recursive: true })
-  mkdirSync(join(root, 'prompts'), { recursive: true })
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'dsh-my-go', version: '9.9.9-tisitan.0' }))
-  writeFileSync(join(root, 'preset', 'agent.cordis.yml'), 'name: dsh-my-go\n')
-  writeFileSync(join(root, 'preset', 'tools', 'broker.mjs'), presetFile)
-  // 5.3 波 J-2：tools/ 侧簇文件从哨兵同一清单（lib 导出单源）生成占位——
-  // 哨兵加名夹具自动跟上了，两侧永不漂移；broker.mjs 上面的 presetFile 已写。
-  for (const file of host.BROKER_CLUSTER_ROSTER) {
-    if (file === 'broker.mjs') continue
-    writeFileSync(join(root, 'preset', 'tools', file), `// ${file} fixture\n`)
-  }
-  if (shared) writeFileSync(join(root, 'preset', 'shared', 'constants.mjs'), 'export const AGENT_TYPES = []\n')
-  for (const [name, body] of Object.entries(prompts)) writeFileSync(join(root, 'prompts', `${name}.md`), body)
-  return root
-}
-
-function markerOf(dshHome) {
-  return readFileSync(join(host.presetInstallRoot(dshHome), 'dsh-my-go', '.dsh-my-go-version'), 'utf-8').trim()
-}
-
-test('installPreset:false 真短路：apply 不再后台拷贝（测试与安装器抢文件的根治）', async () => {
-  const pkg = fakePackage()
-  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-'))
-  try {
-    const { ctx } = mockHostCtx({})
-    await host.apply(ctx, { installPreset: false })
-    await new Promise((r) => setTimeout(r, 30))
-    assert.equal(existsSync(join(host.presetInstallRoot(dshHome), 'dsh-my-go')), false, '关闸后本次挂载零文件动作')
-  } finally {
-    rmSync(pkg, { recursive: true, force: true })
-    rmSync(dshHome, { recursive: true, force: true })
-  }
+test('getBuiltinPersona：直接读包内 prompts/（安装副本这条候选随机制退役）', async () => {
+  const { ctx, rpc } = mockHostCtx({ settings: createSettingsStub() })
+  await host.apply(ctx, ROW_CONFIG)
+  const res = await rpc('/dsh-my-go', 'getBuiltinPersona', { type: 'sisyphus' })
+  assert.equal(res.ok, true, '包内 prompts/sisyphus.md 就是唯一来源')
+  assert.ok(typeof res.value.persona === 'string' && res.value.persona.length > 0)
+  const missing = await rpc('/dsh-my-go', 'getBuiltinPersona', { type: 'ghost-role' })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error.code, 'not-found')
+  assert.deepEqual(missing.error.details, {})
+  const traversal = await rpc('/dsh-my-go', 'getBuiltinPersona', { type: '../secrets' })
+  assert.equal(traversal.ok, false, '目录穿越形态被 ROLE_KEY_PATTERN 拦在门外')
+  assert.equal(traversal.error.code, 'bad-request')
 })
 
-test('marker：首装落 version+摘要；同版本同内容跳过；包内内容漂移重拷（E8 逃生口）', async () => {
-  const pkg = fakePackage()
-  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-'))
-  const target = join(host.presetInstallRoot(dshHome), 'dsh-my-go')
-  const cap = captureConsole()
-  try {
-    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome })
-    const marker = markerOf(dshHome)
-    assert.match(marker, /^9\.9\.9-tisitan\.0\+[0-9a-f]{16}$/, `marker 是「版本+内容摘要」两要素：${marker}`)
-    assert.equal(readFileSync(join(target, 'prompts', 'hermes.md'), 'utf-8'), 'HERMES')
-
-    // 同版本同内容：短路（连副本被手改过也不覆写——旧语义保留）
-    // 安装布局：cp(presetSource, target) 拷的是**目录内容** → target/tools/…
-    writeFileSync(join(target, 'tools', 'broker.mjs'), '// 装机侧手改，不该被同内容重载覆写')
-    cap.lines.log.length = 0
-    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome })
-    assert.equal(readFileSync(join(target, 'tools', 'broker.mjs'), 'utf-8'), '// 装机侧手改，不该被同内容重载覆写')
-    assert.equal(cap.lines.log.filter((l) => l.includes('preset synced')).length, 0, '摘要一致 → 零拷贝零日志')
-
-    // 同版本但包内内容漂移：旧写法（只看版本）永远不重拷，摘要把它救回来
-    writeFileSync(join(pkg, 'preset', 'tools', 'broker.mjs'), 'export default 2')
-    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome })
-    assert.equal(readFileSync(join(target, 'tools', 'broker.mjs'), 'utf-8'), 'export default 2', '内容漂移 → 重拷并覆写手改')
-    assert.notEqual(markerOf(dshHome), marker, 'marker 随摘要换值')
-  } finally {
-    cap.restore()
-    rmSync(pkg, { recursive: true, force: true })
-    rmSync(dshHome, { recursive: true, force: true })
-  }
-})
-
-test('marker 缺席（首装/旧版只写版本号的存量）→ 无条件同步', async () => {
-  const pkg = fakePackage()
-  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-'))
-  const target = join(host.presetInstallRoot(dshHome), 'dsh-my-go')
-  try {
-    // 模拟上个版本的存量副本：marker 只有版本号，且 preset 内容是旧的
-    mkdirSync(join(target, 'preset'), { recursive: true })
-    writeFileSync(join(target, '.dsh-my-go-version'), '9.9.9-tisitan.0')
-    writeFileSync(join(target, 'preset', 'stale.txt'), '旧副本残留')
-    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome })
-    assert.match(markerOf(dshHome), /\+[0-9a-f]{16}$/, '旧格式 marker 被就地升级')
-    assert.ok(existsSync(join(target, 'tools', 'broker.mjs')), '无摘要可比对 → 走一次真同步')
-  } finally {
-    rmSync(pkg, { recursive: true, force: true })
-    rmSync(dshHome, { recursive: true, force: true })
-  }
-})
-
-test('安装器行为面：shared 缺席 warn、源缺失吞异常留痕、prompts 镜像清孤儿、未变更文件不重写', async () => {
-  // ① shared/ 缺席：装完仍继续（fail-observable），但必须 warn
-  const pkgNoShared = fakePackage({ shared: false })
-  const homeA = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-'))
-  const cap = captureConsole()
-  try {
-    await host.ensurePresetInstalled({ packageRoot: pkgNoShared, dshHome: homeA })
-    assert.ok(cap.lines.warn.some((l) => l.includes('shared/ missing')), 'broker import 断链风险必须留痕')
-  } finally {
-    cap.restore()
-    rmSync(pkgNoShared, { recursive: true, force: true })
-    rmSync(homeA, { recursive: true, force: true })
-  }
-
-  // ② 源树缺席（没有 preset/）：整段同步失败被吞，只留 error，绝不抛出打断 apply
-  const brokenRoot = mkdtempSync(join(tmpdir(), 'dsh-my-go-pkg8-broken-'))
-  const homeB = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-'))
-  const cap2 = captureConsole()
-  try {
-    writeFileSync(join(brokenRoot, 'package.json'), JSON.stringify({ version: '9.9.9-tisitan.0' }))
-    await host.ensurePresetInstalled({ packageRoot: brokenRoot, dshHome: homeB })
-    assert.ok(cap2.lines.error.some((l) => l.includes('could not sync preset')), '失败留痕')
-    assert.equal(existsSync(join(host.presetInstallRoot(homeB), 'dsh-my-go', '.dsh-my-go-version')), false, '同步没做成就不写 marker（下次仍会重试）')
-  } finally {
-    cap2.restore()
-    rmSync(brokenRoot, { recursive: true, force: true })
-    rmSync(homeB, { recursive: true, force: true })
-  }
-
-  // ③ prompts/ 纯镜像：上游删了的人设文件不得留在装机侧继续供卡片用
-  const pkg = fakePackage()
-  const homeC = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-'))
-  const target = join(host.presetInstallRoot(homeC), 'dsh-my-go')
-  try {
-    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome: homeC })
-    const orphan = join(target, 'prompts', 'retired-role.md')
-    writeFileSync(orphan, '上游早已删掉的人设')
-    rmSync(join(target, '.dsh-my-go-version')) // 强制重拷一次
-    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome: homeC })
-    assert.equal(existsSync(orphan), false, '孤儿 prompt 被镜像语义清出（cp 只增不删的旧行为）')
-
-    // ④ 逐文件比对：内容没变的代码文件不被重写（mtime 不变 = 写窗口没打开）
-    const brokerCopy = join(target, 'tools', 'broker.mjs')
-    const before = statSync(brokerCopy).mtimeMs
-    writeFileSync(join(pkg, 'prompts', 'hermes.md'), 'HERMES v2') // 只改人设文件
-    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome: homeC })
-    assert.equal(readFileSync(join(target, 'prompts', 'hermes.md'), 'utf-8'), 'HERMES v2', '改过的文件照常落盘')
-    assert.equal(statSync(brokerCopy).mtimeMs, before, '未变更的 broker.mjs 一个字节都不重写')
-  } finally {
-    rmSync(pkg, { recursive: true, force: true })
-    rmSync(homeC, { recursive: true, force: true })
-  }
-})
-
-// 5.3 波 J-2：tools/ 侧在册核验——批次 5 拆分后 broker.mjs 的同目录 import 扇出
-// 到清单里的簇模块，漏拷/半拷的故障点是会话组装期的挂载 import（当场炸且
-// 安装器零留痕）。哨兵把失联提前到装机时 warn，且不阻断（与 shared/ 同款
-// fail-observable 口径）。清单本体经 lib 导出单源消费（上方 fakePackage 同源）。
-test('安装哨兵 tools/ 侧（J-2）：簇文件半拷 → warn 点名缺席者且不阻断；在册者零噪音', async () => {
-  const pkg = fakePackage()
-  const home = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-'))
-  const cap = captureConsole()
-  try {
-    rmSync(join(pkg, 'preset', 'tools', 'broker-tools.mjs')) // 模拟半拷（漏一个簇）
-    await host.ensurePresetInstalled({ packageRoot: pkg, dshHome: home })
-    const toolsWarns = cap.lines.warn.filter((l) => l.includes(' missing —'))
-    assert.equal(toolsWarns.length, 1, `缺席者恰一行点名，实际 ${toolsWarns.length} 行`)
-    assert.ok(toolsWarns[0].includes('tools/broker-tools.mjs missing'), 'warn 点名缺的是哪个文件')
-    assert.match(markerOf(home), /\+[0-9a-f]{16}$/, 'warn 不阻断：marker 照常落盘（fail-observable 非 fail-fast）')
-  } finally {
-    cap.restore()
-    rmSync(pkg, { recursive: true, force: true })
-    rmSync(home, { recursive: true, force: true })
-  }
-})
-
-test('安装哨兵清单与 preset/tools/ 实况同源（J-2 防脱节）：清单外无 import 目标', async () => {
-  // 清单是安装期核验的唯一依据，源码侧漏登记 = 新簇上线后哨兵失明——本例把
-  // 「broker.mjs 的同目录 ./broker-*/./metrics import ⊆ 清单」钉成行为档，
-  // 新簇加文件忘登记清单当场红（比装机哨兵本身更早一步）。
-  const brokerSrc = readFileSync(new URL('../preset/tools/broker.mjs', import.meta.url), 'utf-8')
-  const imported = [...brokerSrc.matchAll(/from '\.\/([\w.-]+\.mjs)'/g)].map((m) => m[1]).sort()
-  assert.deepEqual(imported, [...host.BROKER_CLUSTER_ROSTER].filter((f) => f !== 'broker.mjs').sort(), 'broker 同目录 import 全集与哨兵清单逐名一致')
-})
-
-// ── B-10：安装根单一来源 + getBuiltinPersona 回落包内原文 ─────────────────
-
-test('getBuiltinPersona：安装副本缺席时回落包内 prompts（冷启动早期不再假报「文件不存在」）', async () => {
-  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-my-go-home8-empty-'))
-  const prevHome = process.env.DSH_HOME
-  try {
-    process.env.DSH_HOME = dshHome
-    assert.equal(existsSync(join(host.presetInstallRoot(dshHome), 'dsh-my-go')), false, '前提：装机副本尚不存在')
-    const { ctx, rpc } = mockHostCtx({})
-    await host.apply(ctx, NO_INSTALL)
-    const res = await rpc('/dsh-my-go', 'getBuiltinPersona', { type: 'sisyphus' })
-    assert.equal(res.ok, true, '包内 prompts/sisyphus.md 兜住：安装同步还在后台跑时设置页也能载入原文')
-    assert.ok(typeof res.value.persona === 'string' && res.value.persona.length > 0)
-    const missing = await rpc('/dsh-my-go', 'getBuiltinPersona', { type: 'ghost-role' })
-    assert.equal(missing.ok, false)
-    assert.equal(missing.error.code, 'not-found')
-    assert.deepEqual(missing.error.details, {})
-  } finally {
-    process.env.DSH_HOME = prevHome
-    rmSync(dshHome, { recursive: true, force: true })
-  }
-})
-
-test('presetInstallRoot：DSH_HOME 覆盖与 ~/.dsh 兜底两条口径都在', () => {
-  const prev = process.env.DSH_HOME
-  try {
-    process.env.DSH_HOME = '/tmp/some-dsh-home'
-    assert.equal(host.presetInstallRoot(), join('/tmp/some-dsh-home', '.agent-presets'))
-    assert.equal(host.presetInstallRoot('/explicit'), join('/explicit', '.agent-presets'))
-  } finally {
-    process.env.DSH_HOME = prev
-  }
-})
-
-test('presetInstallRoot：DSH_HOME 空串视同未设，回落 ~/.dsh（paths.mjs dshHome 的 || 语义钉死）', () => {
-  const prev = process.env.DSH_HOME
-  try {
-    process.env.DSH_HOME = ''
-    assert.equal(host.presetInstallRoot(), join(homedir(), '.dsh', '.agent-presets'),
-      '空串走 || 兜底而非 ?? 直通——否则 join(\'\', ...) 解析出相对路径，读写分家')
-  } finally {
-    process.env.DSH_HOME = prev
+test('负向：安装器与 .agent-presets 机制零残留（单模式 0.1.7，不留双姿态）', async () => {
+  const hostSrc = await import('node:fs').then((fs) => fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf-8'))
+  for (const retired of ['ensurePresetInstalled', 'presetInstallRoot', 'BROKER_CLUSTER_ROSTER', 'installPreset', 'syncTreeFilewise', 'presetTreeDigest']) {
+    assert.equal(hostSrc.includes(retired), false, `退役面不得复活：${retired}`)
   }
 })

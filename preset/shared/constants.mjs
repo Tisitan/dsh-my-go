@@ -1,10 +1,10 @@
 /**
  * dsh-my-go — shared constants (single source for both runtime halves).
  *
- * Imported by preset/tools/broker.mjs (relative path inside the preset copy)
- * and lib/index.js (in-package path into preset/shared/). The preset/ tree is
- * copied verbatim by ensurePresetInstalled, so the relative layout survives
- * both deployment forms (repo checkout and ~/.dsh/.agent-presets install).
+ * Imported by preset/tools/broker.mjs (relative path inside preset/) and
+ * lib/index.js (in-package path into preset/shared/). The preset/ tree is
+ * read in place from the installed package (0.1.7: no preset-directory copy),
+ * so one relative layout serves every deployment form.
  *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx —
  * constants only.
@@ -77,8 +77,8 @@ export const ADJACENT_BYPASS_TOOLS = ['send_message', 'list_agents', 'interrupt_
 export const AGENT_TEAMS_TOOLS = ['spawn_teammate', 'wait_agent', 'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update']
 
 // ── settings 命名空间与面板 RPC 通道（同一身份的两种拼法）────────────────────
-// SETTINGS_NAMESPACE：settingsScope bind 的 namespace、config slot key、宿主半
-// settings.installSection 的注册名——三处一个身份。PANEL_RPC_CHANNEL：面板 RPC
+// SETTINGS_NAMESPACE：configForms.get 的条目 id（= 插件 Loader 行的 id）、config
+// slot key——两处一个身份。PANEL_RPC_CHANNEL：面板 RPC
 // 单通道名 = 命名空间的带斜杠形态（client.js「all one identity」注释的常量化），
 // lib 半注册、src 半调用两侧同源。两者必须同步改，派生式定义让漂移不可能。
 export const SETTINGS_NAMESPACE = 'dsh-my-go'

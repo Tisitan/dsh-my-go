@@ -264,7 +264,12 @@ test('T8 赛跑预查(D10): fallback continue——世代已终局 → 直接推
     assert.equal(r.state, 'running')
     assert.ok(r.workId, 'settled 自查 → 直接 T2 派发下一跳（不二次挂起）')
     assert.equal(chain.cursor, 1)
-    await waitFor(() => spawned.length === 2, { what: 'next hop spawn after settled resume' })
+    // 断言口径修正（0.1.7 批）：标签说的是「resume 后下一跳 spawn」，而 resume 前
+    // spawned 已是 2（T2 自动推进那一跳）。旧写法钉 `=== 2` 与其标签自相矛盾——它
+    // 只在「第三跳的 startContinuable 尚未落地」那一瞬侥幸成立（await 链上多一次
+    // fs 往返就赢、少一次就输）。0.1.7 起 prompts/ 就地可读、挂载期预热命中缓存，
+    // 该竞速窗口消失，旧断言恒红。改钉真语义：resume 后必须多出第三跳。
+    await waitFor(() => spawned.length === 3, { what: 'next hop spawn after settled resume' })
     // unsettled 分支：世代在飞（currentMap 在册）→ 预查不命中 → resume 换绑等待
     const genLive = spawned[1].childId
     const chain2 = suspendChainAt(PARENT.id, 0, 'fallback', { cursor: 0, hopChildId: genLive })

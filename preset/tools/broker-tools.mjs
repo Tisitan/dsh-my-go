@@ -13,7 +13,7 @@
  *     reportToParent 门面）、getAgentTools（deny 闸取 agent.ctx.tools——闸体对
  *     agent 尚未 ready 的抛错路径必须留在下方 try 内，N12 留痕口径不变）；
  *   - 活状态传句柄（orchestrations / sessionTypes / childRegistry / abortExpected，
- *     Map/Set 本体不复制）；闭包可变值经 getter 现读（getBindings：settings/updated
+ *     Map/Set 本体不复制）；闭包可变值经 getter 现读（getBindings：宿主配置桥
  *     整表重建后 roster 行投影必须看到新值，与原闭包直读 `let bindings` 时点一致）；
  *   - 兄弟簇工厂产物经注入：delivery 五件与 relay 三件（runChainTransition /
  *     chainDeclarationError 供链工具对）由 broker.mjs 一次接线后传进来——
@@ -728,7 +728,7 @@ export function registerAllTools({
         // R-h（D23 fail-fast）：链的数据面从 board 直投上一棒全文，REPORT_EXT 关
         // 则 board 无货——配置矛盾显式暴露，绝不静默降级出第二真相源。
         if (!REPORT_EXT) {
-          throw new Error('relay chains depend on report externalization (each hop reads the previous report from board/): set reportExternalization=true in the broker config (agent.cordis.yml) first')
+          throw new Error('relay chains depend on report externalization (each hop reads the previous report from board/): set reportExternalization=true in the broker config (preset/agent.patch.yml) first')
         }
         const orch = orchFor(parent.id)
         // R-a（roster 面；结构面归 validateChainDeclaration，双闸各管一半）
@@ -922,7 +922,7 @@ export function registerAllTools({
       // send_message 会绕过台账/单线锁，并对已结束 child 触发 coldResume 后
       // 把结论丢进 broker 的「late/duplicate ignored」分支（双流并发）；
       // 直调 interrupt_agent 没有 abortExpected 护航（预期掐断被误判真失败）。
-      // 与 agent.cordis.yml tool-mask 行的 config.deny 是**双保险**：mask 走
+      // 与预设声明行 tool-mask 的 config.deny 是**双保险**：mask 走
       // preset standing 层（能成立的前提是宿主 bundle 在 global 层也注册了
       // 这三个名字——dsh-base/cordis.patch.yml:349-353，standing 层只对该层
       // 之外的继承名可 restrict），本闸走 agent.ctx 子作用域，不依赖那个前提。

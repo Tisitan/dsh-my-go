@@ -8,7 +8,7 @@
  * the read-back verdict that decides whether a write actually landed.
  *
  * It used to live in the host half's `saveSettings` RPC closure. Moving it here
- * is what lets the page write through the official `settingsScope` — the host
+ * is what lets the page write through the official `configForms` — the host
  * keeps no second copy, so the two halves can never drift. Zero dependencies
  * beyond the sibling pure modules, so node --test covers it without a DOM.
  */
@@ -21,7 +21,7 @@ import { PRICE_KEY_PATTERN, sanitizePriceRow } from './usage-price-rows.js'
 /** The five per-role binding fields the page edits (persona/toolFilter are role-only). */
 export const BINDING_FIELDS = ['provider', 'model', 'reasoningEffort', 'dsv4p0813', 'fallbacks']
 
-/** Layers of one namespace the ops layer reads (from the settingsScope snapshot). */
+/** Layers of one namespace the ops layer reads (from the configForms snapshot). */
 export function record(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
