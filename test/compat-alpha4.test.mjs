@@ -67,7 +67,7 @@ test('deliverToAdjacent：alpha.4 走 sendMessage，sender 为精确 Agent 对�
   const calls = []
   const subagents = { sendMessage: async (sender, targetId, content, options) => { calls.push({ sender, targetId, content, options }); return 'msg-new' } }
   const id = await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, {
-    source: { kind: 'coordinator', form: 'relay', senderSessionId: 'parent-1' },
+    source: { kind: 'plugin:dsh-my-go', form: 'relay', senderSessionId: 'parent-1' },
   })
   assert.equal(id, 'msg-new')
   assert.equal(calls.length, 1)
@@ -82,7 +82,7 @@ test('deliverToAdjacent：alpha.4 走 sendMessage，sender 为精确 Agent 对�
 test('deliverToAdjacent：alpha.2/3 走旧 followup，source/signal 原样透传', async () => {
   const calls = []
   const signal = new AbortController().signal
-  const source = { kind: 'coordinator', form: 'relay', senderSessionId: 'parent-1' }
+  const source = { kind: 'plugin:dsh-my-go', form: 'relay', senderSessionId: 'parent-1' }
   const subagents = { followup: async (parent, childId, content, options) => { calls.push({ parent, childId, content, options }); return 'msg-old' } }
   const id = await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { source, signal })
   assert.equal(id, 'msg-old')
@@ -230,8 +230,8 @@ test('deliverToAdjacent：queued 档在 alpha.4 走 internal 队列符号，绝�
   assert.equal(queueCalls[0].childId, 'sess-1')
   assert.equal(queueCalls[0].content, blocks)
   assert.equal(queueCalls[0].sig, signal)
-  assert.deepEqual(queueCalls[0].source, { kind: 'plugin', plugin: 'dsh-my-go', form: 'relay' },
-    'alpha.4 的 MessageSource 只剩 user/plugin/model/tool；排队投递用 plugin+relay')
+  assert.deepEqual(queueCalls[0].source, { kind: 'plugin:dsh-my-go', form: 'relay' },
+    'V4 已删除共享 plugin kind，改用生产者自持 kind；排队投递用 plugin:dsh-my-go + relay')
 })
 
 // ── 断裂①：两代排队符号的 arity 三形态（新 6 参 / 旧 5 参 / 双缺失降级）────
@@ -255,7 +255,7 @@ test('断裂① 新符号在位：queued 档命中 deliverPrompt，6 参且第 6
   assert.equal(parent, parentAgent, 'position 1 = 精确 live 父 Agent（与旧 5 参同形）')
   assert.equal(childId, 'sess-1')
   assert.equal(content, blocks)
-  assert.deepEqual(source, { kind: 'plugin', plugin: 'dsh-my-go', form: 'relay' })
+  assert.deepEqual(source, { kind: 'plugin:dsh-my-go', form: 'relay' })
   assert.equal(sig, signal)
   assert.equal(delivery, 'queue', '第 6 参传字符串 queue 即得原 FIFO 排队语义')
 })
@@ -274,7 +274,7 @@ test('断裂① 仅旧符号在位：queued 档维持 queuePrompt 5 参调用，
   assert.equal(calls[0][0], parentAgent)
   assert.equal(calls[0][1], 'sess-1')
   assert.equal(calls[0][2], blocks)
-  assert.deepEqual(calls[0][3], { kind: 'plugin', plugin: 'dsh-my-go', form: 'relay' })
+  assert.deepEqual(calls[0][3], { kind: 'plugin:dsh-my-go', form: 'relay' })
   assert.equal(calls[0][4], signal)
 })
 
@@ -320,7 +320,7 @@ test('deliverToAdjacent：steer 档即使在带队列符号的 runtime 上也直
 
 test('deliverToAdjacent：alpha.2/3 的 queued 走 followup（旧路本身 FIFO），source/signal 原样透传', async () => {
   const calls = []
-  const source = { kind: 'coordinator', form: 'relay', senderSessionId: 'parent-1' }
+  const source = { kind: 'plugin:dsh-my-go', form: 'relay', senderSessionId: 'parent-1' }
   const subagents = { followup: async (parent, childId, content, options) => { calls.push({ parent, childId, options }); return 'msg-old' } }
   const id = await deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'queued', source })
   assert.equal(id, 'msg-old')
@@ -461,7 +461,7 @@ test('broker/alpha.4：need_help 的 sendMessage 被拒 → parent.inject 兜底
   assert.equal(r.suspended, true, '兜底送达按成功处理，挂起账不破坏')
   assert.equal(injected.length, 1, 'parent.inject 收到求助注入（行为等价旧 reportFrom）')
   assert.match(injected[0].content[0].text, /<need_help id="[^"]+" intent="replan"/)
-  assert.equal(injected[0].source.kind, 'plugin', 'inject 兜底走 plugin 通知源（notifyParent 同款）')
+  assert.equal(injected[0].source.kind, 'plugin:dsh-my-go', 'V4 生产者自持 kind：inject 兜底走 plugin:dsh-my-go 通知源（notifyParent 同款）')
 })
 
 test('broker/alpha.4：continue 默认 queued 档经 internal 队列符号投递（真 FIFO，不塌 steer）', async () => {

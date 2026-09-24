@@ -53,7 +53,7 @@ export function createDeliveryOps({
   resolveParentAgent,
   notifyParent,
 }) {
-  const coordinatorSource = (parent) => ({ kind: 'coordinator', form: 'relay', senderSessionId: parent.id })
+  const coordinatorSource = (parent) => ({ kind: 'plugin:dsh-my-go', form: 'relay', senderSessionId: parent.id })
 
   // M1：record 定位（内存全实例 → 台账文件兜底）+ 三道闸。
   // queuedHintOnly 与 spawningGate 是 continue 独有的两道（forward 无 urgency 概念，

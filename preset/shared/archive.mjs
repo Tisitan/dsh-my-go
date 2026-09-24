@@ -32,15 +32,15 @@ const ZSTD_FRAME_MAGIC = 0xfd2fb528
 // dsh-session-format/lib/index.js:472-475 `sessionFormatLogFilename(version)` 对
 // version===0 返回 `session.jsonl`，其余返回 `session.v${version}.jsonl`；再由
 // dsh-session-persistence-jsonl/lib/index.js:745-763 `generationLogFilename` 拼压缩
-// 后缀（zstd → `.zstd`）。宿主现行 SESSION_FORMAT_VERSION=3（dsh-session/lib/
-// index.js:56），故生产档案实为 `session.v3.jsonl.zstd`；`session.jsonl.zstd` 是
+// 后缀（zstd → `.zstd`）。宿主现行格式代=4（0.1.7-alpha.2 起，dsh-session-format
+// 链 v0→v4），故生产档案实为 `session.v4.jsonl.zstd`；`session.jsonl.zstd` 是
 // v0 无版本后缀旧名。此前本模块写死 v0 名 ⇒ 按 childId 定位生产档案永远不命中
 // （0.5.0-tisitan.4 修复：改「候选枚举」，现行名优先、旧名兜底，且天然兼容
 // 未来代升级）。规范名判据与宿主 parseGenerationLogFilename 一致：小写、无
 // 前导零、无 v0 标记、非临时文件。
 export const SESSION_ARCHIVE_NAME_RE = /^session(?:\.v([1-9][0-9]*))?\.jsonl\.zstd$/
 // 现行代档案名：仅用于「未命中」时报错文案里的期望路径（真实定位走上面的枚举）。
-export const SESSION_ARCHIVE_CURRENT_NAME = 'session.v3.jsonl.zstd'
+export const SESSION_ARCHIVE_CURRENT_NAME = 'session.v4.jsonl.zstd'
 // v0 旧档名：同上，仅文案用；命中与否一律由 SESSION_ARCHIVE_NAME_RE 枚举决定。
 export const SESSION_ARCHIVE_LEGACY_NAME = 'session.jsonl.zstd'
 

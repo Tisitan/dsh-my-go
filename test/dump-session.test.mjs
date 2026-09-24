@@ -1,6 +1,6 @@
 // dump-session 取证 CLI 单测（0.2.3-tisitan.16c）：zstdCompressSync 合成多帧档案
 // hermetic 验证——摘要规则、逐帧事件流、末帧截断容错、解压全灭非零语义、
-// childId 全项目目录搜索定位（档案名按 Session 格式代枚举：现行 v3 / 旧档 v0）。
+// childId 全项目目录搜索定位（档案名按 Session 格式代枚举：现行 v4 / 旧档 v0）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs'
@@ -12,7 +12,7 @@ import { summarizeEvent, dumpArchive, locateArchive } from '../scripts/dump-sess
 import { readArchivedTurnFailure, selectArchiveLog, SESSION_ARCHIVE_CURRENT_NAME, SESSION_ARCHIVE_LEGACY_NAME } from '../preset/shared/archive.mjs'
 
 // 合成多帧会话档案：每个元素一帧，帧内元素各占一行。缺省写现行代名
-// session.v3.jsonl.zstd（宿主 SESSION_FORMAT_VERSION=3），旧档兼容用例显式传 name。
+// session.v4.jsonl.zstd（宿主 SESSION_FORMAT_VERSION=4），旧档兼容用例显式传 name。
 function writeArchive(dir, frames, { tail = '', name = SESSION_ARCHIVE_CURRENT_NAME } = {}) {
   const file = join(dir, name)
   const parts = frames.map((lines) => zstdCompressSync(Buffer.from(lines.map((l) => JSON.stringify(l)).join('\n') + '\n')))
@@ -46,19 +46,36 @@ test('summarizeEvent：turn/end 打 reason.kind 与 error.message 前 200 字', 
   assert.equal(summarizeEvent({ type: 'turn/end', data: { reason: { kind: 'done' } } }), 'kind=done', '无 error 不追加')
 })
 
-test('summarizeEvent：assistant/chunk 打 chunk.type；tool 类打工具名；其余空串', () => {
+test('summarizeEvent：assistant/chunk 打 chunk.type；tool/call 打工具名；v3 旧档 tool/result 走 wrapper 兜底；其余空串', () => {
   assert.equal(summarizeEvent({ type: 'assistant/chunk', data: { chunk: { type: 'text' } } }), 'chunk=text')
   assert.equal(summarizeEvent({ type: 'tool/call', data: { name: 'pwsh' } }), 'name=pwsh')
-  // 真·宿主形状（dsh-llm createToolResultMessage）：isError 挂在 message.content[0]
-  // 的 tool-result 块上，不在 message 顶层——读错层会把被拒调用一律记成 false。
+  // v3 旧档兼容分支（本机仍有 395 份 v3 档案在读）：isError 挂在 message.content[0]
+  // 的 tool-result 块上、message 顶层没有该键——顶层缺席时回落此处。
   assert.equal(summarizeEvent({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', isError: true }] } } }), 'isError=true')
   assert.equal(summarizeEvent({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result' }] } } }), 'isError=false', '成功调用照常 false')
-  assert.equal(summarizeEvent({ type: 'tool/result', data: { message: { isError: true } } }), 'isError=false', '顶层 isError 是宿主读不到的旧口径，不再采信')
-  assert.equal(summarizeEvent({ type: 'tool/result', data: { message: {} } }), 'isError=false', 'content 缺席不炸')
-  assert.equal(summarizeEvent({ type: 'tool/result', data: {} }), 'isError=false', 'message 缺席不炸')
   assert.equal(summarizeEvent({ type: 'session/title', data: { title: 't' } }), '')
   assert.equal(summarizeEvent({ type: 'session' }), '')
   assert.equal(summarizeEvent(undefined), '')
+})
+
+test('summarizeEvent：tool/result 采信 V4 一等消息的顶层 isError（生产实形）', () => {
+  // 宿主 0.1.7-alpha.2 的 createToolResultMessage（dsh-llm/lib/index.js:101-112）
+  // 产出 { role:'tool', source:{kind:'tool',callId}, toolCallId, content, isError }
+  // ——isError 在**消息顶层**；content[0] 是普通文本块，旧 tool-result wrapper 已被
+  // v4 迁移链明令拒收。真机全量扫描：v4 档案的 tool/result 全走此形状（wrapper 零命中）。
+  assert.equal(
+    summarizeEvent({ type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: 'denied' }], isError: true } } }),
+    'isError=true',
+    'v4 顶层 isError=true 必须被采信（只读 wrapper 会把被拒调用全记成 false）',
+  )
+  assert.equal(
+    summarizeEvent({ type: 'tool/result', data: { message: { content: [{ type: 'text', text: 'ok' }], isError: false } } }),
+    'isError=false',
+    '成功调用照常 false',
+  )
+  assert.equal(summarizeEvent({ type: 'tool/result', data: { message: { content: [] } } }), 'isError=false', 'isError 键缺席（成功调用可省）不炸')
+  assert.equal(summarizeEvent({ type: 'tool/result', data: { message: {} } }), 'isError=false', 'content 缺席不炸')
+  assert.equal(summarizeEvent({ type: 'tool/result', data: {} }), 'isError=false', 'message 缺席不炸')
 })
 
 test('dumpArchive：合成两帧档案逐事件输出摘要，顺序与计数正确', () => {
@@ -113,7 +130,7 @@ test('dumpArchive：档案不可读 / 无完整帧 → 抛错（CLI 转非零退
 })
 
 // 档案名定位族：宿主 Session 档案名按格式代版本命名（v0 = session.jsonl.zstd，
-// vN = session.vN.jsonl.zstd，现行 v3），生产上只有现行名 —— 写死旧名会让
+// vN = session.vN.jsonl.zstd，现行 v4），生产上只有现行名 —— 写死旧名会让
 // childId 定位全灭（tisitan.17 修复）。以下逐面覆盖：现行名命中 / 旧名兜底 /
 // 同目录多代并存取最高代 / 跨项目目录多命中取 mtime 最新 / 全不存在。
 function makeRoot(...projectDirs) {
@@ -122,7 +139,7 @@ function makeRoot(...projectDirs) {
   return root
 }
 
-test('locateArchive：现行 v3 档案名能定位（生产实形）', () => {
+test('locateArchive：现行 v4 档案名能定位（生产实形）', () => {
   const root = makeRoot('--proj-a--')
   const dir = join(root, '--proj-a--', 'child-1')
   mkdirSync(dir, { recursive: true })
@@ -131,7 +148,7 @@ test('locateArchive：现行 v3 档案名能定位（生产实形）', () => {
   assert.ok(found, '现行名应命中')
   assert.equal(found.projectDir, '--proj-a--')
   assert.equal(found.logFile, join(dir, SESSION_ARCHIVE_CURRENT_NAME))
-  assert.equal(found.version, 3, '档案代随文件名解析出来')
+  assert.equal(found.version, 4, '档案代随文件名解析出来')
 })
 
 test('locateArchive：旧档 session.jsonl.zstd 兜底能定位（v0 语义）', () => {
@@ -150,10 +167,10 @@ test('selectArchiveLog：同目录多代并存取版本最高，不被旧迁移�
   mkdirSync(dir, { recursive: true })
   writeArchive(dir, [[{ type: 'session', id: 'legacy' }]], { name: SESSION_ARCHIVE_LEGACY_NAME })
   writeArchive(dir, [[{ type: 'session', id: 'v1' }]], { name: 'session.v1.jsonl.zstd' })
-  const current = writeArchive(dir, [[{ type: 'session', id: 'v3' }]])
+  const current = writeArchive(dir, [[{ type: 'session', id: 'v4' }]])
   const picked = selectArchiveLog(dir)
-  assert.equal(picked.logFile, current, '应选现行 v3')
-  assert.equal(picked.version, 3)
+  assert.equal(picked.logFile, current, '应选现行 v4')
+  assert.equal(picked.version, 4)
   // 非规范名（临时/大写/前导零/明文/其他后缀）一律不采信
   for (const bogus of ['session.v3.jsonl', 'session.V3.jsonl.zstd', 'session.v03.jsonl.zstd', 'session.v0.jsonl.zstd', 'session.jsonl.zstd.tmp']) {
     writeFileSync(join(dir, bogus), Buffer.from('x'))

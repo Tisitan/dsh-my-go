@@ -3,8 +3,8 @@
 // 用法：
 //   node scripts/dump-session.mjs <childId>          在 <DSH_HOME>/sessions 下
 //     按 childId 全项目目录搜索定位档案（复用 preset/shared/archive.mjs 的
-//     findArchivedLogByChildId；档案名按 Session 格式代枚举——现行
-//     session.v3.jsonl.zstd 优先、旧档 session.jsonl.zstd 兜底；多命中取 mtime 最新）
+//     findArchivedLogByChildId；档案名按 Session 格式代枚举——同目录取最高代
+//     （0.1.7 起现行 v4）、旧代 session.jsonl.zstd 兜底；多命中取 mtime 最新）
 //   node scripts/dump-session.mjs --file <path>      直读指定会话档案（任一代
 //     session.vN.jsonl.zstd 皆可，路径自己给，本 CLI 对文件名不做假设）
 //
@@ -28,10 +28,17 @@ function oneLine(text, limit) {
 }
 
 // summarizeEvent：按事件类型取关键字段，其余类型只打 type（返回空串）。
-// 字段行号以 dsh-agent-loop/lib/index.js 为准：tool/call(:293, data.name)、
-// tool/result(:308, data.message.content[0].isError——isError 在 tool-result 内容块
-// 上，不在 message 顶层；读顶层会让被拒调用永远显示 false)、request/header(:733)、llm/retry
-// (dsh-llm-retry, data.retry/failure.message)、turn/end(:592, data.reason)。
+// 字段行号以 dsh-agent-loop/lib/index.js 为准：tool/call(:682, data.name)、
+// tool/result(:697)、request/header(:1195)、llm/retry
+// (dsh-llm-retry, data.retry/failure.message)、turn/end(:1012, data.reason)。
+// tool/result 的 isError 读**双形状**（0.1.7-alpha.2 / Session 格式 v4 起）：
+// V4 一等消息把它挂在 **message 顶层**（dsh-llm `createToolResultMessage`:
+// 101-112 产出 { role:'tool', source:{kind:'tool',callId}, toolCallId, content,
+// isError }），旧的 content[0].type==='tool-result' wrapper 被 v4 迁移链明令
+// 拒收（dsh-session-format-v3-to-v4「must not contain a released tool-result
+// wrapper」）；wrapper 形状只存在于 v3 旧档（本机仍有 395 份在读）。故**顶层
+// 优先、wrapper 兜底**——只读 wrapper 会让 v4 档案里所有被拒调用显示 false
+// （真机全量逐事件扫描：v4 档案的 tool/result 一律顶层形状、wrapper 零命中）。
 export function summarizeEvent(ev) {
   const data = ev?.data ?? {}
   switch (ev?.type) {
@@ -52,7 +59,7 @@ export function summarizeEvent(ev) {
     case 'tool/call':
       return `name=${data.name ?? '?'}`
     case 'tool/result':
-      return `isError=${data.message?.content?.[0]?.isError === true}`
+      return `isError=${(data.message?.isError ?? data.message?.content?.[0]?.isError) === true}`
     default:
       return ''
   }

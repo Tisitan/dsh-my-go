@@ -11,12 +11,12 @@
  用户 ──► DSH WebUI ──► │  【client 半】dist/client.js（React 插件）                                               │
  （浏览器）             │   ├─ 🧭 侧栏按钮 ──► shell.overlay 树状图面板（current/queue/help/history/roster）     │
                         │   ├─ 设置页「MyGO 编排」（内置 9 张卡绑定五字段 + persona 覆盖 + 角色 CRUD               │
-                        │   │   导入导出 + 工具屏蔽双列表 + 全卡片手风琴）                                         │
+                        │   │   导入导出 + 全卡片手风琴）                                                          │
                         │   ├─ tisitan.15 拆分：panel-tree / settings-core / roles-editor /                        │
-                        │   │   tool-mask-editor / client-constants（client.js 265 行装配层）                      │
+                        │   │   client-constants（client.js 265 行装配层）                                         │
                         │   └─ 600ms 轮询 ──┐                                                                      │
                         │                   ▼ RPC call('/dsh-my-go', endpoint)                                     │
-                        │  【host 半】lib/index.js（profile bundle，global 层注册；721 行零编排面）              │
+                        │  【host 半】lib/index.js（profile bundle，global 层注册；487 行零编排面）              │
                         │   ├─ webServer.register('/dsh-my-go')                                              │
                         │   │    ├─ snapshot ──► 读 Symbol.for('dsh-my-go.snapshot') 全局桥 ──────────┐            │
                         │   │    │                  （桥不在 = preset 未装配 → 降级空态               │            │
@@ -24,7 +24,7 @@
                         │   │    ├─ loadSettings / saveSettings ──► settings 命名空间 'dsh-my-go'    │             │
                         │   │    ├─ listModels ──► llm.listProviders + 逐渠道 allSettled 并行 listModels │             │
                         │   │    └─ listTools ──► tools.schemas() 全局花名册，服务端滤保留名 │                     │
-                        │   └─ ensurePresetInstalled：按「版本+内容摘要」marker 同步 preset+prompts│            │
+                        │   └─ 预设声明行（preset/agent.patch.yml）：包内就地生效，无安装同步      │            │
                         │                                                                          │ 实时读        │
                         │  【agent 半】preset/tools/broker.mjs（MyGO preset 装配时加载，preset 层注册）◄┘（零副本）│
                         │   ├─ Orchestration 状态机（编排真源）                                      │             │
@@ -81,13 +81,14 @@ dsh-my-go/
 ├── README.md                 # 项目说明（含 fork 标识段）
 │
 ├── lib/
-│   └── index.js              # 【host 半】settings 命名空间 + revision 围栏 + RPC 桥 + preset 同步器
-│                             #   （721 行；tisitan.21 起零编排面——fallback 编排
-│                             #     已整体切除，编排唯一归属 broker 半）
+│   └── index.js              # 【host 半】settings 命名空间 + revision 围栏 + RPC 桥
+│                             #   （487 行；0.1.7 起 preset 安装同步器整体退役
+│                             #     -234 行，人设读包内 prompts/；tisitan.21 起
+│                             #     零编排面——fallback 编排已整体切除，编排唯一
+│                             #     归属 broker 半）
 │
-├── preset/                   # agent preset「MyGO!!!!! 模式」（被同步到 ~/.dsh/.agent-presets/）
-│   ├── preset.yml            #   preset 元信息（名称/排序）
-│   ├── agent.cordis.yml      #   agent 平面组合：DSH 官方工具行 + 本地 broker 行
+├── preset/                   # agent preset「MyGO!!!!! 模式」（0.1.7 声明行范式，包内就地加载）
+│   ├── agent.patch.yml       #   预设声明行：Loader 行 config.plugins（DSH 官方工具行 + broker 行）
 │   ├── shared/               #   【共享源 tisitan.15】constants / failure / archive /
 │   │                         #     roles / orchestration / misc / child-registry /
 │   │                         #     adjacent / end-attribution；0.5.0 线批次再补 board /
@@ -177,15 +178,15 @@ dsh-my-go/
 │   ├── multi-session.test.mjs# 多会话隔离 5 例（A 忙 B 不排队/childOwner 路由/
 │   │                         #   session 销毁隔离/revive 重登记属主（tisitan.10）/
 │   │                         #   跨会话抢属主守卫 棒2-L2，tisitan.20）
-│   ├── host-parity.test.mjs  # 反向 parity 28 例（tisitan.21 全量重写；健康度批
+│   ├── host-parity.test.mjs  # 反向 parity 37 例（tisitan.21 全量重写；健康度批
 │   │                         #   增状态族断言：八张登记表定义唯一归属
 │   │                         #   shared/child-registry.mjs，lib 与 broker 双双
 │   │                         #   零残留——登记表回流 broker 立即红；tisitan.7 另
 │   │                         #   锁本批十一条语义修复的「在册 pin」十二条，并把
 │   │                         #   retireChild 计数 needle 放宽到调用前缀 ×3；
 │   │                         #   tisitan.8 再增两例：lib 侧修复在册 pin（留痕/
-│   │                         #   失败隔离/参数化安装/marker 摘要/裁剪/镜像/
-│   │                         #   arity/信封合规）+ 客户端侧修复在册 pin
+│   │                         #   失败隔离/裁剪/信封合规；安装面三条随 0.1.7
+│   │                         #   退役改判为负向 grep）+ 客户端侧修复在册 pin
 │   │                         #   （降级定时器/退避/legacy 过滤/求助 key/
 │   │                         #   deps.React 退役））：
 │   │                         #   ① lib 编排标记 grep=0 + broker 原计数锁（编排
@@ -193,16 +194,15 @@ dsh-my-go/
 │   │                         #     + snapshot 降级空态锁；② lib 存储/面板面行为批
 │   │                         #     原样保留；④ shared 面行为直测（直引 preset/
 │   │                         #     shared/，不经 lib re-export）
-│   ├── host-lib-fixes.test.mjs# lib 半存储/安装面回归 14 例（0.3.0-tisitan.8：
-│   │                         #   settings 注册失败面隔离与热更存活 / 读盘失败
-│   │                         #   独立留痕 / loadSettings 谎报改判 / saveSettings
-│   │                         #   脏键 fail-closed / snapshot 桥抛错回 internal /
-│   │                         #   出口裁剪（末 8 + 剔 prompt，broker 实况零改写）/
-│   │                         #   桥缺席降级空态不变 / F1 通道注册壳（鉴权直出 + 手工信封）/
-│   │                         #   installPreset 真短路 / marker=版本+摘要三态 /
-│   │                         #   shared 缺席 warn + 源缺席吞异常 / prompts 镜像
-│   │                         #   清孤儿 + 未变更不重写 / getBuiltinPersona 回落
-│   │                         #   包内原文 / presetInstallRoot 两口径）
+│   ├── host-lib-fixes.test.mjs# lib 半存储/面板面回归 18 例（0.3.0-tisitan.8；
+│   │                         #   0.1.7 安装面退役批换血）：settings 注册失败面隔离
+│   │                         #   与热更存活 / 读盘失败独立留痕 / loadSettings 谎报
+│   │                         #   改判 / saveSettings 脏键 fail-closed / snapshot 桥
+│   │                         #   抛错回 internal / 出口裁剪（末 8 + 剔 prompt，
+│   │                         #   broker 实况零改写）/ 桥缺席降级空态不变 / F1 通道
+│   │                         #   注册壳九例（鉴权直出 + 手工信封 + 体积闸 + 断开
+│   │                         #   兜底）/ getBuiltinPersona 直读包内 prompts/ /
+│   │                         #   负向 grep：安装器与预设安装目录机制零残留）
 │   ├── client-smoke.test.mjs # 客户端半冒烟 6 例（0.3.0-tisitan.8：timer 在席走
 │   │                         #   timer.interval 双链 / timer 缺席回落自管
 │   │                         #   setInterval 且 unapply 清零 / sessions 缺席留痕
@@ -233,7 +233,7 @@ dsh-my-go/
 │   ├── chain-rows.test.mjs   # 模型优先级列表编辑器纯函数 11 例（tisitan.19；
 │   │                         #   stripEmptyFallbackRows 保存边界，tisitan.20 D1）
 │   ├── panel-format.test.mjs # 面板格式化纯函数 9 例（tisitan.12；徽章行首锚定 0.2.3-tisitan.20 D6）
-│   ├── dump-session.test.mjs # 取证 CLI 9 例（摘要规则/多帧行为面/childId 搜索，tisitan.16）
+│   ├── dump-session.test.mjs # 取证 CLI 14 例（摘要规则含 tool/result 双形状/多帧行为面/childId 搜索，tisitan.16）
 │   ├── failure-notice.test.mjs# 失败通知真空期三件套 11 例（名册简报段 + 同步预告
 │   │                         #   e2e + 分类器否决终局，tisitan.18）
 │   ├── compat-alpha4.test.mjs# alpha.2/3↔alpha.4 适配 32 例（shared/adjacent.mjs
@@ -338,7 +338,7 @@ dsh-my-go/
 | reasoningEffort | `broker-capability.mjs` `supportedEfforts()`（消费点 `broker.mjs` `agent/request` waterfall） | 查 DSH 模型目录 `llm.resolveModelInfo`，**仅当模型实际支持该档位才设置**，否则留空走适配器默认（拒绝硬映射）。能力表缓存同 N9 纪律（tisitan.7 N10）：非空档位才算结论，`null`（未知）不入表；并随 `settings/updated` 整体作废——此前它无任何清理点，一次拉取的结果在本进程内永挂，改好能力表后 effort 绑定仍静默不生效 |
 | 工种识别 typeOfAgent（tisitan.15） | `shared/misc.mjs` 单一源（tisitan.21 起仅 broker 消费） | sessionTypes 活登记优先 + 会话 label（`dsh-my-go:<type>` 前缀）正则兜底；`agent/request` 绑定覆盖与 DSV4P0813 assemble 识别同走此函数——修复 cold-resumed 子代理（活登记已失）模型绑定静默失效；双侧契约：角色键名 `^[a-z][a-z-]*$` 与 label 正则同构，任意名册角色都可从 label 还原 |
 | Sisyphus persona/规则 | `broker-bootstrap.mjs` 三个 `systemPrompt.section`（注册经 `registerSection` 回调，`ctx` 动作留守本体） | 读 `prompts/sisyphus.md`，按 `## 编排规则` 切两半：前段进 `deployment:persona`、后段进 `dsh-my-go:orchestration`；子代理会话返回空串（靠 parentSession 判定）。tisitan.18 起第三个段 `dsh-my-go:roster`（order=10）向根会话现渲名册简报 |
-| 子代理 persona / toolFilter | `broker-scheduler.mjs` `dispatchWork()`（人设文本经注入的 `promptCache` / `loadPrompt` 取，本体在 `broker-bootstrap.mjs`） | 经 `SubagentStartRequest.persona/toolFilter` 官方 spawn 通道注入（descriptor v2 持久化、冷恢复原样重放；tisitan.14 起 `<system-reminder>` 包装退役，prompt 保持纯任务）；toolFilter 缺名派发前按活目录过滤降级（warn），allow 全缺名时回落全量目录。**人设档案缓存随挂载建立、失败不记账**（tisitan.7 N11）：此前缓存壳住模块作用域且失败写 null，首读撞上 `ensurePresetInstalled` 的后台拷贝竞态就把本进程所有挂载的人设一起钉死（儿童永久带「无 persona」上岗、无从自愈） |
+| 子代理 persona / toolFilter | `broker-scheduler.mjs` `dispatchWork()`（人设文本经注入的 `promptCache` / `loadPrompt` 取，本体在 `broker-bootstrap.mjs`） | 经 `SubagentStartRequest.persona/toolFilter` 官方 spawn 通道注入（descriptor v2 持久化、冷恢复原样重放；tisitan.14 起 `<system-reminder>` 包装退役，prompt 保持纯任务）；toolFilter 缺名派发前按活目录过滤降级（warn），allow 全缺名时回落全量目录。**人设档案缓存随挂载建立、失败不记账**（tisitan.7 N11）：此前缓存壳住模块作用域且失败写 null，首读撞上当时 `ensurePresetInstalled` 的后台拷贝竞态（该同步器 0.1.7 已随声明行范式退役）就把本进程所有挂载的人设一起钉死（儿童永久带「无 persona」上岗、无从自愈） |
 | DSV4P0813 两阶段 | `broker-bootstrap.mjs` `system-prompt/assemble` 监听 + `session/event` 监听（`on` 经回调注入） | 开启该开关的工种：phase-1 只放行 persona section + 白名单工具（`bash/pwsh/read/write/edit/glob/grep`，fork 已修正为 DSH 真实工具名）；**按事件自身类型**判晋升——收到 `tool/call` 或 `turn/end` 即放开全部（tisitan.7 N7：宿主 `append` 先 push 再 notify，旧「从数组末位倒扫到上一个 step/end」在真机上恒 break，toolCalled 永假，phase-1 的重压形态会压满整个第一轮；直判同时省掉每 step 一次全量事件快照重建） |
 | skill 隐藏 | `broker-tools.mjs` `agent/created` 闸（编排者支路） | 主会话 `tools.restrict({ deny: ['skill'] })`，使 skill catalog 注入守门失效，节省主会话上下文；子代理保留 |
 
@@ -363,7 +363,7 @@ dsh-my-go/
 | 设置页未保存防线（0.3.0-tisitan.9 E6/A-03） | `src/settings-core.js` `mutateDraft` / `attachBeforeUnloadGuard` | 所有草稿变更（含 roles-editor 经 `deps.setDraft` 的写，dep 名不变换实现）汇聚到 `mutateDraft` 一处置 dirty；dirty 期间挂 beforeunload（宿主 `settings.section` 只给 `close`，无 onClose/卸载时机——已核实 `SettingsSectionOwnerProps`），保存行挂「● 未保存」角标与「保存并关闭」（保存失败/冲突绝不关页，close 从此不再是收下就扔的死参数）。守卫结果归一在 `settings-guard.js`（无 React 无 DOM，Node 侧直测） |
 | 模型选择可手填（0.3.0-tisitan.9 A-06） | `src/settings-core.js` `makeCombobox` + `lib/index.js` listModels | 渠道/模型两栏从裸 `<select>` 改 input + datalist（与 roles-editor 工具名输入同模式）：清单在场点选照旧，拉不到或没上报时直接键入——此前页面文案一直许诺「也可以直接输入自定义值」而控件根本不给输。`listModels` 逐渠道 `Promise.allSettled` **并行**（旧串行 await = N 渠道 N 倍首屏），失败渠道不再删键而是 `models[pid] = []` + `errors[pid] = 原因`，设置页据此在链行下挂行内提示，「清单读取失败」与「该渠道真的没模型」从此可分 |
 | settings 合并 | `broker.mjs` / `lib/index.js` | 永远从 `baseBindings`（默认值+插件 config）起算合并 stored（fork 修复：WebUI 取消配置可回落）；`||` 语义统一（空串=未设置） |
-| preset 同步 | `lib/index.js` `ensurePresetInstalled({packageRoot, dshHome})` | marker 文件 `.dsh-my-go-version` 记 **`<版本>+<preset/prompts 内容摘要>`**（0.3.0-tisitan.8）：版本与内容同时一致才跳过——装机侧手改在同版本同内容下继续存活（旧语义保留），而包内任何一次内容改动（含同版本热修）都换摘要并重拷，不再需要 bump 版本解锁。同步语义：`preset/` 逐文件字节比对只重写变化者（写窗口从整树缩到实际改动文件），`prompts/` 先删净再拷（资源镜像，上游退役人设不留孤儿）；拷贝失败只 `console.error` 吞掉不阻断挂载，且**不写 marker**（下次必重试）。参数化 + `config.installPreset === false` 让测试真短路，不再与后台拷贝抢文件；tisitan.15 起校验 `preset/shared/` 存在性——broker 相对 import shared 十三模块（健康度批 +child-registry/+adjacent，0.5.0 线批次再补 board/paths/report-format/relay-chain），同步必须整树覆盖 |
+| preset 装配（0.1.7 声明行范式） | `package.json` `dsh.bundle.patch[1]` → `preset/agent.patch.yml` | bundle 层应用第二枚 patch：insert 行把 `@deepseek-ai/dsh-agent-preset` 挂成 id `dsh-my-go` 的「MyGO!!!!! 模式」预设（行列表在声明 `config.plugins`，broker 行改包说明符 `dsh-my-go/preset/tools/broker.mjs`——声明 `config.plugins` 里的相对路径不被 Loader 锚定，见该文件头注）。**无安装拷贝、无同步**：包内 `preset/` 与 `prompts/` 就地生效（broker 以包根为根读 `prompts/`，lib 的 getBuiltinPersona 同源），0.1.7 前那套安装同步器（marker + 摘要重拷）与目录范式预设已整体退役 |
 | 面板花名册常驻区（tisitan.15；0.3.0-tisitan.9 结构化） | `src/panel-tree.js` + snapshot `roster` | snapshot RPC 恒附 `roster`：`{seq, parents, roster:[{role, builtin, provider, model, modelText, chain[], toolFilterText, personaSource}], rosterLines}`，行语义由 `shared/roles.mjs` 的 `rosterEntries` 单一源产出（与 `orchestration_status` 尾部、Sisyphus 系统提示简报三处共用同一份条目），表头文案/计数/徽章由面板自持。`rosterLines` 是同数据的 **deprecated 文本镜像**（兼容期保留，供旧 dist 与取证脚本），面板不再按「首行必为表头」的位置约定取数；桥未就绪（无编排会话）也产出 |
 
 ### 测试
@@ -396,21 +396,19 @@ next)` 按注册序串 waterfall（最外层返回值即结果，单 handler 行
 | 单测 | `test/orchestration.test.mjs` | 状态机 18 例：占锁原子性、bindChild（含缺位告警）、finish 清求助、suspend/resume、revive、requeueHead、dropQueuedFailed、history 200 上限、record/followupPrompt、enforceCurrentCap（currentMap 500 闸）、beginSpawning 路径闸、pruneLedgerParents（台账 200 桶修剪，tisitan.15；dropQueuedFor 废弃面收口，tisitan.20） |
 | 单测 | `test/chain-rows.test.mjs` | 模型优先级列表编辑器纯函数 11 例：normalize、compose/decompose 投影拆解与 round-trip 恒等、addEntry、删除扶正 + 最小长度守卫、跨边界双向移动、updateEntry（provider 重置 model）、stripEmptyFallbackRows 保存边界过滤（tisitan.20 D1）、不突变输入、draft 往返写回形状（tisitan.19；前身 fallback-rows 7 例行为面并入，tisitan.12） |
 | 单测 | `test/panel-format.test.mjs` | 面板格式化纯函数 9 例：shortId/oneLine、formatRelativeTime 阶梯与边界、extractFallbackNote 标注提取（tisitan.20 D6 起匹配收窄为行首/前缀位置，假徽章治理）、组合形状（tisitan.12） |
-| 单测 | `test/tool-mask.test.mjs` | 工具屏蔽解析 9 例：resolveDeny 三源并集（config ∪ settings ∪ 空默认，去重保序 + 非数组视为缺省）、DEFAULT_DENY 泛化清空源码断言、agent.cordis.yml `config.deny` 含邻接三件套的 pin（**0.3.0-tisitan.11 C-10 P9：改 js-yaml 真解析 + `!!js` 标签 passthrough 类型**，旧写法是「从 '- id: tool-mask' 起截文本再正则扫行」= 用眼睛读 yml，缩进一变就静默假绿；同条里的注释措辞 pin 已退役）、apply 容错（缺席跳过/服务缺席回落）、双源合并汇总日志（tisitan.13，并集与 pin 自防旁路加固批）、汇总口径=实际 restrict 成功数 + unknown 名只进汇总不逐名 warn + 真异常仍逐名 warn（0.3.0-tisitan.6 日志卫生批） |
-| 单测 | `test/tool-mask-rows.test.mjs` | 屏蔽双列表编辑器纯函数 7 例：normalize 去重保序、block/unblock、availableTools 过滤、denyEntries 未连接徽章、不突变输入（tisitan.13） |
 | 单测 | `test/roster-roles.test.mjs` | roles 名册 17 例：dict schema 形状、键名 `^[a-z][a-z-]*$` schema 层拒绝、旧顶级键无损迁移/幂等/并存覆盖、merge 携带 persona·toolFilter、apply 迁移容错（失败保留原配置仅 warn）、load/saveSettings 形状、部分行只带 persona 不产生 5 字段 ops（tisitan.14/15）、snapshot 恒附 rosterLines（tisitan.15）、roles.sisyphus 死数据不消费（merge 读面 + saveSettings 写面两例，棒2-L1，tisitan.20） |
 | 集成 | `test/roster-route.test.mjs` | 名册路由 21 例：go_work 自定义角色 persona/toolFilter 经 spawn 通道注入、未注册名结构化报错附可用清单、toolFilter 缺名过滤降级与全缺名回落、内置工种 spawn 通道兜底、fallback 重派与首派同源、orchestration_status 尾部花名册区、describeAgent default 分支、forward 自定义 target（tisitan.14）、typeOfAgent 三例（cold-resumed 恢复绑定/登记优先于畸形 label/DSV4P0813 assemble 识别，tisitan.15）、waterfall 运行期防回跳两例（备选不回跳 + effort 保留 + 常规派发不受影响 / 清理后覆盖消失，tisitan.16）、备选覆盖复活重建两例（continue 复活后 waterfall 保持备选不回跳 / 链上第二跳覆盖第一跳且历史保留各自条目，tisitan.17）、spawn 前回跳两例（请求先于 resolve 到达 waterfall 保持备选 / spawn 失败 pending 登记同步清理，棒2-Z2，tisitan.20）、DSV4P0813 promotion 行为面一例（**按真实派发时序造夹具**：tool/call 事件直判 + turn-end 翻转 + 单向切换 + 坏档快照仍晋升，棒2-L7，tisitan.20 / N7 时序修正，tisitan.7）、复活清 once-guard 一例（复活曾进备选评估的链首儿童 → 完工 end 不被吞、台账照常落账、队列解冻，N5，tisitan.7）、prompt 档案首读失败不入缓存一例（档案补齐后下一派即现读生效，N11，tisitan.7） |
 | 单测 | `test/roster-rows.test.mjs` | 角色纯函数 16 例：isValidRoleKey 与服务端同则、normalizeRoleRows 脏数据归一、增删改行、tool 条目增删、roleSummaryText/builtinSummaryText 卡摘要、不突变输入（tisitan.14）、withPersonaOverride/personaOverrideSource/buildRoleCardJson/parseRoleCardJson（tisitan.15）、resolveBuiltinPersonaResult RPC 结果归一（tisitan.16）、mergeRoleRowsIntoRoles 内置透传 + 脏行原样保留 + 投影行重建 + 删除语义（tisitan.20 Z2'） |
-| 集成 | `test/bridge.test.mjs` + `test/multi-session.test.mjs` | 共用 `test/helpers/mock-ctx.mjs`（统一 ctx 替身 + 契约夹具）跑 `broker.apply()`：bridge 49 例（含 **C-09 替身保真例：broker 七个事件恰好各注册一个 handler**，旧单槽替身把重复注册藏成静默覆盖；Symbol.for 快照桥两例、队列回补重试/超上限放弃、disposed 竞态两例、dispatchWork 模型绑定解析两例、settings 重基线、队列上岗映射通知、失败附因 live 推送、截断 config、台账 v2 分桶 round-trip、tisitan.9 持久化档案附因两例、tisitan.11 need_help 上报失败 warn+通知与 forward 信封化转义、tisitan.12 备选链重派等十二例（含 step-3 a–h）、tisitan.17 fallbackEntry 入账 + 台账 round-trip、现场-Z3 台账文件兜底查找、tisitan.20 棒2-Z1 once-guard 双发盲窗；**tisitan.7 六例**：abort 活体门槛（缺席儿童不登记护航）+ 护航只吞非 completed 终局、卸载 flush 台账防抖窗、兜底走 retireChild（迟到 end 不再「conclusion dropped」误报）、continue 打 spawning 占位结构化拒绝、need_help 工种 label 兜底不落 undefined）；multi-session 5 例（A 忙 B 不排队、childOwner 路由、session 销毁隔离、revive 重登记属主）（tisitan.10）+ 跨会话抢属主守卫（棒2-L2，tisitan.20）。**0.3.0-tisitan.12 等待口径**：本档、roster-route、failure-notice、multi-session 共 **34 处正向等待**改为 `waitFor(终态谓词)`（25 处 `await drain(N)` + 9 处 codemod 扫不到的裸 `await new Promise(r => setTimeout(r, N))`）——谓词一律取**紧随其后那批断言真正读到的可观测量**（尤其「占位换键完成」这种末步，只等 `specs.length` 会在并行压力下拿到 `child-*` 占位 id 而假红）；谓词写窄了还会**自己制造竞态**（`agentType==='hermes'` 占位入槽即成立、`status==='spawning'` 早于门面调用，两处反例已就地留注释）。6 处**负向窗口**（等的是「什么都没发生」：宽限期不误伤 / aborted 不重派 / 评估窗内忽略 / 迟到 disposed 不拖垮他会话 / 迁移幂等 / `installPreset:false` 真短路）保留固定 sleep，且先 `waitFor` 到正向终态再开窗 |
-| 半对齐 | `test/host-parity.test.mjs` | 反向 parity 28 例（tisitan.21 全量重写；**0.3.0-tisitan.11 C-10 按裁决口径瘦身：精确计数 pin ~80 → 2，改写为「十枚编排身份标记 + 十一条共享通路 >=1 在册 + 五类负向 grep=0」，并新增「安装目录模拟」——按 package.json files 白名单算出发布物集合，逐条核对两半 import 目标都在其中，白名单漏目录 = 用户侧 MODULE_NOT_FOUND 当场红**，原 33 例双半镜像对称断言整体退役——编排行为等价覆盖在 bridge.test.mjs / roster-route.test.mjs）：① lib 零编排面哨兵（六工具注册/派发队列闭包/编排状态（orchestrations + child-registry 状态族八表定义）/台账/备选链/生命周期钩子/快照桥外全部编排标记 grep=0，broker 半原计数保留——编排代码加回 lib 立即红；状态族另锁「定义唯一归属 shared/child-registry.mjs、登记表本体不得回流 broker、跨表守卫不得手抄」；**tisitan.7 另加语义在册 pin 十二条**（N5 两张一次性表清理点、N6 护航收紧式与登记点、N9 三处缓存纪律式与 epoch 自增、N10 清理点与非 null 入表式、N7 事件直判且倒扫死支必须 grep=0、N14 兜底 retireChild），并把「end 收尾」计数 needle 从 `retireChild(childId)` 放宽为 `retireChild(` ×3——参数名不该决定防线是否被数到））+ RPC/settings 分界契约（RPC 端点全家与 settings.register 为 lib 独有，broker 只读零 RPC）+ 接线分界（typeOfAgent/养护闸/备选链/台账/persona 链 broker 独有）+ 名册简报段 broker 独有注册 + shared 单一源 import 存在性（**0.3.0-tisitan.12 编排身份标记 +2 枚：`shared/end-attribution.mjs` 与 `attributeEnd(`——end 归因决策同属编排身份，lib 半出现即为回归；「安装目录模拟」那条按 files 白名单自动把新 shared 模块纳入发布物核对，无需追加 pin**）；①b snapshot 降级形态锁（无桥 → `{seq:0,parents:{}}` + rosterLines 常驻；桥在席直读 broker 实况）；② lib 存储/面板面行为批原样保留（settings schema/saveSettings fallbacks 与 toolMask/mergeRoleBindings 单一源/listTools 两例/getBuiltinPersona/persona·toolFilter 显式字段/roles 删除语义/loadSettings 形状）；④ shared 行为面直测（失败分类器/归档取证含 cwd 兜底三例/角色合并/迁移 ops/工种识别/台账修剪/resolveEffectiveBinding，直引 preset/shared/ 不经 lib re-export） |
-| 集成 | `test/host-lib-fixes.test.mjs` | lib 半存储/安装面回归 14 例（0.3.0-tisitan.8）：settings 注册抛错 → error 留痕 + 热更监听与 RPC 面照常活（改存储后 snapshot 花名册即时反映新绑定）/ 读盘抛错独立留痕不牵连 RPC / loadSettings 谎报改判 `unavailable`（带原因与 details）/ saveSettings 脏键 fail-closed（大写名 + 路径串丢弃而正常行照写）/ 桥函数抛错回 `internal` 且 host 侧留痕 / 出口裁剪（每桶末 8、current·queue·history 无 prompt、求助正文保留、broker 实况数组零改写）/ 桥缺席仍是降级空态 / `rpc.handle` 两参与三参双形态（三参才带 `authority:'loopback'`；0.5.0-tisitan.2 起换成 F1 注册壳九例：注册形态 / 401·403 直出 / 404·415 / 信封四态 / 抛穿收口 / 413 体积闸 / 断开兜底 / 无 webServer 降级 / 缺陷面回归闸）/ `installPreset:false` 真短路零文件动作 / marker 三态（首装落版本+摘要、同版本同内容跳过且装机手改存活、包内漂移重拷）/ 旧格式 marker 无条件同步 / shared 缺席 warn + 源树缺席吞异常留痕且不写 marker / prompts 镜像清孤儿 + 未变更文件 mtime 不变 / getBuiltinPersona 回落包内原文 + `presetInstallRoot` 两口径 |
+| 集成 | `test/bridge.test.mjs` + `test/multi-session.test.mjs` | 共用 `test/helpers/mock-ctx.mjs`（统一 ctx 替身 + 契约夹具）跑 `broker.apply()`：bridge 50 例（含 **C-09 替身保真例：broker 七个事件恰好各注册一个 handler**，旧单槽替身把重复注册藏成静默覆盖；Symbol.for 快照桥两例、队列回补重试/超上限放弃、disposed 竞态两例、dispatchWork 模型绑定解析两例、settings 重基线、队列上岗映射通知、失败附因 live 推送、截断 config、台账 v2 分桶 round-trip、tisitan.9 持久化档案附因两例、tisitan.11 need_help 上报失败 warn+通知与 forward 信封化转义、tisitan.12 备选链重派等十二例（含 step-3 a–h）、tisitan.17 fallbackEntry 入账 + 台账 round-trip、现场-Z3 台账文件兜底查找、tisitan.20 棒2-Z1 once-guard 双发盲窗；**tisitan.7 六例**：abort 活体门槛（缺席儿童不登记护航）+ 护航只吞非 completed 终局、卸载 flush 台账防抖窗、兜底走 retireChild（迟到 end 不再「conclusion dropped」误报）、continue 打 spawning 占位结构化拒绝、need_help 工种 label 兜底不落 undefined）；multi-session 5 例（A 忙 B 不排队、childOwner 路由、session 销毁隔离、revive 重登记属主）（tisitan.10）+ 跨会话抢属主守卫（棒2-L2，tisitan.20）。**0.3.0-tisitan.12 等待口径**：本档、roster-route、failure-notice、multi-session 共 **34 处正向等待**改为 `waitFor(终态谓词)`（25 处 `await drain(N)` + 9 处 codemod 扫不到的裸 `await new Promise(r => setTimeout(r, N))`）——谓词一律取**紧随其后那批断言真正读到的可观测量**（尤其「占位换键完成」这种末步，只等 `specs.length` 会在并行压力下拿到 `child-*` 占位 id 而假红）；谓词写窄了还会**自己制造竞态**（`agentType==='hermes'` 占位入槽即成立、`status==='spawning'` 早于门面调用，两处反例已就地留注释）。**负向窗口**（等的是「什么都没发生」：宽限期不误伤 / aborted 不重派 / 评估窗内忽略 / 迟到 disposed 不拖垮他会话 / 迁移幂等）保留固定 sleep，且先 `waitFor` 到正向终态再开窗（0.1.7 起安装同步退役，原第 6 处 `installPreset:false` 真短路随之删除） |
+| 半对齐 | `test/host-parity.test.mjs` | 反向 parity 37 例（tisitan.21 全量重写；**0.3.0-tisitan.11 C-10 按裁决口径瘦身：精确计数 pin ~80 → 2，改写为「十枚编排身份标记 + 十一条共享通路 >=1 在册 + 五类负向 grep=0」，并新增「安装目录模拟」——按 package.json files 白名单算出发布物集合，逐条核对两半 import 目标都在其中，白名单漏目录 = 用户侧 MODULE_NOT_FOUND 当场红**，原 33 例双半镜像对称断言整体退役——编排行为等价覆盖在 bridge.test.mjs / roster-route.test.mjs）：① lib 零编排面哨兵（六工具注册/派发队列闭包/编排状态（orchestrations + child-registry 状态族八表定义）/台账/备选链/生命周期钩子/快照桥外全部编排标记 grep=0，broker 半原计数保留——编排代码加回 lib 立即红；状态族另锁「定义唯一归属 shared/child-registry.mjs、登记表本体不得回流 broker、跨表守卫不得手抄」；**tisitan.7 另加语义在册 pin 十二条**（N5 两张一次性表清理点、N6 护航收紧式与登记点、N9 三处缓存纪律式与 epoch 自增、N10 清理点与非 null 入表式、N7 事件直判且倒扫死支必须 grep=0、N14 兜底 retireChild），并把「end 收尾」计数 needle 从 `retireChild(childId)` 放宽为 `retireChild(` ×3——参数名不该决定防线是否被数到））+ RPC/settings 分界契约（RPC 端点全家与 settings.register 为 lib 独有，broker 只读零 RPC）+ 接线分界（typeOfAgent/养护闸/备选链/台账/persona 链 broker 独有）+ 名册简报段 broker 独有注册 + shared 单一源 import 存在性（**0.3.0-tisitan.12 编排身份标记 +2 枚：`shared/end-attribution.mjs` 与 `attributeEnd(`——end 归因决策同属编排身份，lib 半出现即为回归；「安装目录模拟」那条按 files 白名单自动把新 shared 模块纳入发布物核对，无需追加 pin**）；①b snapshot 降级形态锁（无桥 → `{seq:0,parents:{}}` + rosterLines 常驻；桥在席直读 broker 实况）；② lib 存储/面板面行为批原样保留（settings schema/saveSettings fallbacks 与 mergeRoleBindings 单一源/listTools 两例/getBuiltinPersona/persona·toolFilter 显式字段/roles 删除语义/loadSettings 形状）；④ shared 行为面直测（失败分类器/归档取证含 cwd 兜底三例/角色合并/迁移 ops/工种识别/台账修剪/resolveEffectiveBinding，直引 preset/shared/ 不经 lib re-export） |
+| 集成 | `test/host-lib-fixes.test.mjs` | lib 半存储/面板面回归 18 例（0.3.0-tisitan.8；0.1.7 安装面退役批换血）：settings 注册抛错 → error 留痕 + 热更监听与 RPC 面照常活（改存储后 snapshot 花名册即时反映新绑定）/ 读盘抛错独立留痕不牵连 RPC / loadSettings 谎报改判 `unavailable`（带原因与 details）/ saveSettings 脏键 fail-closed（大写名 + 路径串丢弃而正常行照写）/ 桥函数抛错回 `internal` 且 host 侧留痕 / 出口裁剪（每桶末 8、current·queue·history 无 prompt、求助正文保留、broker 实况数组零改写）/ 桥缺席仍是降级空态 / `rpc.handle` 两参与三参双形态（三参才带 `authority:'loopback'`；0.5.0-tisitan.2 起换成 F1 注册壳九例：注册形态 / 401·403 直出 / 404·415 / 信封四态 / 抛穿收口 / 413 体积闸 / 断开兜底 / 无 webServer 降级 / 缺陷面回归闸）/ getBuiltinPersona 直读包内 `prompts/`（安装副本候选路径随机制退役）/ 负向 grep：安装器与预设安装目录机制零残留（单模式，不留双姿态） |
 | 冒烟 | `test/client-smoke.test.mjs` | 客户端半 6 例（0.3.0-tisitan.8，Node 侧跑、假时钟推进、不起浏览器）：`client.apply` timer 在席走 `timer.interval`（600+800 双链，unapply 后 disposer 全调用）/ timer 缺席回落自管 `setInterval`（一次性留痕，unapply 清零不留孤儿）/ sessions 缺席一次性留痕且跳转链不点火 / in-flight 门（在飞期间 tick 全丢，落地后恢复放行）/ 失败退避逐档（600 被吃 → 1500 放行 → 3000 封顶 → 成功复位回 600，故障与恢复各只 warn 一行）/ `internal` 与 `absent` 两型留痕分流 |
 | 集成 | `test/settings-fence.test.mjs` | 设置页加固 lib 面 13 例（0.3.0-tisitan.9）：loadSettings 回带 revision（宿主 describe 真源）/ describe 缺席时回落进程内计数器且只数本命名空间的 `settings/updated` / 过期凭据就地拒绝且**一次写都不发** + details 带 `{expected, actual}` / 凭据新鲜时把 expectedRevision 交给宿主执行且成功后回带新版本号 / 宿主自抛 `SETTINGS_CONFLICT` 映射为 conflict（describe 与真实版本分叉复现预检-提交之间的 TOCTOU 窗）/ draft 不带 revision = 无条件写也不塞假第三参 / 旧宿主两参 mutate 时 `arguments.length === 2`（越界实参会崩注册）/ listModels 三渠道同 tick 全部发起（并行证据）/ 单渠道失败只脏自己（键不缺席 + 原因进 errors + 他渠道照常）/ llm 缺席仍给 `{providers:[],models:{},errors:{}}` 形状 / snapshot.roster 结构化字段齐备且 `rosterLines.length === roster.length + 1`（同源，多的正是表头）/ lib 文本镜像、shared 简报、结构化条目三处语义一致 / bindings 形状漂移（非数组 fallbacks、脏 toolFilter、null 行）不炸 |
 | 单测 | `test/settings-guard.test.mjs` | 设置页守卫纯函数 11 例（0.3.0-tisitan.9，无 React 无 DOM）：interpretLoadResult 把 revision 从 draft 里剥干净（防止凭据被当配置字段回写）/ 旧 host 半不回版本 → `revision:null` 而非伪 0 / `ok:false`、value 缺席、数组、空响应一律 failed（null-draft 禁存门禁不变）；interpretSaveResult 成功 adopt 新凭据、`value:null` 仍算成功但不发明版本、conflict 独立成态并**作废本地凭据**（message 含「他处已修改」与实际版本号）、宿主原生 `SETTINGS_CONFLICT` 同样归一为 conflict 不降级成 settings-rejected、真写失败保留 host 原因；attachBeforeUnloadGuard 挂一个监听 + disposer 精确摘除 + 重复解除幂等 / 事件必须 preventDefault + `returnValue`（否则浏览器不弹自家确认框）/ 非浏览器环境返回可调用的空 disposer |
 | 集成 | `test/failure-notice.test.mjs` | 失败通知真空期三件套 11 例（tisitan.18）：名册简报段注册形态/儿童门控两路/内容全要素/字节稳定（含键插入序无关）/settings 更新免刷新管道 5 + 同步预告 e2e 5（有链失败评估中先于重派通知 / 无链失败取证中先于附因通知 / aborted 有链不谎报评估中 / 链尽终局通知 / 成功 end 零预告）+ 分类器否决终局通知 1 |
 | 集成 | `test/compat-alpha4.test.mjs` | alpha.2/3 ↔ alpha.4 兼容适配 32 例（tisitan.22 + 防旁路加固批 + 终审批 + 0.3.0-tisitan.12 N15；适配函数自健康度批起住 `shared/adjacent.mjs`）：`sessionEvents` 双形态与坏档回落 3、`deliverToAdjacent` 新/旧路径与优先级 3、**N15 路由表 2**（五形态 × 两档位的 route 枚举全在册 + **探测/投递同构不变量**：同一 runtime 对象上 `canQueueAdjacent` 的答复必须等于 plan 的路由口径，且投递实际命中的原语就是那条 route——旧写法靠注释维持，塌档只会静默表现为「queued 走了 steer」）、**queued 档位三路径 6**（`canQueueAdjacent` 三态两例 + alpha.4 internal 队列符号直取 / steer 直走 sendMessage / alpha.2-3 followup 天然 FIFO / 缺省即 queued）、`reportToParent` 四例、broker 接线 7（alpha.4 形态 continue/need_help、inject 兜底、**broker 级 queued 真 FIFO / 无队列符号退化 steer+warn / steer 档经门面不直调 Agent.steer / steer 被拒回落 queued**）、modelCache 热更失效 1、**缓存纪律五例（tisitan.7 N9/N10）**：在飞清单不回写热更后的缓存（epoch 竞态）/ 列举成功的空清单也缓存（坏 provider 不再逐请求重拉）/ 抛错不缓存留待重试 / effortCache 随热更作废 / 能力表 null 不入缓存、**宿主契约哨兵 1**（解析到 dsh-subagent ≥ alpha.3 才验门面形状与队列符号；0.3.0-tisitan.11 N1 起 devDeps 升到 alpha 线，本机解析 0.1.2-alpha.5 → **已合闸真跑**，全仓 `# skipped 0`） |
 | 集成 | `test/anti-bypass.test.mjs` | 防旁路加固 7 例（R1/R2/R3 + 终审 U1）：`ADJACENT_BYPASS_TOOLS` 值集合 pin、**门面收口 pin（无 `childAgent.steer(` 直调、无自造 `mygo-steer-*`；C-10 P6 退役「broker 源码两侧 deny 接线计数」例——两侧 deny 实际落下什么是下面 `agent/created` 两例逐名断言的，比数出现次数强）**、`agent/created` 子代理侧 deny 含派生工具 + 邻接三件套且保留 need_help/观测工具、Sisyphus 侧 deny 含 skill + 邻接三件套且不误伤六件套、restrict 批级抛错时逐名兜底不连坐、载荷缺 agent / ctx 未 ready 全崩不炸挂载、**闸体自身抛错必须 console.warn 留痕（N12，tisitan.7：静默失守等于防线整体不存在）** |
-| 单测 | `test/dump-session.test.mjs` | 取证 CLI（`scripts/dump-session.mjs`）9 例：summarizeEvent 摘要规则 4（request/header 打 provider/model、llm/retry 序号、turn/end reason、assistant/chunk 与 tool 名）、dumpArchive 合成多帧档案行为面 4（逐帧事件流/末帧截断容错/帧内损坏行跳过/档案不可读与解压全灭非零语义）、locateArchive childId 全项目目录搜索 1；zstdCompressSync 合成档案全 hermetic（tisitan.16） |
+| 单测 | `test/dump-session.test.mjs` | 取证 CLI（`scripts/dump-session.mjs`）14 例：summarizeEvent 摘要规则 5（request/header 打 provider/model、llm/retry 序号、turn/end reason、assistant/chunk 与 tool/call 名、**tool/result 双形状——V4 一等消息顶层 isError 优先 / v3 旧档 wrapper 兜底**）、dumpArchive 合成多帧档案行为面 4（逐帧事件流/末帧截断容错/帧内损坏行跳过/档案不可读与解压全灭非零语义）、定位族 5（现行 v4 名命中 / v0 旧名兜底 / 同目录多代取最高 / 跨项目目录多命中取 mtime 最新 / 不存在返回 undefined）；zstdCompressSync 合成档案全 hermetic（tisitan.16） |
 | 单测 | `test/child-registry.test.mjs` | 子代理登记表 8 例（健康度批，直测 `shared/child-registry.mjs`）：墓碑迁移（活登记让位 + 备选覆盖同点摘 + 无登记返回 false）、墓碑有界 FIFO 驱逐（超容只留最新两枚且被驱逐者覆盖不残留）、缺省容量取 `DISPOSED_TYPES_CAP`、`retireChild` 与 `retireTypeRecords` 分工（后者故意保留 childOwner）、备选两段式登记（pending 按 label 命中 → promote 转正撤临时）、永久覆盖优先于同 label 临时登记、`rearmChild` 三态守卫（无 fallbackEntry / 缺 model / provider 非字符串均不回填，ownerPid undefined 不写键）、**复活即新世代（`fallbackDecided` 与 `abortExpected` 两张一次性表同点清零且只清复活者自己，N5，tisitan.7）** |
 | 单测 | `test/end-attribution.test.mjs` | end 归因决策 23 例（0.3.0-tisitan.12 B5，直测 `shared/end-attribution.mjs`，**不起 ctx 替身**）：E0 无载荷 / E1 迟到重复（推进照常，槽位已空）/ E2 不在册（**ops 必须为空**——类型侧三表本无此键是空转，childOwner 更不能清，它可能指向仍活着的属主实例）/ E2b 多占位歧义零 op / E3 属主已毁只 retire / E4 占位换键（ops 顺序 bind→set-owner 钉死）/ E4b 归因后即在册（否则 error 终局漏重派）/ E5 abort 护航吞非 completed 终局、E5b completed 只消费不吞 / E6 在飞不重复评估 / **换序三例 E5→E6、E6→E7、E3→E4**（分支先后本身就是语义）/ E7 评估载荷四件套（guard + 预告 + baseConclusion + failureLine）/ E7b 非 error 终局三型绝不进评估 / E7c·E7d 预告措辞可分辨 / E8 结论取 text 块串接 / E8b 空载荷兜底与终局两行顺序 / E8c 迟到第二发不重复预告 / readFailure 惰性（早退六连零次、收尾恰一次）/ DECISIONS 八条全表 + `shouldAdvanceQueue` 真值表（未登记 = 不推进）。首批用例即抓出 E0 出口 `ops` 写成 `{}` 的形状病（应为 `[]`） |
 | 基建 | `test/helpers/mock-ctx.mjs` | 非用例文件（六文件共用的 broker.apply ctx 替身工厂 + 夹具）；**0.3.0-tisitan.11 C-09 五项保真严格化**：listeners 多播 + `dispatch` waterfall 链（含「next() 重复调用即抛」）+ `dispatchEach` 广播 + `registeredHandlers()` 注册数、`systemPrompt.section`/`tools.register` 重名抛错、`effect` 不再吞异常、`settings.get` 返回深冻结副本（写变异当场 TypeError）；另加 `waitFor(谓词,{what,attempts,delayMs})` 条件等待（固定 sleep 在 20 文件并行时假红，C-12 实测约 1/5；超时抛错带谓词源码 + what 标签）与 `removeHomeWithRetry`（临时目录树里 50ms 防抖台账写与 teardown 抢窗，全量并行报 ENOTEMPTY/EBUSY，有界退避只吞这三类可重试错误）；`createMockCtx` 参数化服务注入（agents/llm/settings/sessions/toolsRegistry/subagentsExtra）、`captureSections`/`captureRestrict`/`captureEffects`（捕获 effect 返回的 Dispose，供卸载路径断言，tisitan.7 N8）捕获口、`keepHome`/`homePrefix` 台账隔离策略；`withRealSignalContract` 固化上游 startContinuable 无条件解引用 signal 的真实契约（旧式宽松 mock 会让队列重试路径假绿） |
@@ -447,8 +445,8 @@ release commit 提交构建产物，朋友零构建。**
 
 ```bash
 # 1) bump 版本：package.json 的 version（唯一权威源）。README 顶部那个
-#    deepseek-harness-meta 块的 version 只是展示用元信息，不参与 preset 同步判定
-#    （摘要只吃 preset/ + prompts/ 两棵树），但发版时一并对齐，免得日后对不上号
+#    deepseek-harness-meta 块的 version 只是展示用元信息，不参与任何运行时判定
+#    （0.1.7 起 preset 无安装同步、也没有摘要口径），但发版时一并对齐，免得日后对不上号
 # 2) 全量测试（scripts.test 已含构建：build-client → apply 冒烟含 dist 新鲜度 → node --test 通配）
 npm test
 # 3) 显式重建一次产物，确保入库的那份就是刚测过的那份（npm test 已跑过，这里是幂等确认）
@@ -510,25 +508,25 @@ git ls-tree -r --name-only HEAD | grep '^dist/'   # 期望恰好一行 dist/clie
   均为 `{}`，不内置任何模型/渠道名，子代理完全继承环境默认路由。需要按工种分流
   必须自行配置（WebUI 设置页「MyGO 编排」或 `~/.dsh/settings.yaml`，
   示例见 README「工种模型绑定」），否则所有子代理与 Sisyphus 同路由。
-- **tool-mask：三源并集，`DEFAULT_DENY` 空（tisitan.13 起 / 并集自防旁路加固批）**：
-   `preset/tool-mask.mjs` 的 `DEFAULT_DENY` 已清空（原 7 个私有示例名移除），
-   清单 = `config.deny`（agent.cordis.yml 行级，现含上游邻接消息三件套
-   `send_message` / `list_agents` / `interrupt_agent`）∪ settings
-   `toolMask.deny`（设置页「工具屏蔽」双列表）∪ 空默认，**去重保序、互不
-   覆盖**。并集是这批敢往 `config.deny` 写安全条目的前提：旧语义下 `config.deny`
-   一旦非空就把用户设置页清单整体吃掉。清单在 preset 挂载时解析一次，**只对
-   新会话生效**。restrict 失败分两类（0.3.0-tisitan.6 日志卫生批）：本作用域查无此具（宿主
-   报 `names unknown global tool`）静默跳过，名字进汇总行的「not registered at
-   this scope」清单，不再逐名 warn——web 部署下 host 不全局注册邻接三件套，
-   preset standing 作用域的 restrict 必然查无此具，逐名 warn 纯属噪音；其他
-   restrict 报错是真异常，仍逐名 warn。两类都不炸挂载；汇总行的数字只统计
-   **实际 restrict 成功**的个数。注意 restrict 只过滤**继承名**
-   （`packages/core/tools/src/index.ts:1143-1165` own-layer 豁免），所以本行能
-   屏蔽宿主 bundle 在 global 层注册的工具（上述三件在非 web profile 下即属
-   此类，见 `dsh-base/cordis.patch.yml:349-353`；web profile 下它们不在 global
-   层，本行只是空跑），屏蔽不掉 broker 自产的编排工具——
-   那类「同层名」由 broker 的 `agent/created` 闸在 agent 子作用域上 deny。
-   tisitan.12 及之前依赖内置清单的部署升级后需在设置页重配。
+- **用户级工具屏蔽已整体迁出本仓（2026-09-15 → [dsh-tool-guard](../dsh-tool-guard)）**：
+  原 preset 级屏蔽（tool-mask preset 行 + `config.deny`、settings `toolMask.deny`
+  键、设置页「工具屏蔽」双列表编辑器、`preset/tool-mask.mjs` 与 `test/tool-mask*.test.mjs`
+  两个测试档）已全部拆除，存量名单平移为 `dsh-tool-guard.denyTools`——那边以宿主
+  平面插件对**所有 profile / preset / scope（含 MyGO 全部子代理）**生效，并经
+  `settings/updated` 热更、呈示层 + `tools.guard` 双钩拦截。本仓只剩两类
+  **编排拓扑**工具层防线（与用户屏蔽正交，见 README「工具屏蔽」）：
+  ① `broker-tools.mjs` 的 `agent/created` 闸——子代理侧摘原生派生四件
+  （`subagent` / `subagent_fork` / `workflow` / `ralph`）+ 编排三件 + 上游邻接
+  消息三件套 + Agent Teams 六件，主编排侧摘 `skill` + 邻接三件套；
+  ② 角色级 `toolFilter`（allow/deny，随 roles 走）。
+  **别再往本仓加用户屏蔽**：restrict 的两条语义是这个决定的前提（own-layer 豁免，
+  `packages/core/tools/src/index.ts:1143-1165`）——它只过滤**继承名**（本层自产的
+  名字摘不掉，闸因此走 `agent.ctx` 子作用域，不依赖「宿主在 global 层也注册了这
+  几个名字」这个前提），且对**未注册名**硬 deny 只会换来批级拒绝 + 逐名兜底的
+  「查无此具」噪音（条件注册三件 `report_fetch` / `chain_start` / `chain_resolve`
+  与 Agent Teams 六件的名单因此必须随在册状态联动）。闸体自身抛错必须
+  `console.warn` 留痕（N12：静默失守 = 防线整体不存在），行为面用例见
+  `test/anti-bypass.test.mjs`。
 - **CI 的 Windows 腿本机预验不了，两处平台差异已知**（0.3.0-tisitan.11 D-14）：
   ① `test/anti-bypass` / 发布链路都在 Linux 上跑，符号链接（POSIX）用例已按
   `process.platform` 门控，win32 下 `fs.symlinkSync` 无特权会 EPERM——新加 POSIX-only

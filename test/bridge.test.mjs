@@ -1233,7 +1233,7 @@ test('urgency=steer：running 子代理经 subagents 门面投递，绝不直调
   assert.equal(call.childId, 'sess-1')
   assert.deepEqual(call.content, [{ type: 'text', text: '中途纠偏：换方向' }])
   // 旧路径（alpha.2/3）仍携带 coordinator relay source（alpha.4 支由 runtime 推导）
-  assert.deepEqual(call.options.source, { kind: 'coordinator', form: 'relay', senderSessionId: 'parent-1' })
+  assert.deepEqual(call.options.source, { kind: 'plugin:dsh-my-go', form: 'relay', senderSessionId: 'parent-1' })
   assert.ok(call.options.signal, 'signal 必填面（alpha.2/3 同 alpha.4）')
   // 台账：prompt 更新 + urgency 字段入账
   const cur = currentOf('parent-1')

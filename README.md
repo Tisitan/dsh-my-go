@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.5.0-tisitan.5",
+  "version": "0.5.0-tisitan.6",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -33,7 +33,7 @@ dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 - **未保存与并发写防线（0.3.0-tisitan.9 立规，0.5.0-tisitan.3 换信道不降级）**：草稿一旦改动即置 dirty，保存条挂「待保存：<改了什么> · r<版本>」，关页签/刷新前浏览器拦一道；保存带**草稿建立那一刻**的 revision 作栅栏，他处（另一页签 / 手改 settings.yaml）先写过则**不冲草稿**、亮漂移告示并给出唯一出路「丢弃草稿并重读」；写完一律读回比对，判「已保存」还是「没落盘」以宿主现值为准（官方 settingsScope 被拒时不抛异常，旧 `try/catch` 判冲突会把失败报成成功，0.5.0-tisitan.3 修）。
 - **面板弹性（0.3.0-tisitan.8 起）**：快照轮询带 in-flight 门与失败退避（600 → 1500 → 3000ms，成功复位），host 端在出口把快照裁到面板可见规模（每桶 history 末 8 条、剔除 prompt 全文）；宿主 `timer` / `sessions` 服务缺席时面板真降级（自管定时器继续刷新 / 只关跳转）并一次性留痕，不再静默停摆。
 - **10 个编排/通信/报告/接力链工具**：`go_work`（派发）、`continue`（驳回/追问）、`need_help`（求助挂起）、`forward`（转发）、`orchestration_status`（状态总览）、`list_subagents`（列出已有 sub-agent 及其最后 prompt）、`report_submit`/`report_fetch`（报告落板/读板，报告外部化总闸开时注册）、`chain_start`/`chain_resolve`（接力链声明/处置，接力链总闸开时注册）。
-- **单宿主编排（tisitan.21 起）**：编排能力唯一由 MyGO preset 提供（broker 半，preset scope），装机后首启自动同步 preset，常态无感；lib-only 部署形态（preset 未装配）不提供编排能力，面板降级为空态 + 花名册常驻。
+- **单宿主编排（tisitan.21 起）**：编排能力唯一由 MyGO preset 提供（broker 半，preset scope），预设经包自带声明行随 bundle patch 生效、包内就地加载（0.1.7 起无安装同步），常态无感；lib-only 部署形态（preset 未装配）不提供编排能力，面板降级为空态 + 花名册常驻。
 - **步骤级调度**：Prometheus 供应拆解素材（现状拆解/候选方向/风险清单，只交素材不交决断），方案与步骤定序归 Sisyphus，由 Sisyphus 逐步骤选择最省 token 的工种——**按任务难度分配（不按需求难度）**：指令明确、步骤具体的执行活优先派 Hermes，需要设计/推理的才升级 Hephaestus，仅疑难/极端复杂才到 Oracle；同工种上下文连续则 `continue` 复用。
 - **Sisyphus 质检**：结论不达标驳回重做，被驳回的子智能体保留上下文继续。
 - **WebUI 配置**：每个工种的模型 / 思考档位 / DSV4P0813 补丁开关 / 备选链，均在 **DSH Web → 插件 → dsh-my-go 的配置卡**里改（0.5.0-tisitan.3 起这是唯一入口，旧「MyGO 编排」设置页 section 已下岗）；布局是两块两列主从（模型与角色 / 用量单价表）+ 通栏注释区，tisitan.14 起含「自定义角色」CRUD，tisitan.19 起主选与备选链合并为单一「模型优先级列表」（#1 主选带徽章，备选 ↑ 到顶一键扶正），0.3.0-tisitan.9 起渠道与模型两栏是**可手填输入框**（input+datalist：清单在场点选、清单拉不到时直接键入，兑现页面一直许诺的「也可以直接输入自定义值」），且某渠道清单读取失败会行内标出原因（不再与「该渠道真的没模型」同形）。
@@ -128,18 +128,16 @@ ls -l "$profile/node_modules/dsh-my-go"                                        #
 数组里**登记了 `dsh-my-go`**、`node_modules/dsh-my-go` 是一枚**指向 clone 目录的
 junction/symlink**（不是拷贝）。
 
-**首启会发生什么**：bundle 层自动应用插件自带的 `cordis.patch.yml`（无需手写 insert），
-host 插件（`lib/index.js`：settings 存储 + 面板 RPC + preset 同步器）挂载，随后
-`ensurePresetInstalled` 按「版本 + 内容摘要」双门把 `preset/` + `prompts/` 整拷到
-`~/.dsh/.agent-presets/dsh-my-go/`。终端应看到一行：
-
-```
-[dsh-my-go] preset synced to <DSH_HOME>/.agent-presets/dsh-my-go (v<package.json 版本>+<内容摘要>)
-```
+**首启会发生什么**：bundle 层自动应用插件自带的两枚 patch（无需手写 insert）——
+`cordis.patch.yml` 挂 host 插件（`lib/index.js`：settings 存储 + 面板 RPC），
+`preset/agent.patch.yml` 声明「MyGO!!!!! 模式」预设行（0.1.7 声明行范式）：预设与
+人设就地在包内生效——没有安装拷贝，也没有同步日志（旧安装同步机制随 0.1.7 整体
+退役）。
 
 之后新建会话的预设选择器里会出现 **「MyGO!!!!! 模式」**——编排十工具 + 模型绑定
-由 preset 半 broker 在该会话内提供，树状图面板数据经快照桥实时透出。看不到这一行
-日志、或选择器里没有该模式，说明 preset 半没装上（多半是第 2 步的路径写错了）。
+由 preset 半 broker（经包说明符 `dsh-my-go/preset/tools/broker.mjs` 挂载）在该会话内
+提供，树状图面板数据经快照桥实时透出。选择器里没有该模式，说明预设声明没生效
+（多半是第 2 步的路径写错了）。
 
 > 🔴 **clone 路径必须永久稳定**。`dsh plugin ... add <本地目录>` 装的是 **junction
 > （链接）而不是拷贝**：profile 的 `node_modules/dsh-my-go` 永远指回你 clone 的那个
@@ -154,10 +152,9 @@ git pull
 dsh web                          # 重启即生效
 ```
 
-不需要重装、不需要手动拷 preset：preset 同步器按 `package.json` 的 **version +
-preset/prompts 内容摘要**双门判定，version 或内容任一变了就自动重同步。装机侧
-手改过 `~/.dsh/.agent-presets/dsh-my-go/` 的话，同版本同内容才不会被覆盖（见
-README「插件 config 键」段的提示）。
+不需要重装、不需要手动拷 preset：0.1.7 起没有安装拷贝——包内 `preset/` 与 `prompts/`
+就地生效，家目录下不再有 preset 副本（安装同步机制整体退役），`git pull` 到新内容后
+重启 `dsh web` 即用上最新预设，无需任何重同步动作。
 
 > **dist/client.js 与 release commit**：Web UI 加载的客户端产物
 > `dist/client.js` **随 release commit 入库**（见「目录结构」与
@@ -173,14 +170,14 @@ dsh plugin --profile web remove dsh-my-go
 dsh web
 ```
 
-卸载只摘 profile 的依赖与 bundle 登记；已 clone 的目录和已同步的
-`~/.dsh/.agent-presets/dsh-my-go/` 副本都还在，需要的话自行删除。
+卸载只摘 profile 的依赖与 bundle 登记；已 clone 的目录还在，需要的话自行删除
+（0.1.7 起 preset 就地生效，没有同步副本可清）。
 
 ### 平台差异小注
 
 | 项 | Windows | macOS / Linux |
 |---|---|---|
-| profile / home 路径 | `%USERPROFILE%\.dsh\profiles\web`、preset 落 `%USERPROFILE%\.dsh\.agent-presets\` | `~/.dsh/profiles/web`、`~/.dsh/.agent-presets/` |
+| profile / home 路径 | `%USERPROFILE%\.dsh\profiles\web` | `~/.dsh/profiles/web` |
 | 链接形态 | **junction**（`mklink /J`，普通权限即可创建） | **symlink**（`ln -s`，无需特权） |
 | 命令差异 | `dsh plugin --profile web add "<your-dsh-plugins>/dsh-my-go"` 写法与 POSIX 一致，路径分隔符 `/` `\` 都收 | 同左 |
 
@@ -422,11 +419,10 @@ model、#2..N→fallbacks，存储形状零变更）。
 双半同构时代曾由 lib 半读取），与上面的 settings 命名空间正交；默认值即
 旧硬编码口径（0.2.3-tisitan.8「可观测性」批起截断阈值可配）：
 
-> ⚠️ **调参入口 = 已安装 preset 的 broker 行**。装机后编辑
-> `~/.dsh/.agent-presets/dsh-my-go/agent.cordis.yml` 的 broker 行加
-> `config:`（同名键），对新开的 MyGO 会话生效；preset 内容变化时同步会覆盖
-> 该行（marker 记的是「版本 + preset/prompts 内容摘要」，摘要一变即整树重拷，
-> 同版本热修也能生效），需重配。lib 半不再读取这些键。
+> ⚠️ **调参入口 = 包内 `preset/agent.patch.yml` 的 broker 行 `config:`**（0.1.7 起
+> preset 就地加载、没有安装副本，改的永远是本仓/已装包内这一行；旧目录范式下的
+> 装机侧行配置已随该范式退役）。同名键写进该行后对新开的 MyGO 会话
+> 生效（挂载期读一次，不做运行时切换）。lib 半不读取这些键。
 
 | config 键               | 默认值 | 说明                                                                 |
 |-------------------------|--------|----------------------------------------------------------------------|
@@ -454,10 +450,10 @@ coldResume 续聊可用。落盘按 250ms 防抖合并、同目录 `.tmp` + rena
 
 集中入口。现象 → 判定 → 出路，细节见各自交叉引用。
 
-- **预设选择器里没有「MyGO!!!!! 模式」**：preset 半没装上。先看启动日志有没有
-  `[dsh-my-go] preset synced to ...` 一行——没有多半是 `dsh plugin add` 的路径
-  写错（装的是 junction，路径必须永久稳定）。判定与出路见上文「验证装对了」
-  与「首启会发生什么」。
+- **预设选择器里没有「MyGO!!!!! 模式」**：预设声明没生效（包自带
+  `preset/agent.patch.yml` 未被 bundle 层应用）——多半是 `dsh plugin add` 的路径
+  写错，或 profile 的 `dsh.profile.bundles` 里没登记 `dsh-my-go`（装的是 junction，
+  路径必须永久稳定）。判定与出路见上文「验证装对了」与「首启会发生什么」。
 - **面板空白 / 显示「编排桥未就绪」**：桥未就绪是提示态不是故障（host 在启动
   或快照桥缺位）；lib-only 部署形态（preset 未装配）面板**设计上**就降级为空态
   `{ seq: 0, parents: {} }` + 花名册常驻，不提供编排能力。headless/CLI profile
@@ -472,15 +468,15 @@ coldResume 续聊可用。落盘按 250ms 防抖合并、同目录 `.tmp` + rena
   观测埋点都在 `<DSH_HOME>/dsh-my-go/` 下——两次启动的 `DSH_HOME` 指向不同
   目录即「换家失忆」；确认环境变量一致。台账 v1 旧档落在 'legacy' 兜底桶
   （跨重启经全局扫描命中，面板父区不显示）。见 docs/ARCHITECTURE.md §2.1。
-- **手改已安装 preset 被悄悄覆盖（版本标记幂等同步陷阱）**：同步判据是
-  `<版本>+<内容摘要>` 双门——包内任何一次真实内容改动（**含同版本热修**）都会
-  换摘要并触发重拷，「同版本就跳过」不成立；反之同版本同内容时装机侧手改
-  存活。给 broker 行加调参 `config:` 后要记得：preset 同步会覆盖该行，改完
-  须保留本键（防回潮哨兵站岗的键同理）。见 docs/ARCHITECTURE.md §5。
+- **手改「已安装 preset」不生效（0.1.7 起无安装拷贝）**：预设就地在包内加载，家目录
+  下已无本插件落点——旧「版本标记幂等同步」那套（装机侧副本 + marker + 摘要重拷）
+  随机制整体退役，不存在「手改被覆盖」这条路了。要改预设或调参，改的是本仓（或已装
+  包）内 `preset/agent.patch.yml` 的 broker 行；改完重启 `dsh web`，且只对新开的
+  MyGO 会话生效。见 docs/ARCHITECTURE.md §5。
 - **broker 调参 config 改了不生效**：这些键只由 preset 半 broker 行读取
-  （tisitan.21 起 lib 半不再读取）——要改**已安装 preset** 的
-  `~/.dsh/.agent-presets/dsh-my-go/agent.cordis.yml`，且只对新开的 MyGO 会话
-  生效（挂载期读一次，不做运行时切换），改完重启 `dsh web`。见上文
+  （tisitan.21 起 lib 半不再读取）——要改的是包内 `preset/agent.patch.yml` 的
+  broker 行 `config:`（0.1.7 起 preset 就地加载，没有安装副本可改），且只对新开的
+  MyGO 会话生效（挂载期读一次，不做运行时切换），改完重启 `dsh web`。见上文
   「插件 config 键」。
 - **找不到设置页**：`0.5.0-tisitan.3` 起配置入口是官方插件页配置卡
   （DSH Web → 插件 → dsh-my-go → 配置区），旧「MyGO 编排」侧栏 section 已
@@ -509,9 +505,9 @@ coldResume 续聊可用。落盘按 250ms 防抖合并、同目录 `.tmp` + rena
 dsh-my-go/
 ├── AGENTS.md              # 本项目的编排规格（Sisyphus 系统）
 ├── README.md              # 本文档
-├── package.json           # npm 包声明（dsh.bundle.patch → cordis.patch.yml）
+├── package.json           # npm 包声明（dsh.bundle.patch → cordis.patch.yml + preset/agent.patch.yml 双 patch）
 ├── cordis.patch.yml       # bundle patch（dsh plugin add 后自动挂载 host 插件）
-├── lib/index.js           # npm 包 host 半（721 行：settings 存储 + revision 围栏 + 面板 RPC（快照裁剪/结构化名册/端点自带 try）+ preset 同步器（版本+内容摘要 marker + 5.3 波 tools/ 侧簇清单核验）；tisitan.21 起零编排面）
+├── lib/index.js           # npm 包 host 半（487 行：settings 存储 + revision 围栏 + 面板 RPC（快照裁剪/结构化名册/端点自带 try）+ 包内 prompts/ 人设读取；0.1.7 起 preset 安装同步器整体退役（-234 行）；tisitan.21 起零编排面）
 ├── src/                   # client 半源码（tisitan.15 起装配层 + 模块化）
 │   ├── client.js          #   装配层（265 行）：接线两模块 + 注册 DSH slots + 宿主服务缺席时真降级（sessions 惰性解析）
 │   ├── client-constants.js#   共享常量（色板/标签/intent 文案，零 React）
@@ -533,9 +529,8 @@ dsh-my-go/
 ├── test/                  # 冒烟 + node --test 全档（42 个 *.test.mjs + test/helpers/
 │                          #   共享 ctx 替身；例数以 `npm test` 机器读数为准，见「贡献」）
 ├── dist/                  # 构建产物（`client.js` **随 release commit 入库**，见 docs/FORK-GUIDE.md「发布流程」；其余中间产物不入库也不落盘）
-├── preset/                # agent preset「MyGO!!!!! 模式」（复制到 ~/.dsh/.agent-presets/）
-│   ├── preset.yml
-│   ├── agent.cordis.yml
+├── preset/                # agent preset「MyGO!!!!! 模式」（0.1.7 声明行范式：包内就地加载，无安装拷贝）
+│   ├── agent.patch.yml    #   预设声明行：Loader 行 config.plugins（DSH 官方工具行 + broker 行）
 │   ├── shared/            # 共享源（tisitan.15）：constants / failure / archive /
 │   │                      #   roles / orchestration / misc / child-registry /
 │   │                      #   adjacent / end-attribution / board / paths /
@@ -544,8 +539,7 @@ dsh-my-go/
 │   └── tools/             # preset 层注册的 broker 工具半（批次 5 拆分后：接线骨架
 │                          #   + 11 个同级簇模块。依赖单向：broker.mjs → 簇模块，簇
 │                          #   模块零回引本体、簇间零互引，跨簇协作一律在本体接线段
-│                          #   显式注入 deps；装机哨兵清单见 lib/index.js 的
-│                          #   BROKER_CLUSTER_ROSTER）
+│                          #   显式注入 deps）
 │       ├── broker.mjs               # 编排接线骨架：活状态与 config 常量、settings 块、
 │       │                            #   各簇实例化与接线、快照枢纽 bump、留守 helper（编排
 │       │                            #   实例定位与报告落板兜底）、生命周期 handlers 与
@@ -606,8 +600,8 @@ docs/ 各篇定位与阅读顺序（各篇文首自述其 scope，此处按「�
 - `docs/legacy-broker-ts/` —— 归档 TS 参考实现，停维护、不参与构建。
 
 [prompts/](prompts/) 的 9 篇是**运行时人设资产**（Sisyphus + 八工种，职责见上文
-「智能体 Prompt」表）：spawn 时按工种加载，同步器对 prompts 树做「先删净再拷」
-的镜像同步；配置卡「载入文件默认」按钮拉取的就是这些档案原文。
+「智能体 Prompt」表）：spawn 时按工种加载（0.1.7 起直接读包内 `prompts/` 原文，
+无安装拷贝）；配置卡「载入文件默认」按钮拉取的就是这些档案原文。
 
 ## 贡献
 
@@ -638,7 +632,7 @@ script，忘了就静默不跑），改由 node 自己展开通配 `test/*.test.
   这种链条末步：只等 `specs.length` 在 20+ 文件并行时会拿到 `child-*` 占位 id
   而假红（本批改造 25 处，实测固定 `await drain(20)` 全量约 1/5 概率假红）。
 - **负向窗口**（等「什么都没发生」：宽限期不误伤、aborted 不重派、评估窗内忽略、
-  迟到 disposed 不拖垮他会话、迁移幂等、`installPreset:false` 真短路）没有可等的
+  迟到 disposed 不拖垮他会话、迁移幂等）没有可等的
   条件，保留固定 `drain(N)`，但**先 `waitFor` 到正向终态再开窗**，否则窗口是在等
   一个还没开始的过程。
 - 谓词写窄了会**自己制造竞态**：`status === 'spawning'` 早于门面调用、
@@ -721,9 +715,9 @@ script，忘了就静默不跑），改由 node 自己展开通配 `test/*.test.
    （这一步顺带会让 pnpm 按第 2 步写进去的 `link:` 规格复核并校正那枚链接，重复执行
    无害。）
 
-4. **重启 `dsh web`**。之后与正常安装同轨：首启 `ensurePresetInstalled` 按
-   version + 内容摘要双门把 preset/prompts 同步到 `~/.dsh/.agent-presets/dsh-my-go/`，
-   日志见 `[dsh-my-go] preset synced ...`，会话选择器出现「MyGO!!!!! 模式」。
+4. **重启 `dsh web`**。之后与正常安装同轨：bundle 层应用包自带的
+   `preset/agent.patch.yml` 声明行，预设就地在包内生效（0.1.7 起无安装同步、
+   无同步日志），会话选择器出现「MyGO!!!!! 模式」。
 
 回到正常轨道随时可以：`dsh plugin --profile web remove dsh-my-go` 清掉手抄的登记，
 再按上面的安装步骤重来一遍。**但如果你连第 2 步的 `bundles` 都懒得写、而是直接在

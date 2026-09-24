@@ -47,10 +47,12 @@ const NEVER_ABORTED = new AbortController().signal
 const QUEUE_PROMPT = Symbol.for('dsh.subagent.queuePrompt')
 const DELIVER_PROMPT = Symbol.for('dsh.subagent.deliverPrompt')
 
-// 宿主排队投递的持久署名：alpha.4 的 MessageSource 只剩 user/plugin/model/tool
-// 四元，旧 coordinator 形态不可用；plugin 成员 + form 'relay'（「另一 Agent
-// 发给它的消息」）与旧 relay 语义最贴。
-const HOST_QUEUE_SOURCE = Object.freeze({ kind: 'plugin', plugin: 'dsh-my-go', form: 'relay' })
+// 宿主排队投递的持久署名：V4（运行时 0.1.7-alpha.2）已删除共享 `plugin` kind，
+// 改为生产者自持 kind —— 写成 `plugin:<插件名>`，`plugin` 字段一并丢弃。
+// 该命名与 V3→V4 迁移链抬升历史日志时 producerKind() 的兜底约定一致（该函数
+// 未导出，只能硬编码），保证新旧日志落到同一 kind；form 'relay'（「另一 Agent
+// 发给它的消息」）在六值 ContextForm 内仍合法，与旧 relay 语义最贴。
+const HOST_QUEUE_SOURCE = Object.freeze({ kind: 'plugin:dsh-my-go', form: 'relay' })
 
 // 会话事件读取：alpha.4 起 Session.events getter 删除 → snapshotEvents()。
 // 读取失败（日志已关/坏档）回落空数组，维持旧 getter 绝不抛错的行为口径。

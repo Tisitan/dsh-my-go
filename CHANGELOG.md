@@ -22,6 +22,65 @@
 
 ## [Unreleased]
 
+### [0.5.0-tisitan.6] - 2026-09-24（宿主 V4 契约对齐：MessageSource 生产者自持 kind、Session 档案代 v4；文档安装同步与 tool-mask 漂移清理）
+
+#### Changed
+
+- **MessageSource 改生产者自持 kind（宿主 V4 契约）**：0.1.7-alpha.2 起运行时删除共享
+  `plugin` / `coordinator` kind，署名改为 `plugin:<插件名>`（`plugin` 字段一并丢弃）。
+  三处同批换形：`preset/shared/adjacent.mjs` 的 `HOST_QUEUE_SOURCE` →
+  `{ kind: 'plugin:dsh-my-go', form: 'relay' }`（排队投递）、
+  `preset/tools/broker-notify.mjs` 的父会话通知源 → `kind: 'plugin:dsh-my-go'`
+  （form `notice`）、`preset/tools/broker-delivery.mjs` 的 `coordinatorSource` →
+  `{ kind: 'plugin:dsh-my-go', form: 'relay', senderSessionId: parent.id }`。
+  命名与 V3→V4 迁移链抬升历史日志时 `producerKind()` 的兜底约定一致——**但该结论只对
+  排队投递与通知两点成立**：旧 `{ kind: 'plugin', plugin: 'dsh-my-go' }` 经
+  `producerKind()` 落到 `plugin:dsh-my-go`，与新版同 kind。投递链点**不适用**：它的
+  历史形状是 `kind: 'coordinator'`，而 `coordinator` 在迁移链的
+  `RELEASED_SAME_NAME_PRODUCERS` 内、非 `plugin` kind 一律**原样透传**
+  （`dsh-session-format-v3-to-v4` `rewriteV3MessageSource`），故投递链的历史日志仍停在
+  `coordinator`——本次只换新写入形状，不追认旧档。配套测试口径同步：
+  `test/bridge.test.mjs`、`test/compat-alpha4.test.mjs`、
+  `test/stall-notice.test.mjs` 的 source 断言全部换新形。
+- **Session 档案格式代 v3 → v4**：`preset/shared/archive.mjs` 的
+  `SESSION_ARCHIVE_CURRENT_NAME` → `session.v4.jsonl.zstd`（宿主格式代 4，
+  0.1.7-alpha.2 起 dsh-session-format 链 v0→v4）。定位语义零变化：仍走
+  `SESSION_ARCHIVE_NAME_RE` 代枚举 + `selectArchiveLog`（同目录取最高代、旧代
+  `session.jsonl.zstd` 兜底），两个显式名常量只喂「未命中」报错文案；
+  `scripts/dump-session.mjs` 用法头注与 `test/dump-session.test.mjs` 断言
+  （v3 → v4、`version` 3 → 4）同步。
+
+#### Fixed
+
+- **dump-session 的 `tool/result` 形状漏迁 V4 修正**（`scripts/dump-session.mjs`）：
+  该 CLI 此前只读 `data.message.content[0].isError`（v3 的 tool-result wrapper 形状），
+  而 V4 一等消息把 `isError` 挂在 **message 顶层**（dsh-llm `createToolResultMessage`:
+  101-112），旧 wrapper 已被 v4 迁移链明令拒收 ⇒ 真机 v4 档案里的被拒调用**全部显示
+  `isError=false`**（实证：修复前对一份 `session.v4.jsonl.zstd` 跑 CLI，`isError=true`
+  计数 0，而该档案 seq 215 事件的顶层 `isError` 实为 true）。改**双形状读**
+  `data.message?.isError ?? data.message?.content?.[0]?.isError`（顶层优先、v3 wrapper
+  兜底——本机仍有 395 份 v3 档案在读）；真机全量逐事件对账零失配（当日读数：v4
+  3444 / v3 23055 个 `tool/result`）。`test/dump-session.test.mjs` 补「V4 顶层 isError
+  被采信」一例，v3 wrapper 用例原地保留为兼容分支。
+- **文档漂移清理：`.agent-presets` 安装同步退役描述**（README + docs 三份）：
+  0.5.0-tisitan.5 退役安装同步器后，四份文档仍把该机制写成现行行为——共改写 34 处
+  （README 16 / FORK-GUIDE 10 / ARCHITECTURE 6 / DEV-SANDBOX 2），并按语义二次扫捞出
+  清单外 6 处漏网（`BROKER_CLUSTER_ROSTER` 哨兵句、`installPreset:false` 负向窗口、
+  单枚 patch 注释、发版注释的摘要口径、host-parity / host-lib-fixes 用例清单与例数，
+  以及三处「721 行」陈旧行数——实为 487 行，-234 行正是退役删码）。统一改写为
+  0.1.7 声明行范式（`preset/agent.patch.yml` + 包说明符 broker 行 + 包内就地加载，
+  无安装拷贝、无 marker、无同步日志）；历史叙述（DEV-SANDBOX §7 实测记录、
+  FORK-GUIDE 旧 bug 根因）按纪律保留并加退役标注。
+- **FORK-GUIDE preset 级 tool-mask 残影改写**：该机制已于 2026-09-15 整体迁至
+  [dsh-tool-guard](../dsh-tool-guard)（`preset/tool-mask.mjs` 与
+  `test/tool-mask*.test.mjs` 均已不存在），但 `docs/FORK-GUIDE.md` 的测试表两行、
+  「已知陷阱」段与全景图仍在描述三源并集 / `config.deny` 行级清单 / `DEFAULT_DENY`
+  空清单 / 双列表编辑器，按现行现实重写（本仓只余 broker 的 `agent/created` 闸与
+  角色级 `toolFilter` 两类工具层防线）。
+
+测试 **618 → 619**：`dump-session.test.mjs` 补「V4 一等消息顶层 isError 被采信」一例
+（v3 wrapper 用例原地保留为兼容分支），其余为等量口径改写、无用例增删。
+
 ### [0.5.0-tisitan.5] - 2026-09-23（dsh 0.1.7 适配：configForms 配置面、声明行 preset 范式、.agent-presets 安装同步退役）
 
 #### Added
@@ -102,7 +161,7 @@ prompts/*.md），首提几乎必摔一次。两小节就此升格为 toolcall �
 六字段」且点名 deviation / unverified，施工层两份必须写「本工种必填，缺失或空串即被
 闸门逐条拒收」、其余六份必须写「后两字段本工种选填」——人设口径与条款脱节即红）。
 
-### [0.5.0-tisitan.3]（起草中，未发布——配置面全量迁官方插件页，写通道换宿主 settingsScope）
+### [0.5.0-tisitan.3] - 2026-09-20（配置面全量迁官方插件页，写通道换宿主 settingsScope）
 
 「全插件配置入口统一官方化」第三单（前两单：dsh-web-search-deepseek、dsh-tts）。
 设置面从自注册的 `settings.section`「MyGO 编排」整块搬进官方插件页的
@@ -323,7 +382,7 @@ preset 级用户工具屏蔽整体拆除并迁移至独立插件 [dsh-tool-guard
   保留（角色 toolFilter 编辑器 datalist 数据源）。
 - 版本号不 bump；运行时镜像 `~/.dsh/.agent-presets/dsh-my-go/` 同步后需重启生效。
 
-### [0.5.0-tisitan.2]（起草中，未发布——面板通道改走 webServer 直注册，绕开 0.1.5-alpha.1 宿主缺陷）
+### [0.5.0-tisitan.2] - 2026-09-10（面板通道改走 webServer 直注册，绕开 0.1.5-alpha.1 宿主缺陷）
 
 宿主升到 `@deepseek-ai/dsh@0.1.5-alpha.1` 后，Web 设置面板的全部 RPC 吃 HTTP 405，
 面板顶部两条红字横幅（loadSettings / listModels）常驻。定位：`connection.rpc.handle()`
@@ -453,7 +512,7 @@ SUMMARY_CLAUSE 整体退役；全仓旧机制字样归零，仅本 CHANGELOG 历
   「未提交→补发→仍未交→verdict」端到端链路、新条款措辞 pin 与提示词面旧机制
   字样零出现断言；relay 三件套 GOOD_END 语料改为「先提交登记再派 end」。
 
-### [0.5.0-tisitan.0]（起草中，未发布——用量统计首批）
+### [0.5.0-tisitan.0] - 2026-09-07（用量统计首批）
 
 0.5.0 线首批（单列 minor：0.4.0 线语义已封，用量统计是新功能域）。按契约
 `docs/usage-stats-design.md`（D1~D5 五点显式裁决 + 18 场景降级矩阵 Z1~Z18）施工的

@@ -49,9 +49,9 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 
 > **单宿主编排时代（tisitan.21 起）**：编排的唯一实现是 preset 半
 > `broker.mjs`（preset scope 注册，仅 MyGO 会话可见）；lib 半
-> （`lib/index.js`，global 层）只承载存储 / 安装 / 面板面——preset 同步
-> （`ensurePresetInstalled`）、settings 命名空间注册与 roles 迁移合并、
-> 面板 RPC 端点全家、快照桥消费。lib-only 部署形态（preset 未装配）不再
+> （`lib/index.js`，global 层）只承载存储 / 面板面——settings 命名空间注册与
+> roles 迁移合并、面板 RPC 端点全家、快照桥消费、包内 `prompts/` 人设读取
+> （0.1.7 起 preset 安装同步整体退役）。lib-only 部署形态（preset 未装配）不再
 > 提供任何编排能力：编排工具不存在，面板降级为空态
 > `{ seq: 0, parents: {} }` + 花名册常驻。
 >
@@ -343,12 +343,13 @@ pattern、paths 的 `dshHome`、roles 的迁移/合并、misc 的 `defaultBindin
 不引入；npm 导出面同步切除编排 re-export（消费方直引 `preset/shared/`）。
 
 **铁律**：零 `@deepseek-ai/*` import、零 ctx 触碰（node: builtins 允许），
-依赖一律显式注入参数。**promptCache 双根**（历史形态，现仅 broker 消费）：
-broker 半以 preset 装配目录为根读 prompts/，lib 半曾以
-`~/.dsh/.agent-presets/dsh-my-go` 为根——shared 层只认注入的
-`loadPrompt`。`ensurePresetInstalled`
-同步时校验 shared/ 存在性（broker 相对 import 依赖 preset 整树到位；
-0.3.0-tisitan.8 起同步从 `cp` 整拷改为逐文件字节比对只重写变化者，见 §5）。
+依赖一律显式注入参数。**promptCache 双根**（历史形态，0.1.7 起单根）：
+broker 半以包根为根读 prompts/（`<pkg>/prompts`，与 preset/ 平级），lib 半曾以
+`~/.dsh/.agent-presets/dsh-my-go` 为根——那个安装副本随 0.1.7 安装同步退役，
+已无任何代码读取；shared 层只认注入的
+`loadPrompt`。preset 整树随包分发，broker 以包说明符
+`dsh-my-go/preset/tools/broker.mjs` 挂载（相对 import 落在同一已装包内），
+不再有同步期的 shared/ 存在性校验与「逐文件比对重写」那套写窗口纪律（见 §5）。
 host-parity 断言 tisitan.21 起重写为**反向 parity**：lib 编排标记 grep=0
 哨兵（编排代码加回 lib 立即红）+ broker 原计数锁 + import 存在性 +
 ESM 同一性 + 行为直测（逐字比源码的字符串对称断言早已退役）。
@@ -640,8 +641,8 @@ docs/usage-stats-design.md，D1 四桶 / D1a 币种 / D2 游标缓存 / D3 RPC�
 
 | 目录 | 内容 |
 | --- | --- |
-| `preset/` | dsh-my-go agent preset（由 lib 同步到 `~/.dsh/.agent-presets/dsh-my-go/`； tisitan.15 起含 shared/ 共享源，健康度批起共八模块，0.3.0-tisitan.12 起共九模块（+ end-attribution），0.5.0 线批次再补 board / paths / report-format / relay-chain，现共十三模块） |
-| `lib/` | host 半（global 层插件 `index.js`）：settings 命名空间 installSection 注册 + 活源读面 / RPC（快照出口裁剪 + 结构化名册 + 端点自带 try + `getUsage` 用量端点；0.5.0-tisitan.3 起 loadSettings / saveSettings / listModels 退役）/ preset 同步器（版本+内容摘要 marker，逐文件与镜像两种语义）；tisitan.21 起零编排面（台账持久化归属 broker 半） |
+| `preset/` | dsh-my-go agent preset（0.1.7 声明行范式：`agent.patch.yml` 声明 Loader 行、包内就地加载，无安装拷贝； tisitan.15 起含 shared/ 共享源，健康度批起共八模块，0.3.0-tisitan.12 起共九模块（+ end-attribution），0.5.0 线批次再补 board / paths / report-format / relay-chain，现共十三模块） |
+| `lib/` | host 半（global 层插件 `index.js`）：settings 命名空间 installSection 注册 + 活源读面 / RPC（快照出口裁剪 + 结构化名册 + 端点自带 try + `getUsage` 用量端点；0.5.0-tisitan.3 起 loadSettings / saveSettings / listModels 退役）+ 包内 `prompts/` 人设读取（`getBuiltinPersona`）；0.1.7 起 preset 安装同步器整体退役，tisitan.21 起零编排面（台账持久化归属 broker 半） |
 | `src/` | client 半源码：配置卡（含 ops 编译层与样式表）、overlay 树状图面板、用量面板（三视图纯展示 + 单价表编辑）、自动跳转、守卫纯函数。**纯构建输入——0.3.0-tisitan.11（D-15）起不再进发布包**（运行期只加载 `dist/client.js`，lib/preset/prompts 对 src 零引用已 grep 核实） |
 | `test/` | node:test 单测与桥接测试。入口 `npm test` = 构建 bundle → `test/apply.mjs` 冒烟（含 dist 新鲜度）→ `node --test "test/*.test.mjs"` 通配发现（0.3.0-tisitan.11 C-12：不再手写文件清单，加档零动作）。共享 ctx 替身 `test/helpers/mock-ctx.mjs` 按真宿主语义从严（事件多播 + waterfall、重名注册即抛、effect 不吞异常、settings 读出深冻结副本），例数一律以 `npm test` 的 `# tests / # pass / # fail / # skipped` 机器读数为准，不写进文档 |
 | `scripts/` | 构建与运维脚本：`build-client.mjs`（esbuild 打包 client 半，`write:false` 只出内存产物 → `dist/` 仅一份 `client.js`）、`dump-session.mjs`（zstd 会话档案 CLI 转储） |
@@ -661,18 +662,18 @@ docs/usage-stats-design.md，D1 四桶 / D1a 币种 / D2 游标缓存 / D3 RPC�
 1. `git clone --depth 1 <本仓库地址> <永久稳定路径>` →
    `dsh plugin --profile web add <该路径>`：`dsh plugin` 是 pnpm 转发器，把本地目录写成
    profile 的 `link:` 依赖并建 junction/symlink，随后按已装状态自动把 `dsh-my-go` 登记
-   进 `dsh.profile.bundles`；bundle 层再应用包自带的 `cordis.patch.yml`
-   （`dsh.bundle.patch`），host 插件（`lib/index.js`）由此挂为 profile 层——**全程无需
+   进 `dsh.profile.bundles`；bundle 层应用包自带的 patch（`dsh.bundle.patch`
+   首枚 `cordis.patch.yml`），host 插件（`lib/index.js`）由此挂为 profile 层——**全程无需
    手写 patch insert，也无需装方构建**（`dist/client.js` 随 release commit 入库，见
    `FORK-GUIDE.md`「发布流程」）。clone 路径此后不可移动/删除：装的是链接不是拷贝。
-2. 重启 `dsh web`；lib 的 `ensurePresetInstalled()` 把 `preset/` +
-   `prompts/` 同步到 `~/.dsh/.agent-presets/dsh-my-go/`，幂等判据是 marker
-   文件 `.dsh-my-go-version` 里的 **`<版本>+<内容摘要>`**（tisitan.8
-   E8/B-08）：摘要覆盖两棵树每个文件的「路径 + 字节数 + sha256 前 12 位」，
-   版本与内容同时一致才跳过——装机侧的手工修改在同版本同内容下继续存活，
-   而包内任何一次真实内容改动（含同版本热修）都会换摘要并触发重拷，不再
-   需要 bump 版本号解锁同步。同步语义：`preset/` 逐文件字节比对、只重写变化
-   者（写窗口从整树缩到实际改动文件，tisitan.8 B-09）；`prompts/` 先删净
-   再拷（纯资源镜像，上游退役的人设文件不留孤儿）。整段拷贝失败只
-   `console.error` 留痕并吞掉，绝不打断挂载。
+2. 重启 `dsh web`；bundle 层再应用包自带的第二枚 patch
+   `preset/agent.patch.yml`（0.1.7 声明行范式）：insert 行把
+   `@deepseek-ai/dsh-agent-preset` 挂成 id `dsh-my-go` 的「MyGO!!!!! 模式」
+   预设，行列表在声明 `config.plugins`，broker 行用包说明符
+   `dsh-my-go/preset/tools/broker.mjs`（声明 `config.plugins` 里的相对路径不被
+   Loader 锚定，见该文件头注）。**无安装拷贝、无同步**：`preset/` 与 `prompts/`
+   就地在包内生效，broker 以包根为根读 `prompts/`，lib 的 `getBuiltinPersona`
+   同源。0.1.7 之前那套 `ensurePresetInstalled` + `.dsh-my-go-version` marker
+   + `$DSH_HOME/.agent-presets/dsh-my-go/` 目录范式已整体退役（该目录已无任何
+   代码读取），lib 半不再有任何安装动作，挂载也再无后台拷贝竞态。
 3. 新会话选择「MyGO!!!!! 模式」预设，开始编排。

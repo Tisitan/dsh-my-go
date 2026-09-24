@@ -24,8 +24,7 @@ export function createNotifyOps({ getAgents, metrics }) {
         role: 'user',
         content: [{ type: 'text', text }],
         source: {
-          kind: 'plugin',
-          plugin: 'dsh-my-go',
+          kind: 'plugin:dsh-my-go',
           form: 'notice',
           summary: text.length <= 120 ? text : `${text.slice(0, 119)}…`,
         },

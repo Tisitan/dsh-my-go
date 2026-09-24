@@ -14,12 +14,11 @@
 | 端口 | 生产实例正在使用的端口 | **3086** |
 | profile | `~/.dsh/profiles/web` | `…/dsh-dev-home/profiles/web` |
 | 配置 | `~/.dsh/settings.yaml` + 两层 `cordis.patch.yml` | 同名的沙盒四件 |
-| preset 落点 | `~/.dsh/.agent-presets/dsh-my-go` | `$DSH_HOME/.agent-presets/dsh-my-go` |
 
-本仓特有：宿主半 apply 时会做**一次性 preset 同步**（`ensurePresetInstalled`，
-marker 是 `版本+内容摘要`），所以起沙盒宿主会往 `$DSH_HOME/.agent-presets/` 写文件——
-这是设计行为，但它不在下面「四件基线」里，别把它当成脏数据去删。测试用
-`installPreset: false` 关掉这一路。
+本仓特有（0.1.7 起）：宿主半 apply **不再有任何 preset 安装动作**——预设由包内
+`preset/agent.patch.yml` 声明行就地加载（旧安装同步器与它的家目录落点整体退役），
+所以起沙盒宿主不会往家目录写 preset 副本，「四件基线」之外无隐藏脏源，本表也因此
+不再有「preset 落点」这一面。
 
 ## 2. 装与核对
 
@@ -137,8 +136,8 @@ stat -c '%y %n' ~/.dsh/settings.yaml ~/.dsh/profiles/web/package.json   # mtime 
 > 只保留判据形状与方法，供下一单照着对。
 
 ```
-a  boot.log 错误计数 0；preset 同步落 $DSH_HOME/.agent-presets（marker = v<version>+<digest>）
-b  describe：served 含 dsh-my-go、base={}（行 config 只有 installPreset/bindings，非 settings 形状）、
+a  boot.log 错误计数 0；preset 同步落 $DSH_HOME/.agent-presets（marker = v<version>+<digest>）〔0.1.7 起该安装同步已整体退役，此行按本批历史原样保留〕
+b  describe：served 含 dsh-my-go、base={}（行 config 只有 installPreset/bindings，非 settings 形状）〔installPreset 旋钮随安装同步退役，此行按本批历史原样保留〕、
    applies=live、revision 随写前进（r0→r7）、roles 解析出 5 行（生产宿主真绑定）
 c  删掉 settings.yaml 的 dsh-my-go 段（53 行）→ describe 仍 served、revision→1、roles 0、
    currency USD、sisyphus 解析成 {fallbacks:[]}；snapshot 名册 7 行且 hermes=「跟随环境」；

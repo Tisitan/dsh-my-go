@@ -60,7 +60,7 @@ test('T1 挂起瞬间 + 队列有货 → 停摆通知恰一次且字段齐全；
   assert.ok(text.includes('forward/continue 处置求助单后流水线自动恢复'), '处置指引原句在场')
   // 非唤醒 inject 通路（队列上岗通知同款形状）
   assert.equal(notices[0].role, 'user')
-  assert.equal(notices[0].source?.kind, 'plugin')
+  assert.equal(notices[0].source?.kind, 'plugin:dsh-my-go')
   assert.equal(notices[0].source?.form, 'notice')
   // E8 原口径零退化：不落史、不腾槽，且守卫标记已落
   const snap = snapOf('parent-1')
