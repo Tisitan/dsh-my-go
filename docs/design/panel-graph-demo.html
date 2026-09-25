@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>dsh-my-go · 泳道星图 demo（验收基准稿）</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #161616; }
+  body { display: flex; justify-content: center; align-items: flex-start; font-family: sans-serif; }
+  body.plain { background: #1e1e1e; }
+  #panel {
+    width: 320px; box-sizing: border-box; padding: 12px;
+    background: var(--surface, #1e1e1e); border: 1px solid var(--separator, #333);
+    border-radius: 8px; color: #ddd; font-size: 13px; margin: 8px;
+  }
+  body.plain #panel { margin: 0; border-radius: 0; }
+  #titleRow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  #titleRow strong { font-size: 13px; }
+  #titleRow span { font-size: 10px; color: #777; }
+  canvas { display: block; width: 296px; height: 300px; }
+  #controls { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+  #controls button {
+    font-size: 11px; background: #2a2a2a; color: #ccc;
+    border: 1px solid #3a3a3a; border-radius: 4px; padding: 2px 8px; cursor: pointer;
+  }
+  #controls button.on { border-color: #64b5f6; color: #64b5f6; }
+  #hint { font-size: 10px; color: #777; margin-top: 6px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <div id="titleRow"><strong>Sisyphus 星图</strong><span>泳道节点动画 · 验收基准 demo</span></div>
+  <canvas id="stage" width="296" height="300"></canvas>
+  <div id="controls">
+    <button id="btnAuto">▶ 自动演出</button>
+    <button id="btnSpawn">派工</button>
+    <button id="btnHelp">求助</button>
+    <button id="btnResume">继续</button>
+    <button id="btnDone">完成</button>
+    <button id="btnFail">失败</button>
+    <button id="btnReset">重置</button>
+    <button id="btnStatic">静止模式</button>
+  </div>
+  <div id="hint">
+    字形：● 运行 · ◐ 启动中 · ⏳ 队列 · ❓ 求助 · ✓ 完成 · ✗ 失败 · ○ 空闲<br>
+    上弧 = 读泳道（≤3 并行），下弧 = 写泳道（单线），左下小徽章 = 队列 dock。<br>
+    数据以 600ms 快照差分驱动；动画全部由「状态跳变」触发。尊重 prefers-reduced-motion（静止渲染）。
+  </div>
+</div>
+<script>
+'use strict';
+/* ════════════════════════════════════════════════════════════════════
+ * dsh-my-go 泳道星图 — canvas 2d + rAF 独立循环
+ * 数据模型：600ms 快照差分（与 panel-tree.js 轮询同源语义）
+ * 色板/字形 1:1 锚定 src/client-constants.js 与 src/panel-tree.js
+ * ════════════════════════════════════════════════════════════════════ */
+
+// ── 色板（src/client-constants.js:23-39 逐字节对齐）─────────────────
+const AGENT_COLORS = {
+  sisyphus: '#64b5f6', hermes: '#4db6ac', explore: '#4dd0e1',
+  librarian: '#81c784', looker: '#ba68c8', hephaestus: '#ffb74d',
+  prometheus: '#7986cb', oracle: '#e57373', apelles: '#f06292',
+};
+const ACCENT_RUNNING = '#26a69a';   // 运行=青
+const ACCENT_QUEUE   = '#e6a23c';   // 队列=琥珀
+const ACCENT_HELP    = '#ef5350';   // 求助=红
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const laneOf = (t) => (t === 'explore' || t === 'librarian') ? 'read' : 'write';
+const typeName = (t) => { const s = String(t ?? '?'); return s.charAt(0).toUpperCase() + s.slice(1); };
+
+// ── 几何（296×300 画布）────────────────────────────────────────────
+const W = 296, H = 300;
+const CENTER = { x: 148, y: 150, r: 22 };
+const ORBIT_R = 105;
+const READ_SLOTS = [{ x: 74, y: 76 }, { x: 148, y: 45 }, { x: 222, y: 76 }]; // 上弧 ≤3
+const WRITE_SLOT = { x: 148, y: 255 };                                       // 下弧 单线
+const DOCK = [{ x: 26, y: 268 }, { x: 50, y: 268 }, { x: 74, y: 268 }];      // 队列 dock
+const NODE_R = 16;
+
+// ── 参数 ────────────────────────────────────────────────────────────
+const TICK_MS = 600;              // 快照节拍
+const SPAWN_BURST = 10;           // 派工脉冲粒子数
+const REFLOW_BURST = 12;          // 完成回流粒子数
+const STREAM_GAP = 340;           // 运行稳态流间隔 ms
+const HELP_GAP = 700;             // 求助红脉冲间隔 ms
+const FADE_DELAY = 250, FADE_DUR = 650;
+
+// ── canvas ──────────────────────────────────────────────────────────
+const canvas = document.getElementById('stage');
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+canvas.width = W * DPR; canvas.height = H * DPR;
+const ctx = canvas.getContext('2d');
+
+// ── 模型（快照侧）与视图态（动画侧）─────────────────────────────────
+const model = { records: new Map(), queue: [] };   // 模拟 host 快照
+const nodes = new Map();                            // childId -> vnode
+const particles = [];
+let queueView = [];
+let centerFlashT = -1e9;
+const edgeFlash = new Map();
+let tickCount = 0;
+
+let simT0 = performance.now();
+const T = () => performance.now() - simT0;
+let mediaReduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let forceStatic = false;
+const staticMode = () => mediaReduce || forceStatic;
+
+// ── 确定性伪随机（截图可复现）───────────────────────────────────────
+let seed = 42;
+const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+
+// ── 粒子 ────────────────────────────────────────────────────────────
+function addParticle(fx, fy, tx, ty, color, delay, dur, size) {
+  particles.push({ fx, fy, tx, ty, color, t0: T() + delay, dur, size: size ?? 1.8 });
+}
+function burst(from, to, color, n, spreadDelay, dur) {
+  for (let i = 0; i < n; i++) addParticle(from.x, from.y, to.x, to.y, color, rnd() * spreadDelay, dur + rnd() * 120, 1.5 + rnd());
+}
+
+// ── 槽位 ────────────────────────────────────────────────────────────
+const readSlots = [null, null, null];
+let writeSlotUsed = null;
+function allocSlot(rec) {
+  if (laneOf(rec.agentType) === 'read') {
+    for (let i = 0; i < 3; i++) if (!readSlots[i]) { readSlots[i] = rec.id; return READ_SLOTS[i]; }
+    return READ_SLOTS[0]; // 演示兜底（真实读池≤3 由 host 保证）
+  }
+  writeSlotUsed = rec.id; return WRITE_SLOT;
+}
+function freeSlot(n) {
+  const i = readSlots.indexOf(n.rec.id); if (i >= 0) readSlots[i] = null;
+  if (writeSlotUsed === n.rec.id) writeSlotUsed = null;
+}
+
+// ── 状态跳变 → 动画触发（核心映射）──────────────────────────────────
+function spawnNode(rec, now) {
+  const pos = allocSlot(rec);
+  const n = { rec: { ...rec }, pos, born: now, fade: null,
+              lastStream: now + rnd() * STREAM_GAP, lastHelp: now };
+  nodes.set(rec.id, n);
+  edgeFlash.set(rec.id, now);
+  burst(CENTER, pos, AGENT_COLORS[rec.agentType] ?? '#9e9e9e', SPAWN_BURST, 300, 600); // 派工脉冲
+  return n;
+}
+function transition(n, to, now) {
+  const color = AGENT_COLORS[n.rec.agentType] ?? '#9e9e9e';
+  if (to === 'done' || to === 'failed') {
+    burst(n.pos, CENTER, to === 'done' ? ACCENT_RUNNING : ACCENT_HELP, REFLOW_BURST, 450, 550); // 回流
+    centerFlashT = now + 250;
+    n.fade = { t0: now + FADE_DELAY, dur: FADE_DUR };
+  } else if (to === 'waiting') {
+    edgeFlash.set(n.rec.id, now);
+  } else if (to === 'running') {
+    burst(CENTER, n.pos, color, 4, 200, 500); // 求助后继续：补一发小脉冲
+  }
+  n.rec.status = to;
+}
+function applySnapshot() {
+  const now = T();
+  const seen = new Set();
+  for (const rec of model.records.values()) {
+    seen.add(rec.id);
+    const n = nodes.get(rec.id);
+    if (!n) spawnNode(rec, now);
+    else if (n.rec.status !== rec.status) transition(n, rec.status, now);
+  }
+  for (const [id, n] of [...nodes]) {
+    if (!seen.has(id) && !n.fade) n.fade = { t0: now, dur: 300 };
+  }
+  queueView = model.queue.slice(0, 3);
+  if (staticMode()) render(now, true);
+}
+
+// ── 矢量状态字形（●◐⏳❓✓✗○，不依赖 emoji 字体）────────────────────
+function drawGlyph(status, cx, cy, color, t) {
+  ctx.save();
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1.8;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  switch (status) {
+    case 'running': ctx.beginPath(); ctx.arc(cx, cy, 4.2, 0, 7); ctx.fill(); break;
+    case 'spawning': {
+      ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 7); ctx.stroke();
+      const a = (t / 500) % (Math.PI * 2);
+      ctx.beginPath(); ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, 4.4, a, a + Math.PI); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'queued': {
+      ctx.beginPath(); ctx.moveTo(cx - 4, cy - 5); ctx.lineTo(cx + 4, cy - 5);
+      ctx.lineTo(cx - 4, cy + 5); ctx.lineTo(cx + 4, cy + 5); ctx.closePath(); ctx.stroke();
+      break;
+    }
+    case 'waiting': {
+      ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('?', cx, cy + 0.5);
+      break;
+    }
+    case 'done': ctx.beginPath(); ctx.moveTo(cx - 4.5, cy); ctx.lineTo(cx - 1.5, cy + 3.5); ctx.lineTo(cx + 4.5, cy - 3.5); ctx.stroke(); break;
+    case 'failed': ctx.beginPath(); ctx.moveTo(cx - 3.5, cy - 3.5); ctx.lineTo(cx + 3.5, cy + 3.5);
+      ctx.moveTo(cx + 3.5, cy - 3.5); ctx.lineTo(cx - 3.5, cy + 3.5); ctx.stroke(); break;
+    default: ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 7); ctx.stroke();
+  }
+  ctx.restore();
+}
+const glyphColor = (s) => s === 'waiting' || s === 'failed' ? ACCENT_HELP
+  : s === 'queued' ? ACCENT_QUEUE : s === 'done' || s === 'running' ? ACCENT_RUNNING : '#ddd';
+
+// ── 文本（带底色描边防连线穿字）─────────────────────────────────────
+function haloText(text, x, y, font, color) {
+  ctx.save();
+  ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3; ctx.strokeStyle = '#1e1e1e'; ctx.strokeText(text, x, y);
+  ctx.fillStyle = color; ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+// ── 渲染 ────────────────────────────────────────────────────────────
+function render(now, isStatic) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // 泳道基准弧（虚线）
+  ctx.save();
+  ctx.setLineDash([3, 5]); ctx.lineWidth = 1; ctx.strokeStyle = '#3a3a3a';
+  ctx.beginPath(); ctx.arc(CENTER.x, CENTER.y, ORBIT_R, Math.PI * 1.14, Math.PI * 1.86); ctx.stroke(); // 读（上）
+  ctx.beginPath(); ctx.arc(CENTER.x, CENTER.y, ORBIT_R, Math.PI * 0.14, Math.PI * 0.86); ctx.stroke(); // 写（下）
+  ctx.restore();
+  haloText('读泳道 · ≤3 并行', 44, 12, `9px ${MONO}`, '#5c5c5c');
+  haloText('写泳道 · 单线', 248, 292, `9px ${MONO}`, '#5c5c5c');
+  haloText('队列', 26, 250, `9px ${MONO}`, '#5c5c5c');
+
+  // 连线
+  for (const n of nodes.values()) {
+    const { x, y } = n.pos;
+    const waiting = n.rec.status === 'waiting';
+    const agent = AGENT_COLORS[n.rec.agentType] ?? '#9e9e9e';
+    let alpha = 0.30;
+    const ef = edgeFlash.get(n.rec.id);
+    if (ef !== undefined) alpha += 0.55 * Math.exp(-(now - ef) / 320);
+    let width = 1.2;
+    if (!isStatic && n.rec.status === 'running') width = 1.2 + 0.4 * Math.sin(now / 700 + n.born);
+    if (waiting && !isStatic) alpha = 0.35 + 0.35 * (0.5 + 0.5 * Math.sin(now / 200));
+    let fadeA = 1;
+    if (n.fade) fadeA = Math.max(0, 1 - (now - n.fade.t0) / n.fade.dur);
+    const dx = x - CENTER.x, dy = y - CENTER.y, len = Math.hypot(dx, dy);
+    const sx = CENTER.x + dx / len * (CENTER.r + 2), sy = CENTER.y + dy / len * (CENTER.r + 2);
+    const ex = x - dx / len * (NODE_R + 2), ey = y - dy / len * (NODE_R + 2);
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, alpha) * fadeA;
+    ctx.strokeStyle = waiting ? ACCENT_HELP : agent;
+    ctx.lineWidth = width;
+    ctx.shadowColor = waiting ? ACCENT_HELP : agent;
+    ctx.shadowBlur = 8;
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.restore();
+  }
+
+  // 粒子（additive）
+  if (!isStatic) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      const k = (now - p.t0) / p.dur;
+      if (k < 0) continue;
+      if (k >= 1) { particles.splice(i, 1); continue; }
+      for (let g = 0; g < 3; g++) {
+        const kk = k - g * 0.07; if (kk < 0) continue;
+        const a = Math.sin(Math.PI * kk) * [0.9, 0.4, 0.15][g];
+        ctx.globalAlpha = a;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.fx + (p.tx - p.fx) * kk, p.fy + (p.ty - p.fy) * kk, p.size * (1 - g * 0.25), 0, 7);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // 子代节点
+  for (const n of nodes.values()) {
+    const { x, y } = n.pos;
+    const agent = AGENT_COLORS[n.rec.agentType] ?? '#9e9e9e';
+    let scale = 1, alpha = 1;
+    const sp = Math.min(1, (now - n.born) / 400);
+    if (sp < 1) { const c1 = 1.70158, c3 = c1 + 1; scale = 1 + c3 * Math.pow(sp - 1, 3) + c1 * Math.pow(sp - 1, 2); }
+    if (isStatic) scale = 1;
+    if (n.fade) { const k = Math.min(1, Math.max(0, (now - n.fade.t0) / n.fade.dur)); alpha = 1 - k; scale *= 1 - 0.4 * k; }
+    const waiting = n.rec.status === 'waiting';
+    const running = n.rec.status === 'running';
+    ctx.save();
+    ctx.translate(x, y); ctx.scale(scale, scale); ctx.globalAlpha = alpha;
+    let glow = 6;
+    if (!isStatic && running) glow = 9 + 5 * Math.sin((now / 1400) * Math.PI * 2 + n.born);
+    if (waiting) glow = 12;
+    ctx.shadowColor = waiting ? ACCENT_HELP : agent; ctx.shadowBlur = glow;
+    ctx.beginPath(); ctx.arc(0, 0, NODE_R, 0, 7);
+    ctx.fillStyle = agent + '2e'; ctx.fill();
+    ctx.lineWidth = 1.6; ctx.strokeStyle = waiting ? ACCENT_HELP : agent; ctx.stroke();
+    ctx.shadowBlur = 0;
+    if (waiting) { // 求助红环（闪烁）
+      const ra = isStatic ? 0.8 : 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(now / 160));
+      ctx.globalAlpha = alpha * ra;
+      ctx.strokeStyle = ACCENT_HELP; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.arc(0, 0, NODE_R + 4.5, 0, 7); ctx.stroke();
+      ctx.globalAlpha = alpha;
+    }
+    drawGlyph(n.rec.status, 0, 0, glyphColor(n.rec.status), isStatic ? 0 : now);
+    ctx.restore();
+    haloText(typeName(n.rec.agentType), x, y + NODE_R + 11, `9.5px ${MONO}`, `rgba(200,200,200,${alpha})`);
+  }
+
+  // 队列 dock
+  queueView.forEach((q, i) => {
+    const d = DOCK[i]; if (!d) return;
+    const c = AGENT_COLORS[q.agentType] ?? '#9e9e9e';
+    ctx.save();
+    ctx.globalAlpha = isStatic ? 0.85 : 0.65 + 0.2 * Math.sin(now / 500 + i);
+    ctx.fillStyle = c + '22'; ctx.strokeStyle = c; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(d.x - 9, d.y - 8, 18, 15, 3); ctx.fill(); ctx.stroke();
+    drawGlyph('queued', d.x, d.y - 0.5, ACCENT_QUEUE, now);
+    ctx.restore();
+  });
+
+  // Sisyphus 中心
+  const flashK = Math.min(1, Math.max(0, (now - centerFlashT) / 500));
+  ctx.save();
+  const breathe = isStatic ? 0 : Math.sin((now / 2400) * Math.PI * 2);
+  ctx.shadowColor = '#64b5f6'; ctx.shadowBlur = 12 + 4 * breathe + flashK * 18;
+  ctx.beginPath(); ctx.arc(CENTER.x, CENTER.y, CENTER.r, 0, 7);
+  ctx.fillStyle = `rgba(100,181,246,${0.16 + 0.25 * flashK})`; ctx.fill();
+  ctx.lineWidth = 1.8; ctx.strokeStyle = '#64b5f6'; ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.beginPath(); ctx.arc(CENTER.x, CENTER.y, 6.5, 0, 7); ctx.fillStyle = '#64b5f6'; ctx.fill();
+  ctx.restore();
+  if (flashK > 0 && !isStatic) { // 回流吸收闪环
+    ctx.save();
+    ctx.globalAlpha = 0.75 * (1 - flashK);
+    ctx.strokeStyle = ACCENT_RUNNING; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(CENTER.x, CENTER.y, CENTER.r + 4 + flashK * 20, 0, 7); ctx.stroke();
+    ctx.restore();
+  }
+  haloText('Sisyphus', CENTER.x, CENTER.y + CENTER.r + 11, `10px ${MONO}`, '#9ec9ef');
+}
+
+// ── 帧循环（粒子调度在帧侧，快照只触发）────────────────────────────
+function frame() {
+  const now = T();
+  for (const n of nodes.values()) {
+    if (n.fade) {
+      if (now > n.fade.t0 + n.fade.dur) { freeSlot(n); nodes.delete(n.rec.id); }
+      continue;
+    }
+    if (n.rec.status === 'running' && now - n.lastStream > STREAM_GAP) {
+      n.lastStream = now;
+      addParticle(CENTER.x, CENTER.y, n.pos.x, n.pos.y, AGENT_COLORS[n.rec.agentType] ?? '#9e9e9e', 0, 900, 1.6);
+    }
+    if (n.rec.status === 'waiting' && now - n.lastHelp > HELP_GAP) {
+      n.lastHelp = now;
+      addParticle(n.pos.x, n.pos.y, CENTER.x, CENTER.y, ACCENT_HELP, 0, 700, 2);
+    }
+  }
+  render(now, false);
+  if (!staticMode()) requestAnimationFrame(frame);
+}
+
+// ── 自动演出脚本（28 tick 一循环）──────────────────────────────────
+const AUTO = [
+  [1, m => m.records.set('a1', { id: 'a1', agentType: 'explore', status: 'spawning' })],
+  [2, m => m.records.get('a1').status = 'running'],
+  [3, m => { m.records.set('a2', { id: 'a2', agentType: 'librarian', status: 'spawning' });
+             m.records.set('a3', { id: 'a3', agentType: 'hermes', status: 'spawning' });
+             m.queue.push({ id: 'q1', agentType: 'hephaestus' }); }],
+  [4, m => { m.records.get('a2').status = 'running'; m.records.get('a3').status = 'running'; }],
+  [9, m => m.records.get('a2').status = 'waiting'],
+  [14, m => m.records.get('a2').status = 'running'],
+  [16, m => m.records.get('a1').status = 'done'],
+  [17, m => m.records.delete('a1')],
+  [18, m => m.records.set('a4', { id: 'a4', agentType: 'looker', status: 'spawning' })],
+  [19, m => m.records.get('a4').status = 'running'],
+  [21, m => m.records.get('a3').status = 'done'],
+  [22, m => { m.records.delete('a3'); m.queue.shift();
+              m.records.set('q1', { id: 'q1', agentType: 'hephaestus', status: 'spawning' }); }],
+  [23, m => m.records.get('q1').status = 'running'],
+  [26, m => { m.records.get('a2').status = 'done'; m.records.get('a4').status = 'done'; }],
+  [27, m => { m.records.delete('a2'); m.records.delete('a4'); }],
+  [29, m => m.records.get('q1').status = 'done'],
+  [30, m => m.records.delete('q1')],
+];
+function resetModel() { model.records.clear(); model.queue.length = 0; }
+
+// ── 截图场景（?scene=idle|running|waiting|done）────────────────────
+const SCENES = {
+  idle: [],
+  running: [
+    [1, m => m.records.set('a1', { id: 'a1', agentType: 'explore', status: 'spawning' })],
+    [2, m => { m.records.get('a1').status = 'running';
+               m.records.set('a2', { id: 'a2', agentType: 'librarian', status: 'spawning' }); }],
+    [3, m => { m.records.get('a2').status = 'running';
+               m.records.set('a3', { id: 'a3', agentType: 'hermes', status: 'spawning' }); }],
+    [4, m => m.records.get('a3').status = 'running'],
+  ],
+  waiting: [
+    [1, m => { m.records.set('a1', { id: 'a1', agentType: 'explore', status: 'spawning' });
+               m.records.set('a2', { id: 'a2', agentType: 'librarian', status: 'spawning' }); }],
+    [2, m => { m.records.get('a1').status = 'running'; m.records.get('a2').status = 'running';
+               m.records.set('a3', { id: 'a3', agentType: 'hermes', status: 'running' }); }],
+    [4, m => m.records.get('a2').status = 'waiting'],
+  ],
+  done: [
+    [1, m => { m.records.set('a1', { id: 'a1', agentType: 'explore', status: 'spawning' });
+               m.records.set('a2', { id: 'a2', agentType: 'librarian', status: 'running' });
+               m.records.set('a3', { id: 'a3', agentType: 'hermes', status: 'running' }); }],
+    [2, m => m.records.get('a1').status = 'running'],
+    [5, m => m.records.get('a1').status = 'done'],
+  ],
+};
+
+// ── 驱动 ────────────────────────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+const scene = params.get('scene');
+if (scene) document.body.classList.add('plain'), document.getElementById('controls').remove(), document.getElementById('hint').remove();
+
+let autoTimer = null, autoTick = 0;
+function runScript(script, loop) {
+  const steps = new Map(script);
+  const maxTick = script.length ? Math.max(...script.map(s => s[0])) : 0;
+  return setInterval(() => {
+    autoTick++;
+    const fn = steps.get(autoTick);
+    if (fn) { fn(model); applySnapshot(); }
+    if (loop && autoTick >= maxTick + 4) { autoTick = 0; resetModel(); applySnapshot(); }
+  }, TICK_MS);
+}
+
+const btnAuto = document.getElementById('btnAuto');
+if (btnAuto) {
+  const SPAWN_CYCLE = ['explore', 'librarian', 'hermes', 'looker', 'hephaestus', 'oracle'];
+  let spawnIdx = 0, idSeq = 0;
+  btnAuto.onclick = () => {
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; btnAuto.classList.remove('on'); btnAuto.textContent = '▶ 自动演出'; }
+    else { autoTick = 0; resetModel(); applySnapshot(); autoTimer = runScript(AUTO, true); btnAuto.classList.add('on'); btnAuto.textContent = '⏸ 停止演出'; }
+  };
+  document.getElementById('btnSpawn').onclick = () => {
+    const t = SPAWN_CYCLE[spawnIdx++ % SPAWN_CYCLE.length];
+    const id = 'm' + (++idSeq);
+    model.records.set(id, { id, agentType: t, status: 'spawning' });
+    applySnapshot();
+    setTimeout(() => { const r = model.records.get(id); if (r && r.status === 'spawning') { r.status = 'running'; applySnapshot(); } }, TICK_MS);
+  };
+  document.getElementById('btnHelp').onclick = () => {
+    const r = [...model.records.values()].find(x => x.status === 'running');
+    if (r) { r.status = 'waiting'; applySnapshot(); }
+  };
+  document.getElementById('btnResume').onclick = () => {
+    const r = [...model.records.values()].find(x => x.status === 'waiting');
+    if (r) { r.status = 'running'; applySnapshot(); }
+  };
+  document.getElementById('btnDone').onclick = () => {
+    const r = [...model.records.values()].find(x => x.status === 'running' || x.status === 'waiting');
+    if (r) { r.status = 'done'; applySnapshot(); setTimeout(() => { model.records.delete(r.id); applySnapshot(); }, TICK_MS); }
+  };
+  document.getElementById('btnFail').onclick = () => {
+    const r = [...model.records.values()].find(x => x.status === 'running' || x.status === 'waiting');
+    if (r) { r.status = 'failed'; applySnapshot(); setTimeout(() => { model.records.delete(r.id); applySnapshot(); }, TICK_MS); }
+  };
+  document.getElementById('btnReset').onclick = () => { resetModel(); applySnapshot(); };
+  document.getElementById('btnStatic').onclick = (e) => {
+    forceStatic = !forceStatic;
+    e.target.classList.toggle('on', forceStatic);
+    if (forceStatic) render(T(), true); else { simT0 = performance.now() - T(); requestAnimationFrame(frame); }
+  };
+}
+
+// ── 启动 ────────────────────────────────────────────────────────────
+if (scene && SCENES[scene]) { autoTimer = runScript(SCENES[scene], false); }
+else if (!scene) { autoTimer = runScript(AUTO, true); if (btnAuto) { btnAuto.classList.add('on'); btnAuto.textContent = '⏸ 停止演出'; } }
+
+if (staticMode()) render(1200, true);
+else requestAnimationFrame(frame);
+</script>
+</body>
+</html>

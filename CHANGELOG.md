@@ -3,11 +3,14 @@
 本文件记录 Tisitan fork 相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 版本号规则：`上游版本-tisitan.N`。
 
-> **批号命名空间（重要）**：本仓有**三条独立序号线**——`0.2.3-tisitan.N`（0.2.3 线，
-> N=1..20）、`0.3.0-tisitan.N`（0.3.0 线，N=0..12）与 `0.4.0-tisitan.N`（0.4.0 线，
-> 自 0.4.0-tisitan.0 起号）。裸写 `tisitan.N` 时 N=1..12 在多线**同号不同批**（N=0 在
-> 0.3.0/0.4.0 两线撞号），须读上下文语义判定归属（对照下方各节标题）；N=13..20
-> 唯一落在 0.2.3 线（0.3.0 线止于 .12，0.4.0 线自 .0 重新起号）。
+> **批号命名空间（重要）**：本仓有**四条独立序号线**——`0.2.3-tisitan.N`（0.2.3 线，
+> N=1..20）、`0.3.0-tisitan.N`（0.3.0 线，N=0..12）、`0.4.0-tisitan.N`（0.4.0 线，
+> 自 0.4.0-tisitan.0 起号，**整线未发布**：两节草稿随 preset 树部署，package.json
+> 版本号自 0.3.0-tisitan.12 直跳 0.5.0-tisitan.0）与 `0.5.0-tisitan.N`（0.5.0 线，
+> 自 0.5.0-tisitan.0 起号，**现行发布线**，最新 0.5.0-tisitan.7）。裸写 `tisitan.N`
+> 时 N=1..12 在多线**同号不同批**（N=0 在 0.3.0/0.4.0/0.5.0 三线撞号），须读上下文
+> 语义判定归属（对照下方各节标题）；N=13..20 唯一落在 0.2.3 线（0.3.0 线止于 .12，
+> 0.4.0/0.5.0 两线自 .0 重新起号）。
 > 另有三个旧裸批号是 0.3.0 线发布前的一次性序号，现并入正式版本：
 >
 > | 裸批号（旧） | 归属 | 本批正式写法 |
@@ -21,6 +24,44 @@
 > 保留裸写法，由本表集中消歧。
 
 ## [Unreleased]
+
+### [0.5.0-tisitan.7] - 2026-09-25（编排面板新增泳道星图；面板快照轮询放大修复）
+
+#### Added
+
+- **泳道星图 `src/panel-graph.js`（canvas 2d + 独立 rAF 帧循环）**：编排面板新增
+  「星图」区块（`src/panel-tree.js` 的 overlay 里挂 `GraphSection`，与「运行中」
+  等区块同列）。布局：Sisyphus 居中，**读泳道上弧三槽**（`explore`/`librarian`）、
+  **写泳道下弧单槽**、**队列在左下 dock 位以 chip 呈现**（`READ_SLOTS`/`WRITE_SLOT`/
+  `DOCK`，几何照 `docs/design/panel-graph-demo.html` 冻结稿 v1.2 逐条还原）。节点 =
+  **子代个体**（非工种聚合）：色板与字形直读 `src/client-constants.js` 的九工种色板
+  （import 复用，不复制字面量），同职责多实例按 `createdAt` 序编号（`工种名#N`）。
+  **四态动画**：派工脉冲 / 运行呼吸 / 求助反向红脉冲 / 完成·失败回流 + 中心吸收环，
+  青红两系可分辨（`ACCENT_RUNNING` vs `ACCENT_HELP`）。演出触发源是**面板快照差分**
+  而非 demo 的自带脚本：`currentRecords` 按 childId 分三类——新 id = 派工脉冲、
+  `status` 跳变 = 转场、id 消失 = **回查该 childId 最近一条终局史**决定回流还是静默
+  淡出（宿主 `finish()` 把记录从 currentMap 摘除、终局只落 history，见
+  `preset/shared/orchestration.mjs:220-240`）。**会话跟随三级**：`sessions.list`
+  快照 `current` → `byId` 中 `retainedBy.mainView > 0` 的席位 → 退化到「最活跃
+  parent」兜底；多 parent 时标题栏出 owner chip（末 6 位）。**reduced-motion**：
+  `prefers-reduced-motion: reduce` 时静止渲染（不启帧循环），并监听 `change` 支持
+  运行中双向切换。**帧循环自持**：React 只管挂载与投递快照，动画绝不依赖外层
+  600ms 全量重渲染；`dpr` 封顶 2。配套 `test/panel-graph.test.mjs` 20 例 + 基准稿
+  `docs/design/panel-graph-demo.html` 与四态截图（`graph-idle/running/waiting/done/
+  reduced-check.png`）。
+
+#### Fixed
+
+- **面板快照轮询放大**（`src/panel-tree.js`）：`createOrchestrationPanel` 曾把自己
+  的 `refresh` 注册进 `emit` 监听集（`listeners.add(refresh)`）⇒ 面板的轮询节拍不再
+  唯一：`emit` 会直接再拉一发快照，而该发的收尾（`changed || firstFrame` 判据）又
+  `emit`，与同拍异步收尾的 usage 取数（`pollUsage`，在快照 `pollInFlight` 窗之外
+  emit）叠成**自持链**；子代在飞（有 parent）时快照 `seq` 持续前进 ⇒ `changed` 恒真、
+  链以 RPC 往返为节拍自我反哺，实测 **81.2 次/秒**快照轮询（无 parent 时 seq 不变、
+  `changed=false` 恰好截断，缺陷只在编排进行中显形）。删去该注册与配套 `unsub`
+  （净删 3 行），断掉 emit→refresh 同步旁路：`emit()` 仍照常服务 overlay 重渲染
+  （`TreePanel` 的 force 监听不受影响），**600ms tick 回归唯一节拍源**（实测
+  1.7 次/秒，与 `POLL_BASE_MS = 600` 基准档一致）。
 
 ### [0.5.0-tisitan.6] - 2026-09-24（宿主 V4 契约对齐：MessageSource 生产者自持 kind、Session 档案代 v4；文档安装同步与 tool-mask 漂移清理）
 

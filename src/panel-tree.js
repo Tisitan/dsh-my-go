@@ -20,6 +20,7 @@ import { LEGACY_PARENT_ID, PANEL_RPC_CHANNEL, PANEL_ENDPOINTS } from '../preset/
 import { shortId, oneLine, formatRelativeTime, extractFallbackNote } from './panel-format.js'
 import { UsageSection } from './usage-panel.js'
 import { usageSessionTarget, sessionsListPhase } from './usage-views.js'
+import { GraphSection } from './panel-graph.js'
 import {
   AGENT_LABELS,
   AGENT_COLORS,
@@ -340,6 +341,8 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
             }, '⚠ 编排桥未就绪：host 端 /dsh-my-go RPC 无响应（插件未激活或仍在启动），面板将持续自动重试。')
           : null,
 
+      React.createElement(GraphSection, { records: currents, queue: queues, histories, sessions }),
+
       // 运行中：保留区块（空时显示「空闲」，用户习惯看它），等待求助的条目用红色
       React.createElement('div', { style: { marginBottom: 10 } },
         sectionHeader('运行中', currents.length),
@@ -520,9 +523,6 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
     } catch { /* store shape drift: fall through to degraded mode */ }
     return undefined
   }
-  const unsub = () => { listeners.delete(refresh) }
-  listeners.add(refresh)
-
   const stopAutoJump = timer && typeof timer.interval === 'function'
     ? timer.interval(() => {
         if (!sessions) return
@@ -569,6 +569,5 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
   return () => {
     if (stopPolling) stopPolling()
     if (stopAutoJump) stopAutoJump()
-    unsub()
   }
 }

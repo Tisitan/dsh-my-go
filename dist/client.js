@@ -41,7 +41,7 @@ __export(client_exports, {
   name: () => name
 });
 module.exports = __toCommonJS(client_exports);
-var React6 = __toESM(require("react"), 1);
+var React7 = __toESM(require("react"), 1);
 
 // preset/shared/constants.mjs
 var ROLE_KEY_PATTERN = /^[a-z][a-z-]*$/;
@@ -61,7 +61,7 @@ var PRICE_BUCKET_LABELS = Object.freeze({ input: "\u8F93\u5165", output: "\u8F93
 var LEGACY_PARENT_ID = "legacy";
 
 // src/panel-tree.js
-var React2 = __toESM(require("react"), 1);
+var React3 = __toESM(require("react"), 1);
 
 // src/panel-format.js
 function shortId(id, len = 8) {
@@ -624,6 +624,704 @@ ${extras}` : ""}`),
   );
 }
 
+// src/panel-graph.js
+var React2 = __toESM(require("react"), 1);
+var W = 296;
+var H = 300;
+var CENTER = { x: 148, y: 150, r: 22 };
+var ORBIT_R = 105;
+var READ_SLOTS = [{ x: 74, y: 76 }, { x: 148, y: 45 }, { x: 222, y: 76 }];
+var WRITE_SLOT = { x: 148, y: 255 };
+var DOCK = [{ x: 26, y: 268 }, { x: 50, y: 268 }, { x: 74, y: 268 }];
+var NODE_R = 16;
+var DOCK_W = 18;
+var DOCK_H = 15;
+var SPAWN_BURST = 10;
+var REFLOW_BURST = 12;
+var STREAM_GAP = 340;
+var HELP_GAP = 700;
+var FADE_DELAY = 250;
+var FADE_DUR = 650;
+var GONE_FADE_DUR = 300;
+var EDGE_FLASH_TTL = 2e3;
+var UNKNOWN_COLOR = "#9e9e9e";
+var HALO_COLOR = "#1e1e1e";
+var ORBIT_COLOR = "#3a3a3a";
+var LANE_LABEL_COLOR = "#5c5c5c";
+var TERMINAL_STATUS = /* @__PURE__ */ new Set(["done", "failed"]);
+var READ_LANE_TYPES = /* @__PURE__ */ new Set(["explore", "librarian"]);
+var laneOf = (t) => READ_LANE_TYPES.has(t) ? "read" : "write";
+var agentColor = (t) => AGENT_COLORS[t] ?? UNKNOWN_COLOR;
+var glyphColor = (s) => s === "waiting" || s === "failed" ? ACCENT_HELP : s === "queued" ? ACCENT_QUEUE : s === "done" || s === "running" ? ACCENT_RUNNING : "#ddd";
+var recordId = (rec) => {
+  const id = rec ? rec.childId ?? rec.id : null;
+  return id ? String(id) : "";
+};
+var parentIdOf = (rec) => {
+  const pid = rec ? rec.parentSessionId : null;
+  return typeof pid === "string" && pid ? pid : "";
+};
+var recordTime = (rec) => {
+  const t = Number(rec ? rec.updatedAt ?? rec.createdAt ?? 0 : 0);
+  return Number.isFinite(t) ? t : 0;
+};
+function endedByChild(histories) {
+  const out = /* @__PURE__ */ new Map();
+  for (const rec of Array.isArray(histories) ? histories : []) {
+    const id = recordId(rec);
+    if (!id || !TERMINAL_STATUS.has(rec && rec.status)) continue;
+    const t = recordTime(rec);
+    const prev = out.get(id);
+    if (!prev || t >= prev.t) out.set(id, { status: rec.status, t });
+  }
+  return out;
+}
+function buildLabels(nodes) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const n of nodes.values()) {
+    const t = n.rec.agentType;
+    const list = groups.get(t);
+    if (list) list.push(n);
+    else groups.set(t, [n]);
+  }
+  const labels = /* @__PURE__ */ new Map();
+  for (const [t, list] of groups) {
+    if (list.length === 1) {
+      labels.set(list[0].rec.id, typeName(t));
+      continue;
+    }
+    list.sort((a, b) => (a.rec.createdAt ?? 0) - (b.rec.createdAt ?? 0));
+    list.forEach((n, i) => labels.set(n.rec.id, `${typeName(t)}#${i + 1}`));
+  }
+  return labels;
+}
+var mainViewHeld = (row) => {
+  const n = row && row.retainedBy ? row.retainedBy.mainView : void 0;
+  return typeof n === "number" ? n > 0 : n === true;
+};
+function readCurrentSessionId(sessions) {
+  try {
+    const list = sessions && sessions.list;
+    if (list && typeof list.getSnapshot === "function") {
+      const snap = list.getSnapshot();
+      if (snap) {
+        const current = snap.current;
+        if (typeof current === "string" && current) return current;
+        const byId = snap.byId;
+        if (byId && typeof byId === "object") {
+          const ids = Array.isArray(snap.ids) ? snap.ids : [];
+          for (const id of ids) {
+            if (typeof id === "string" && id && mainViewHeld(byId[id])) return id;
+          }
+          for (const id of Object.keys(byId)) {
+            if (mainViewHeld(byId[id])) return id;
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  return void 0;
+}
+function mostActiveParent(items, order) {
+  const latest = /* @__PURE__ */ new Map();
+  for (const r of items) {
+    const pid = parentIdOf(r);
+    if (!pid) continue;
+    const t = recordTime(r);
+    if (t > (latest.get(pid) ?? -Infinity)) latest.set(pid, t);
+  }
+  let best = order[0];
+  let bestTs = -Infinity;
+  for (const pid of order) {
+    const t = latest.get(pid) ?? -Infinity;
+    if (t > bestTs) {
+      bestTs = t;
+      best = pid;
+    }
+  }
+  return best;
+}
+function pickBucket(records, queue, histories, currentParentId) {
+  const recs = Array.isArray(records) ? records : [];
+  const que = Array.isArray(queue) ? queue : [];
+  const his = Array.isArray(histories) ? histories : [];
+  const all = recs.concat(que, his);
+  const order = [];
+  for (const r of all) {
+    const pid = parentIdOf(r);
+    if (pid && order.indexOf(pid) < 0) order.push(pid);
+  }
+  const parentCount = order.length;
+  const ofParent = (list, pid) => list.filter((r) => parentIdOf(r) === pid);
+  if (currentParentId !== void 0) {
+    return {
+      records: ofParent(recs, currentParentId),
+      queue: ofParent(que, currentParentId),
+      histories: ofParent(his, currentParentId),
+      parentSessionId: currentParentId,
+      parentCount
+    };
+  }
+  if (parentCount <= 1) {
+    return { records: recs, queue: que, histories: his, parentSessionId: order[0], parentCount };
+  }
+  const pick = mostActiveParent(all, order);
+  return {
+    records: ofParent(recs, pick),
+    queue: ofParent(que, pick),
+    histories: ofParent(his, pick),
+    parentSessionId: pick,
+    parentCount
+  };
+}
+function toCanvasPoint(rect, clientX, clientY) {
+  const width = rect && Number.isFinite(rect.width) ? rect.width : 0;
+  const k = width > 0 ? W / width : 1;
+  const left = rect && Number.isFinite(rect.left) ? rect.left : 0;
+  const top = rect && Number.isFinite(rect.top) ? rect.top : 0;
+  return { x: (clientX - left) * k, y: (clientY - top) * k };
+}
+function emptyGraphHint(scope) {
+  if (!scope || scope.records.length > 0 || scope.queue.length > 0) return null;
+  const suffix = scope.parentCount > 1 && scope.parentSessionId ? `\uFF08\u672C\u56FE\u4EC5 \xB7${String(scope.parentSessionId).slice(-6)} \u6876\uFF09` : "";
+  return `\u5F53\u524D\u4F1A\u8BDD\u65E0\u5728\u98DE\u5B50\u4EE3${suffix}`;
+}
+var nowMs = () => typeof performance !== "undefined" && performance && typeof performance.now === "function" ? performance.now() : Date.now();
+var hasRaf = typeof requestAnimationFrame === "function";
+function createGraphEngine(canvas) {
+  const ctx = canvas.getContext("2d");
+  const dpr = Math.min(2, typeof window !== "undefined" && window.devicePixelRatio || 1);
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  const nodes = /* @__PURE__ */ new Map();
+  const particles = [];
+  const edgeFlash = /* @__PURE__ */ new Map();
+  const readSlots = [null, null, null];
+  let writeSlotUsed = null;
+  let queueView = [];
+  let centerFlashT = -1e9;
+  let centerFlashColor = ACCENT_RUNNING;
+  let rafId = null;
+  let destroyed = false;
+  let reduceQuery = null;
+  const t0 = nowMs();
+  const T = () => nowMs() - t0;
+  let seed = 42;
+  const rnd = () => (seed = seed * 1103515245 + 12345 & 2147483647) / 2147483647;
+  try {
+    if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+      reduceQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    }
+  } catch {
+    reduceQuery = null;
+  }
+  const staticMode = () => !!(reduceQuery && reduceQuery.matches);
+  function addParticle(fx, fy, tx, ty, color, delay, dur, size) {
+    particles.push({ fx, fy, tx, ty, color, t0: T() + delay, dur, size: size ?? 1.8 });
+  }
+  function burst(from, to, color, n, spreadDelay, dur) {
+    for (let i = 0; i < n; i++) addParticle(from.x, from.y, to.x, to.y, color, rnd() * spreadDelay, dur + rnd() * 120, 1.5 + rnd());
+  }
+  function allocSlot(id, agentType) {
+    if (laneOf(agentType) === "read") {
+      for (let i = 0; i < READ_SLOTS.length; i++) {
+        if (!readSlots[i]) {
+          readSlots[i] = id;
+          return READ_SLOTS[i];
+        }
+      }
+      return READ_SLOTS[0];
+    }
+    writeSlotUsed = id;
+    return WRITE_SLOT;
+  }
+  function freeSlot(n) {
+    const i = readSlots.indexOf(n.rec.id);
+    if (i >= 0) readSlots[i] = null;
+    if (writeSlotUsed === n.rec.id) writeSlotUsed = null;
+  }
+  function collect(now) {
+    for (const n of [...nodes.values()]) {
+      if (n.fade && now > n.fade.t0 + n.fade.dur) {
+        freeSlot(n);
+        nodes.delete(n.rec.id);
+      }
+    }
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      if ((now - p.t0) / p.dur >= 1) particles.splice(i, 1);
+    }
+    for (const [id, t] of [...edgeFlash]) {
+      if (!nodes.has(id) || now - t > EDGE_FLASH_TTL) edgeFlash.delete(id);
+    }
+  }
+  function spawnNode(rec, id, now) {
+    const pos = allocSlot(id, rec.agentType);
+    const n = {
+      rec: { id, agentType: rec.agentType, status: rec.status, createdAt: rec.createdAt ?? 0 },
+      pos,
+      born: now,
+      fade: null,
+      lastStream: now + rnd() * STREAM_GAP,
+      lastHelp: now
+    };
+    nodes.set(id, n);
+    edgeFlash.set(id, now);
+    burst(CENTER, pos, agentColor(rec.agentType), SPAWN_BURST, 300, 600);
+    return n;
+  }
+  function transition(n, to, now) {
+    const color = agentColor(n.rec.agentType);
+    if (TERMINAL_STATUS.has(to)) {
+      burst(n.pos, CENTER, to === "done" ? ACCENT_RUNNING : ACCENT_HELP, REFLOW_BURST, 450, 550);
+      centerFlashT = now + 250;
+      centerFlashColor = to === "done" ? ACCENT_RUNNING : ACCENT_HELP;
+      n.fade = { t0: now + FADE_DELAY, dur: FADE_DUR };
+    } else if (to === "waiting") {
+      edgeFlash.set(n.rec.id, now);
+    } else if (to === "running") {
+      burst(CENTER, n.pos, color, 4, 200, 500);
+    }
+    n.rec.status = to;
+  }
+  function applySnapshot(records, queue, histories) {
+    if (destroyed) return;
+    const now = T();
+    collect(now);
+    const ended = endedByChild(histories);
+    const seen = /* @__PURE__ */ new Set();
+    for (const rec of Array.isArray(records) ? records : []) {
+      const id = recordId(rec);
+      if (!id) continue;
+      seen.add(id);
+      const n = nodes.get(id);
+      if (!n) {
+        spawnNode(rec, id, now);
+        continue;
+      }
+      if (n.fade) n.fade = null;
+      if (n.rec.status !== rec.status) transition(n, rec.status, now);
+    }
+    for (const [id, n] of [...nodes]) {
+      if (seen.has(id) || n.fade) continue;
+      const end = ended.get(id);
+      if (end) transition(n, end.status, now);
+      else n.fade = { t0: now, dur: GONE_FADE_DUR };
+    }
+    queueView = (Array.isArray(queue) ? queue : []).slice(0, 3);
+    if (staticMode()) render(now, true);
+  }
+  function drawGlyph(status, cx, cy, color, t) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    switch (status) {
+      case "running":
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4.2, 0, 7);
+        ctx.fill();
+        break;
+      case "spawning": {
+        ctx.beginPath();
+        ctx.arc(cx, cy, 5, 0, 7);
+        ctx.stroke();
+        const a = t / 500 % (Math.PI * 2);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, 4.4, a, a + Math.PI);
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+      case "queued": {
+        ctx.beginPath();
+        ctx.moveTo(cx - 4, cy - 5);
+        ctx.lineTo(cx + 4, cy - 5);
+        ctx.lineTo(cx - 4, cy + 5);
+        ctx.lineTo(cx + 4, cy + 5);
+        ctx.closePath();
+        ctx.stroke();
+        break;
+      }
+      case "waiting": {
+        ctx.beginPath();
+        ctx.moveTo(cx - 2.3, cy - 1.3);
+        ctx.lineTo(cx - 0.9, cy - 3.9);
+        ctx.lineTo(cx + 1.9, cy - 2.3);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx + 1.9, cy - 2.3);
+        ctx.lineTo(cx + 0.1, cy + 0.4);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cx + 0.1, cy + 3.6, 1.1, 0, 7);
+        ctx.fill();
+        break;
+      }
+      case "done":
+        ctx.beginPath();
+        ctx.moveTo(cx - 4.5, cy);
+        ctx.lineTo(cx - 1.5, cy + 3.5);
+        ctx.lineTo(cx + 4.5, cy - 3.5);
+        ctx.stroke();
+        break;
+      case "failed":
+        ctx.beginPath();
+        ctx.moveTo(cx - 3.5, cy - 3.5);
+        ctx.lineTo(cx + 3.5, cy + 3.5);
+        ctx.moveTo(cx + 3.5, cy - 3.5);
+        ctx.lineTo(cx - 3.5, cy + 3.5);
+        ctx.stroke();
+        break;
+      default:
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4, 0, 7);
+        ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function haloText(text2, x, y, font, color) {
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = HALO_COLOR;
+    ctx.strokeText(text2, x, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text2, x, y);
+    ctx.restore();
+  }
+  function roundRectPath(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function render(now, isStatic) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.setLineDash([3, 5]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = ORBIT_COLOR;
+    ctx.beginPath();
+    ctx.arc(CENTER.x, CENTER.y, ORBIT_R, Math.PI * 1.14, Math.PI * 1.86);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(CENTER.x, CENTER.y, ORBIT_R, Math.PI * 0.14, Math.PI * 0.86);
+    ctx.stroke();
+    ctx.restore();
+    haloText("\u8BFB\u6CF3\u9053 \xB7 \u22643 \u5E76\u884C", 44, 12, `9px ${MONO_FONT}`, LANE_LABEL_COLOR);
+    haloText("\u5199\u6CF3\u9053 \xB7 \u5355\u7EBF", 248, 292, `9px ${MONO_FONT}`, LANE_LABEL_COLOR);
+    haloText("\u961F\u5217", 26, 250, `9px ${MONO_FONT}`, LANE_LABEL_COLOR);
+    for (const n of nodes.values()) {
+      const { x, y } = n.pos;
+      const waiting = n.rec.status === "waiting";
+      const agent = agentColor(n.rec.agentType);
+      let alpha = 0.3;
+      const ef = edgeFlash.get(n.rec.id);
+      if (ef !== void 0) alpha += 0.55 * Math.exp(-(now - ef) / 320);
+      let width = 1.2;
+      if (!isStatic && n.rec.status === "running") width = 1.2 + 0.4 * Math.sin(now / 700 + n.born);
+      if (waiting && !isStatic) alpha = 0.35 + 0.35 * (0.5 + 0.5 * Math.sin(now / 200));
+      let fadeA = 1;
+      if (n.fade) fadeA = Math.max(0, 1 - (now - n.fade.t0) / n.fade.dur);
+      const dx = x - CENTER.x, dy = y - CENTER.y, len = Math.hypot(dx, dy);
+      const sx = CENTER.x + dx / len * (CENTER.r + 2), sy = CENTER.y + dy / len * (CENTER.r + 2);
+      const ex = x - dx / len * (NODE_R + 2), ey = y - dy / len * (NODE_R + 2);
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, alpha) * fadeA;
+      ctx.strokeStyle = waiting ? ACCENT_HELP : agent;
+      ctx.lineWidth = width;
+      ctx.shadowColor = waiting ? ACCENT_HELP : agent;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (!isStatic) {
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        const k = (now - p.t0) / p.dur;
+        if (k < 0) continue;
+        if (k >= 1) {
+          particles.splice(i, 1);
+          continue;
+        }
+        for (let g = 0; g < 3; g++) {
+          const kk = k - g * 0.07;
+          if (kk < 0) continue;
+          ctx.globalAlpha = Math.sin(Math.PI * kk) * [0.9, 0.4, 0.15][g];
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.fx + (p.tx - p.fx) * kk, p.fy + (p.ty - p.fy) * kk, p.size * (1 - g * 0.25), 0, 7);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+    const labels = buildLabels(nodes);
+    for (const n of nodes.values()) {
+      const { x, y } = n.pos;
+      const agent = agentColor(n.rec.agentType);
+      let scale = 1, alpha = 1;
+      const sp = Math.min(1, (now - n.born) / 400);
+      if (sp < 1) {
+        const c1 = 1.70158, c3 = c1 + 1;
+        scale = 1 + c3 * Math.pow(sp - 1, 3) + c1 * Math.pow(sp - 1, 2);
+      }
+      if (isStatic) scale = 1;
+      if (n.fade) {
+        const k = Math.min(1, Math.max(0, (now - n.fade.t0) / n.fade.dur));
+        alpha = 1 - k;
+        scale *= 1 - 0.4 * k;
+      }
+      const waiting = n.rec.status === "waiting";
+      const running = n.rec.status === "running";
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+      ctx.globalAlpha = alpha;
+      let glow = 6;
+      if (!isStatic && running) glow = 9 + 5 * Math.sin(now / 1400 * Math.PI * 2 + n.born);
+      if (waiting) glow = 12;
+      ctx.shadowColor = waiting ? ACCENT_HELP : agent;
+      ctx.shadowBlur = glow;
+      ctx.beginPath();
+      ctx.arc(0, 0, NODE_R, 0, 7);
+      ctx.fillStyle = agent + "2e";
+      ctx.fill();
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = waiting ? ACCENT_HELP : agent;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      if (waiting) {
+        const ra = isStatic ? 0.8 : 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(now / 160));
+        ctx.globalAlpha = alpha * ra;
+        ctx.strokeStyle = ACCENT_HELP;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, NODE_R + 4.5, 0, 7);
+        ctx.stroke();
+        ctx.globalAlpha = alpha;
+      }
+      drawGlyph(n.rec.status, 0, 0, glyphColor(n.rec.status), isStatic ? 0 : now);
+      ctx.restore();
+      haloText(labels.get(n.rec.id) ?? typeName(n.rec.agentType), x, y + NODE_R + 11, `9.5px ${MONO_FONT}`, `rgba(200,200,200,${alpha})`);
+    }
+    queueView.forEach((q, i) => {
+      const d = DOCK[i];
+      if (!d) return;
+      const c = agentColor(q && q.agentType);
+      ctx.save();
+      ctx.globalAlpha = isStatic ? 0.85 : 0.65 + 0.2 * Math.sin(now / 500 + i);
+      ctx.fillStyle = c + "22";
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 1;
+      roundRectPath(d.x - DOCK_W / 2, d.y - 8, DOCK_W, DOCK_H, 3);
+      ctx.fill();
+      ctx.stroke();
+      drawGlyph("queued", d.x, d.y - 0.5, ACCENT_QUEUE, now);
+      ctx.restore();
+    });
+    const flashK = Math.min(1, Math.max(0, (now - centerFlashT) / 500));
+    ctx.save();
+    const breathe = isStatic ? 0 : Math.sin(now / 2400 * Math.PI * 2);
+    ctx.shadowColor = AGENT_COLORS.sisyphus;
+    ctx.shadowBlur = 12 + 4 * breathe + flashK * 18;
+    ctx.beginPath();
+    ctx.arc(CENTER.x, CENTER.y, CENTER.r, 0, 7);
+    ctx.fillStyle = `rgba(100,181,246,${0.16 + 0.25 * flashK})`;
+    ctx.fill();
+    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = AGENT_COLORS.sisyphus;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(CENTER.x, CENTER.y, 6.5, 0, 7);
+    ctx.fillStyle = AGENT_COLORS.sisyphus;
+    ctx.fill();
+    ctx.restore();
+    if (flashK > 0 && !isStatic) {
+      ctx.save();
+      ctx.globalAlpha = 0.75 * (1 - flashK);
+      ctx.strokeStyle = centerFlashColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(CENTER.x, CENTER.y, CENTER.r + 4 + flashK * 20, 0, 7);
+      ctx.stroke();
+      ctx.restore();
+    }
+    haloText("Sisyphus", CENTER.x, CENTER.y + CENTER.r + 11, `10px ${MONO_FONT}`, "#9ec9ef");
+  }
+  function frame() {
+    if (destroyed) return;
+    const now = T();
+    collect(now);
+    for (const n of nodes.values()) {
+      if (n.fade) continue;
+      if (n.rec.status === "running" && now - n.lastStream > STREAM_GAP) {
+        n.lastStream = now;
+        addParticle(CENTER.x, CENTER.y, n.pos.x, n.pos.y, agentColor(n.rec.agentType), 0, 900, 1.6);
+      }
+      if (n.rec.status === "waiting" && now - n.lastHelp > HELP_GAP) {
+        n.lastHelp = now;
+        addParticle(n.pos.x, n.pos.y, CENTER.x, CENTER.y, ACCENT_HELP, 0, 700, 2);
+      }
+    }
+    render(now, false);
+    rafId = hasRaf && !staticMode() ? requestAnimationFrame(frame) : null;
+  }
+  function onMotionPreferenceChange() {
+    if (destroyed) return;
+    if (staticMode()) {
+      if (rafId != null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(rafId);
+      rafId = null;
+      const now = T();
+      collect(now);
+      render(now, true);
+      return;
+    }
+    if (hasRaf && rafId == null) rafId = requestAnimationFrame(frame);
+  }
+  if (reduceQuery) {
+    if (typeof reduceQuery.addEventListener === "function") reduceQuery.addEventListener("change", onMotionPreferenceChange);
+    else if (typeof reduceQuery.addListener === "function") reduceQuery.addListener(onMotionPreferenceChange);
+  }
+  function start() {
+    if (destroyed) return;
+    if (!hasRaf || staticMode()) {
+      const now = T();
+      collect(now);
+      render(now, true);
+      return;
+    }
+    if (rafId != null) return;
+    rafId = requestAnimationFrame(frame);
+  }
+  function destroy() {
+    destroyed = true;
+    if (rafId != null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(rafId);
+    rafId = null;
+    if (reduceQuery) {
+      if (typeof reduceQuery.removeEventListener === "function") reduceQuery.removeEventListener("change", onMotionPreferenceChange);
+      else if (typeof reduceQuery.removeListener === "function") reduceQuery.removeListener(onMotionPreferenceChange);
+    }
+    nodes.clear();
+    particles.length = 0;
+    edgeFlash.clear();
+  }
+  function hitTest(cssX, cssY) {
+    let best = null;
+    let bestD = NODE_R + 6;
+    for (const n of nodes.values()) {
+      if (n.fade) continue;
+      const d = Math.hypot(cssX - n.pos.x, cssY - n.pos.y);
+      if (d < bestD) {
+        bestD = d;
+        best = n;
+      }
+    }
+    return best;
+  }
+  const stats = () => ({ nodes: nodes.size, particles: particles.length, flashes: edgeFlash.size, running: rafId != null });
+  return { applySnapshot, start, destroy, hitTest, stats };
+}
+function GraphCanvas({ records, queue, histories }) {
+  const canvasRef = React2.useRef(null);
+  const engineRef = React2.useRef(null);
+  React2.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return void 0;
+    const engine = createGraphEngine(canvas);
+    engineRef.current = engine;
+    engine.start();
+    return () => {
+      engineRef.current = null;
+      engine.destroy();
+    };
+  }, []);
+  React2.useEffect(() => {
+    const engine = engineRef.current;
+    if (engine) engine.applySnapshot(records, queue, histories);
+  }, [records, queue, histories]);
+  const onMove = (e) => {
+    const engine = engineRef.current;
+    const canvas = canvasRef.current;
+    if (!engine || !canvas) return;
+    const p = toCanvasPoint(canvas.getBoundingClientRect(), e.clientX, e.clientY);
+    const n = engine.hitTest(p.x, p.y);
+    canvas.title = n ? `${typeLabel(n.rec.agentType)}
+${shortId(n.rec.id)}` : "";
+  };
+  const onLeave = () => {
+    const canvas = canvasRef.current;
+    if (canvas) canvas.title = "";
+  };
+  return React2.createElement("canvas", {
+    ref: canvasRef,
+    onMouseMove: onMove,
+    onMouseLeave: onLeave,
+    style: { display: "block", width: W, height: "auto", maxWidth: "100%" }
+  });
+}
+function GraphSection({ records, queue, histories, sessions }) {
+  const [open, setOpen] = React2.useState(true);
+  const scope = pickBucket(records, queue, histories, readCurrentSessionId(sessions));
+  const waiting = scope.records.filter((r) => r && r.status === "waiting").length;
+  const ownerChip = scope.parentCount > 1 && scope.parentSessionId ? React2.createElement("span", {
+    title: scope.parentSessionId,
+    style: {
+      flexShrink: 0,
+      maxWidth: 60,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+      fontFamily: MONO_FONT,
+      fontSize: 10,
+      lineHeight: "15px",
+      padding: "0 5px",
+      borderRadius: 4,
+      color: "#9e9e9e",
+      background: "rgba(255,255,255,0.07)"
+    }
+  }, `\xB7${String(scope.parentSessionId).slice(-6)}`) : null;
+  const hint = emptyGraphHint(scope);
+  return React2.createElement(
+    "div",
+    { style: { marginBottom: 10 } },
+    React2.createElement(
+      "div",
+      {
+        style: { cursor: "pointer", display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 4 },
+        onClick: () => setOpen((v) => !v),
+        title: open ? "\u6536\u8D77\u661F\u56FE" : "\u5C55\u5F00\u6CF3\u9053\u661F\u56FE\uFF08Sisyphus \u5B50\u4EE3\u5B9E\u65F6\u52A8\u753B\uFF1B\u5C55\u5F00\u65F6\u6309\u5F53\u524D\u5B50\u4EE3\u91CD\u653E\u4E00\u6B21\u6D3E\u5DE5\u8109\u51B2\uFF09"
+      },
+      React2.createElement("span", { style: { fontWeight: 600, fontSize: 12 } }, `${open ? "\u25BE" : "\u25B8"} \u661F\u56FE`),
+      React2.createElement("span", {
+        style: { fontSize: 11, lineHeight: "15px", padding: "0 6px", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#999" }
+      }, String(scope.records.length)),
+      ownerChip,
+      waiting > 0 ? React2.createElement("span", { style: { fontSize: 11, color: ACCENT_HELP } }, `${waiting} \u6C42\u52A9`) : null,
+      scope.queue.length > 0 ? React2.createElement("span", { style: { fontSize: 11, color: ACCENT_QUEUE } }, `\u961F\u5217 ${scope.queue.length}`) : null,
+      hint ? React2.createElement("span", { style: { fontSize: 11, color: "#777" } }, hint) : null
+    ),
+    open ? React2.createElement(GraphCanvas, { records: scope.records, queue: scope.queue, histories: scope.histories }) : null
+  );
+}
+
 // src/panel-tree.js
 function createOrchestrationPanel({ slots, connection, sessions, timer }) {
   let panelOpen = false;
@@ -756,10 +1454,10 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
     }
   }
   function TreePanel(_props) {
-    const [, force] = React2.useState(0);
-    const [rosterOpen, setRosterOpen] = React2.useState(false);
-    const [usageOpen, setUsageOpen] = React2.useState(true);
-    React2.useEffect(() => {
+    const [, force] = React3.useState(0);
+    const [rosterOpen, setRosterOpen] = React3.useState(false);
+    const [usageOpen, setUsageOpen] = React3.useState(true);
+    React3.useEffect(() => {
       const rerender = () => force((c) => c + 1);
       listeners.add(rerender);
       const tick = setInterval(() => {
@@ -776,7 +1474,7 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
     const parents = s.parents && typeof s.parents === "object" ? s.parents : {};
     const parentList = Object.values(parents).filter((p) => p && p.parentSessionId !== LEGACY_PARENT_ID);
     const multi = parentList.length > 1;
-    const chip = (text2, full, color) => React2.createElement("span", {
+    const chip = (text2, full, color) => React3.createElement("span", {
       title: full ?? text2,
       style: {
         flexShrink: 0,
@@ -793,7 +1491,7 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
         background: color ? `${color}22` : "rgba(255,255,255,0.07)"
       }
     }, text2);
-    const typeChip = (t) => React2.createElement("span", {
+    const typeChip = (t) => React3.createElement("span", {
       title: typeLabel(t),
       style: {
         flexShrink: 0,
@@ -808,7 +1506,7 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
       }
     }, typeName(t));
     const suffixChip = (pid) => multi ? chip(`\xB7${String(pid ?? "").slice(-6)}`, String(pid ?? "")) : null;
-    const row = (opts, ...cells) => React2.createElement(
+    const row = (opts, ...cells) => React3.createElement(
       "div",
       {
         key: opts.key,
@@ -826,10 +1524,10 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
           cursor: opts.onClick ? "pointer" : "default"
         }
       },
-      React2.createElement("span", { style: { flexShrink: 0, width: 14, textAlign: "center", color: opts.glyphColor } }, opts.glyph),
+      React3.createElement("span", { style: { flexShrink: 0, width: 14, textAlign: "center", color: opts.glyphColor } }, opts.glyph),
       ...cells
     );
-    const tail = (text2, title) => React2.createElement("span", {
+    const tail = (text2, title) => React3.createElement("span", {
       title,
       style: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#a0a0a0", fontSize: 12 }
     }, text2);
@@ -842,13 +1540,13 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
     const queues = parentList.flatMap((p) => Array.isArray(p?.queue) ? p.queue.map((w) => ({ ...w, parentSessionId: p.parentSessionId })) : []);
     const helps = parentList.flatMap((p) => Array.isArray(p?.helpRequests) ? p.helpRequests.map((h) => ({ ...h, parentSessionId: p.parentSessionId })) : []);
     const histories = parentList.flatMap((p) => Array.isArray(p?.history) ? p.history.map((r) => ({ ...r, parentSessionId: p.parentSessionId })) : []).sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
-    const sectionHeader = (title, count, hint) => React2.createElement(
+    const sectionHeader = (title, count, hint) => React3.createElement(
       "div",
       { title: hint, style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 } },
-      React2.createElement("span", { style: { fontWeight: 600, fontSize: 12 } }, title),
-      React2.createElement("span", { style: { fontSize: 11, lineHeight: "15px", padding: "0 6px", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#999" } }, String(count))
+      React3.createElement("span", { style: { fontWeight: 600, fontSize: 12 } }, title),
+      React3.createElement("span", { style: { fontSize: 11, lineHeight: "15px", padding: "0 6px", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#999" } }, String(count))
     );
-    return React2.createElement(
+    return React3.createElement(
       "div",
       {
         style: {
@@ -867,22 +1565,23 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
           fontSize: 13
         }
       },
-      React2.createElement(
+      React3.createElement(
         "div",
         { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
-        React2.createElement("strong", null, "Sisyphus \u7F16\u6392"),
-        React2.createElement("button", { onClick: () => {
+        React3.createElement("strong", null, "Sisyphus \u7F16\u6392"),
+        React3.createElement("button", { onClick: () => {
           panelOpen = false;
           emit();
         } }, "\xD7")
       ),
-      bridgeProblem === "internal" ? React2.createElement("div", {
+      bridgeProblem === "internal" ? React3.createElement("div", {
         style: { marginBottom: 10, padding: "6px 8px", borderRadius: 6, background: "rgba(255,152,0,0.12)", border: "1px solid rgba(255,152,0,0.35)", fontSize: 12 }
-      }, `\u26A0 host \u7AEF\u7F16\u6392\u5FEB\u7167\u8BFB\u53D6\u5F02\u5E38\uFF08\u88C5\u914D\u5DF2\u5B8C\u6210\uFF0C\u6865\u51FD\u6570\u629B\u9519\uFF09\uFF1A${bridgeDetail || "\u672A\u63D0\u4F9B\u539F\u56E0"}\uFF1B\u9762\u677F\u505C\u5728\u6700\u540E\u4E00\u6B21\u5B9E\u51B5\uFF0C\u6309\u9000\u907F\u8282\u594F\u81EA\u52A8\u91CD\u8BD5\u3002`) : bridgeProblem === "absent" ? React2.createElement("div", {
+      }, `\u26A0 host \u7AEF\u7F16\u6392\u5FEB\u7167\u8BFB\u53D6\u5F02\u5E38\uFF08\u88C5\u914D\u5DF2\u5B8C\u6210\uFF0C\u6865\u51FD\u6570\u629B\u9519\uFF09\uFF1A${bridgeDetail || "\u672A\u63D0\u4F9B\u539F\u56E0"}\uFF1B\u9762\u677F\u505C\u5728\u6700\u540E\u4E00\u6B21\u5B9E\u51B5\uFF0C\u6309\u9000\u907F\u8282\u594F\u81EA\u52A8\u91CD\u8BD5\u3002`) : bridgeProblem === "absent" ? React3.createElement("div", {
         style: { marginBottom: 10, padding: "6px 8px", borderRadius: 6, background: "rgba(244,67,54,0.1)", border: "1px solid rgba(244,67,54,0.3)", fontSize: 12 }
       }, "\u26A0 \u7F16\u6392\u6865\u672A\u5C31\u7EEA\uFF1Ahost \u7AEF /dsh-my-go RPC \u65E0\u54CD\u5E94\uFF08\u63D2\u4EF6\u672A\u6FC0\u6D3B\u6216\u4ECD\u5728\u542F\u52A8\uFF09\uFF0C\u9762\u677F\u5C06\u6301\u7EED\u81EA\u52A8\u91CD\u8BD5\u3002") : null,
+      React3.createElement(GraphSection, { records: currents, queue: queues, histories, sessions }),
       // 运行中：保留区块（空时显示「空闲」，用户习惯看它），等待求助的条目用红色
-      React2.createElement(
+      React3.createElement(
         "div",
         { style: { marginBottom: 10 } },
         sectionHeader("\u8FD0\u884C\u4E2D", currents.length),
@@ -902,10 +1601,10 @@ ${c.childId}` : typeLabel(c.agentType)
             suffixChip(c.parentSessionId),
             c.childId ? chip(shortId(c.childId), c.childId) : null
           );
-        }) : React2.createElement("div", { style: { color: "#888", fontSize: 12, padding: "2px 8px" } }, "\u25CB \u7A7A\u95F2")
+        }) : React3.createElement("div", { style: { color: "#888", fontSize: 12, padding: "2px 8px" } }, "\u25CB \u7A7A\u95F2")
       ),
       // 队列 / 求助：空时整区折叠隐藏（比显示「无」更干净）
-      queues.length > 0 ? React2.createElement(
+      queues.length > 0 ? React3.createElement(
         "div",
         { style: { marginBottom: 10 } },
         sectionHeader("\u961F\u5217", queues.length),
@@ -921,7 +1620,7 @@ ${c.childId}` : typeLabel(c.agentType)
           chip(shortId(w.id), w.id)
         ))
       ) : null,
-      helps.length > 0 ? React2.createElement(
+      helps.length > 0 ? React3.createElement(
         "div",
         { style: { marginBottom: 10 } },
         sectionHeader("\u6C42\u52A9", helps.length),
@@ -937,13 +1636,13 @@ ${c.childId}` : typeLabel(c.agentType)
             title: h.childId ? `${intentLabel(h.intent)}
 ${h.childId}` : intentLabel(h.intent)
           },
-          React2.createElement("span", { style: { flexShrink: 0 } }, intentLabel(h.intent)),
+          React3.createElement("span", { style: { flexShrink: 0 } }, intentLabel(h.intent)),
           suffixChip(h.parentSessionId),
           h.childId ? chip(shortId(h.childId), h.childId) : null
         ))
       ) : null,
       // 历史：工种彩色徽章 + [备选 n/m] 紫色徽章 + 结论单行省略 + 相对时间
-      histories.length > 0 ? React2.createElement(
+      histories.length > 0 ? React3.createElement(
         "div",
         null,
         sectionHeader("\u5386\u53F2", Math.min(8, histories.length), "\u4EC5\u663E\u793A\u6700\u8FD1 8 \u6761\u7ED3\u8BBA"),
@@ -964,13 +1663,13 @@ ${h.childId}` : intentLabel(h.intent)
             suffixChip(r.parentSessionId),
             note ? chip(note, `${note}\uFF08\u5907\u9009\u94FE\u81EA\u52A8\u91CD\u6D3E\uFF09`, ACCENT_FALLBACK) : null,
             tail(text2, title),
-            rel ? React2.createElement("span", { style: { flexShrink: 0, color: "#777", fontSize: 11 } }, rel) : null
+            rel ? React3.createElement("span", { style: { flexShrink: 0, color: "#777", fontSize: 11 } }, rel) : null
           );
         })
       ) : null,
       // 用量统计区（契约步骤 6/7）：纯展示组件，自身不发 RPC——数据来自上方
       // 共享轮询的 usage 快照；从折叠展开时立即补一发，省掉最多 600ms 空窗。
-      React2.createElement(UsageSection, {
+      React3.createElement(UsageSection, {
         usage,
         open: usageOpen,
         onToggle: () => {
@@ -992,48 +1691,48 @@ ${h.childId}` : intentLabel(h.intent)
         const legacyLines = !rows && Array.isArray(s.rosterLines) && s.rosterLines.length > 1 ? s.rosterLines.slice(1) : null;
         const count = rows ? rows.length : legacyLines ? legacyLines.length : 0;
         if (!rosterOpen) {
-          return React2.createElement(
+          return React3.createElement(
             "div",
             {
               style: { cursor: "pointer", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 },
               onClick: () => setRosterOpen(true),
               title: "\u5C55\u5F00\u53EF\u6D3E\u89D2\u8272\u4E0E\u7ED1\u5B9A\u6458\u8981"
             },
-            React2.createElement("span", { style: { fontWeight: 600, fontSize: 12 } }, "\u25B8 \u82B1\u540D\u518C"),
-            count > 0 ? React2.createElement("span", { style: { fontSize: 11, lineHeight: "15px", padding: "0 6px", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#999" } }, String(count)) : null
+            React3.createElement("span", { style: { fontWeight: 600, fontSize: 12 } }, "\u25B8 \u82B1\u540D\u518C"),
+            count > 0 ? React3.createElement("span", { style: { fontSize: 11, lineHeight: "15px", padding: "0 6px", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#999" } }, String(count)) : null
           );
         }
-        return React2.createElement(
+        return React3.createElement(
           "div",
           { style: { marginBottom: 10 } },
           sectionHeader("\u82B1\u540D\u518C", count, "\u53EF\u6D3E\u89D2\u8272\u4E0E\u7ED1\u5B9A\u6458\u8981\uFF08\u70B9\u51FB\u6807\u9898\u6298\u53E0\uFF09"),
-          rows ? rows.map((entry) => React2.createElement(
+          rows ? rows.map((entry) => React3.createElement(
             "div",
             {
               key: `ros-${entry?.role ?? ""}`,
               title: `${entry?.role ?? ""}\uFF1A${entry?.modelText ?? "\u8DDF\u968F\u73AF\u5883"}\uFF1B\u5907\u9009 ${Array.isArray(entry?.chain) ? entry.chain.length : 0} \u6761\uFF1B\u5DE5\u5177 ${entry?.toolFilterText ?? ""}\uFF1B\u4EBA\u8BBE ${entry?.personaSource ?? ""}`,
               style: { fontFamily: MONO_FONT, fontSize: 11, color: "#a0a0a0", padding: "2px 8px", overflowWrap: "anywhere", display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }
             },
-            React2.createElement("span", null, `${entry?.role ?? "?"}`),
-            React2.createElement("span", { style: { color: "#c8c8c8" } }, `\xB7 ${entry?.modelText ?? "\u8DDF\u968F\u73AF\u5883"}`),
+            React3.createElement("span", null, `${entry?.role ?? "?"}`),
+            React3.createElement("span", { style: { color: "#c8c8c8" } }, `\xB7 ${entry?.modelText ?? "\u8DDF\u968F\u73AF\u5883"}`),
             Array.isArray(entry?.chain) && entry.chain.length > 0 ? chip(`+${entry.chain.length}`, `\u5907\u9009\u94FE ${entry.chain.length} \u6761`, ACCENT_QUEUE) : null,
             entry?.builtin === false ? chip("\u81EA\u5B9A\u4E49", "\u81EA\u5B9A\u4E49\u89D2\u8272\uFF08\u4E0D\u5728\u5185\u7F6E\u516B\u5DE5\u79CD\u5185\uFF09") : null
-          )) : legacyLines ? legacyLines.map((line, i) => React2.createElement("div", {
+          )) : legacyLines ? legacyLines.map((line, i) => React3.createElement("div", {
             key: `ros-${i}`,
             title: line,
             style: { fontFamily: MONO_FONT, fontSize: 11, color: "#a0a0a0", padding: "2px 8px", overflowWrap: "anywhere" }
-          }, line)) : React2.createElement("div", { style: { color: "#888", fontSize: 12, padding: "2px 8px" } }, "\u82B1\u540D\u518C\u4E0D\u53EF\u7528\uFF08host \u672A\u5C31\u7EEA\uFF09")
+          }, line)) : React3.createElement("div", { style: { color: "#888", fontSize: 12, padding: "2px 8px" } }, "\u82B1\u540D\u518C\u4E0D\u53EF\u7528\uFF08host \u672A\u5C31\u7EEA\uFF09")
         );
       })()
     );
   }
   slots.inject("shell.overlay", () => slots.register(
     { name: "shell.overlay", id: "dsh-my-go-panel" },
-    (props) => React2.createElement(TreePanel, props)
+    (props) => React3.createElement(TreePanel, props)
   ));
   slots.inject("sidebar.footer.action", () => slots.register(
     { name: "sidebar.footer.action", id: "dsh-my-go-toggle" },
-    (props) => React2.createElement("button", {
+    (props) => React3.createElement("button", {
       onClick: () => {
         panelOpen = !panelOpen;
         emit();
@@ -1054,10 +1753,6 @@ ${h.childId}` : intentLabel(h.intent)
     }
     return void 0;
   };
-  const unsub = () => {
-    listeners.delete(refresh);
-  };
-  listeners.add(refresh);
   const stopAutoJump = timer && typeof timer.interval === "function" ? timer.interval(() => {
     if (!sessions) return;
     const parents = snapshot.parents && typeof snapshot.parents === "object" ? snapshot.parents : {};
@@ -1099,12 +1794,11 @@ ${h.childId}` : intentLabel(h.intent)
   return () => {
     if (stopPolling) stopPolling();
     if (stopAutoJump) stopAutoJump();
-    unsub();
   };
 }
 
 // src/settings-core.js
-var React5 = __toESM(require("react"), 1);
+var React6 = __toESM(require("react"), 1);
 
 // src/chain-rows.js
 function normalizeChainRows(value) {
@@ -1890,8 +2584,8 @@ function summaryLine(section) {
 }
 
 // src/roles-editor.js
-var React3 = __toESM(require("react"), 1);
-var el = React3.createElement;
+var React4 = __toESM(require("react"), 1);
+var el = React4.createElement;
 var EFFORTS = ["", "low", "high", "max"];
 var effortLabel = (value) => value === "" ? "\u8DDF\u968F\u6A21\u578B\u9ED8\u8BA4\uFF08\u4E0D\u5355\u72EC\u6307\u5B9A\uFF09" : { low: "\u4F4E\uFF08low\uFF09", high: "\u9AD8\uFF08high\uFF09", max: "\u6700\u9AD8\uFF08max\uFF09" }[value] ?? value;
 function renderRolesPane(deps) {
@@ -2110,7 +2804,7 @@ function renderChainEditor(row, providers, modelsFor, listErrorFor, disabled, on
     el("div", { className: "mygo-chain" }, chain.map((entry, index) => {
       const listError = listErrorFor(entry.provider);
       return el(
-        React3.Fragment,
+        React4.Fragment,
         { key: `mygo-chain-${index}` },
         el(
           "div",
@@ -2173,8 +2867,8 @@ function combobox(value, options, listId, placeholder, disabled, onChange) {
 }
 
 // src/usage-prices-editor.js
-var React4 = __toESM(require("react"), 1);
-var el2 = React4.createElement;
+var React5 = __toESM(require("react"), 1);
+var el2 = React5.createElement;
 function renderPricesPane(deps) {
   const { selectedPrice, current, writable, keys = [], setCurrency, setPrice, onDeletePrice } = deps;
   const currency = current.usageCurrency === "CNY" ? "CNY" : "USD";
@@ -2255,7 +2949,7 @@ function renderPricesPane(deps) {
 }
 
 // src/settings-core.js
-var el3 = React5.createElement;
+var el3 = React6.createElement;
 function SettingsCard({ view = "page", scope, face, catalog, connection }) {
   const snapshot = useScopeSnapshot(scope);
   if (view === "summary") {
@@ -2265,7 +2959,7 @@ function SettingsCard({ view = "page", scope, face, catalog, connection }) {
   return el3(SettingsPage, { snapshot, scope, face, catalog, connection });
 }
 function useScopeSnapshot(scope) {
-  const subscribe = React5.useCallback((emit) => {
+  const subscribe = React6.useCallback((emit) => {
     const off = typeof scope?.subscribe === "function" ? scope.subscribe(emit) : null;
     const styleOff = mountSettingsStyles();
     return () => {
@@ -2273,26 +2967,26 @@ function useScopeSnapshot(scope) {
       styleOff();
     };
   }, [scope]);
-  const get = React5.useCallback(() => scope?.getSnapshot ? scope.getSnapshot() : void 0, [scope]);
-  const snapshot = React5.useSyncExternalStore(subscribe, get, get);
-  React5.useEffect(() => {
+  const get = React6.useCallback(() => scope?.getSnapshot ? scope.getSnapshot() : void 0, [scope]);
+  const snapshot = React6.useSyncExternalStore(subscribe, get, get);
+  React6.useEffect(() => {
     if (typeof scope?.ensure === "function") void scope.ensure();
     else if (typeof scope?.load === "function") void scope.load();
   }, [scope]);
   return snapshot;
 }
 function SettingsPage({ snapshot, scope, face, catalog, connection }) {
-  const [draft, setDraft] = React5.useState(null);
-  const [fence, setFence] = React5.useState(null);
-  const [saving, setSaving] = React5.useState(false);
-  const [message, setMessage] = React5.useState(null);
-  const [picked, setPicked] = React5.useState(AGENT_TYPES[0]);
-  const [pickedPrice, setPickedPrice] = React5.useState(null);
-  const [newRoleKey, setNewRoleKey] = React5.useState("");
-  const [toolDrafts, setToolDrafts] = React5.useState({});
-  const [importError, setImportError] = React5.useState("");
-  const [newPriceKey, setNewPriceKey] = React5.useState("");
-  const [personaFileErr, setPersonaFileErr] = React5.useState({});
+  const [draft, setDraft] = React6.useState(null);
+  const [fence, setFence] = React6.useState(null);
+  const [saving, setSaving] = React6.useState(false);
+  const [message, setMessage] = React6.useState(null);
+  const [picked, setPicked] = React6.useState(AGENT_TYPES[0]);
+  const [pickedPrice, setPickedPrice] = React6.useState(null);
+  const [newRoleKey, setNewRoleKey] = React6.useState("");
+  const [toolDrafts, setToolDrafts] = React6.useState({});
+  const [importError, setImportError] = React6.useState("");
+  const [newPriceKey, setNewPriceKey] = React6.useState("");
+  const [personaFileErr, setPersonaFileErr] = React6.useState({});
   const card = resolveCardView(snapshot);
   const ready = card.kind === "ready";
   const layers = ready ? { value: snapshot.value, base: snapshot.base, user: snapshot.user } : { value: {}, base: {}, user: {} };
@@ -2304,7 +2998,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const writable = ready && snapshot.writable !== false && snapshot.mode !== "memory";
   const models = useCatalog(catalog);
   const tools = useToolRoster(connection);
-  React5.useEffect(() => {
+  React6.useEffect(() => {
     if (!dirty) return void 0;
     return attachBeforeUnloadGuard(typeof window === "undefined" ? void 0 : window);
   }, [dirty]);
@@ -2658,19 +3352,19 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   );
 }
 function useCatalog(catalog) {
-  const subscribe = React5.useCallback((emit) => catalog ? catalog.subscribe(emit) : () => {
+  const subscribe = React6.useCallback((emit) => catalog ? catalog.subscribe(emit) : () => {
   }, [catalog]);
-  const get = React5.useCallback(() => catalog ? catalog.get() : { status: "idle", providers: [], models: {}, errors: {} }, [catalog]);
-  const state = React5.useSyncExternalStore(subscribe, get, get);
-  React5.useEffect(() => {
+  const get = React6.useCallback(() => catalog ? catalog.get() : { status: "idle", providers: [], models: {}, errors: {} }, [catalog]);
+  const state = React6.useSyncExternalStore(subscribe, get, get);
+  React6.useEffect(() => {
     catalog?.load?.();
   }, [catalog]);
   return state;
 }
 function useToolRoster(connection) {
-  const [names, setNames] = React5.useState([]);
-  const [failed, setFailed] = React5.useState(false);
-  const load = React5.useCallback(() => {
+  const [names, setNames] = React6.useState([]);
+  const [failed, setFailed] = React6.useState(false);
+  const load = React6.useCallback(() => {
     if (!connection?.rpc?.call) return;
     connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.listTools, {}).then((res) => {
       if (res && res.ok && Array.isArray(res.value)) {
@@ -2681,7 +3375,7 @@ function useToolRoster(connection) {
       }
     }).catch(() => setFailed(true));
   }, [connection]);
-  React5.useEffect(() => {
+  React6.useEffect(() => {
     load();
   }, [load]);
   return { names, failed, refresh: load };
@@ -2890,14 +3584,14 @@ function apply(ctx) {
 function registerCard(slots, scope, face, catalog, connection) {
   return slots.inject("plugins.bundle.config", () => slots.register(
     { name: "plugins.bundle.config", key: SETTINGS_NAMESPACE },
-    (props) => React6.createElement(
+    (props) => React7.createElement(
       SettingsCardBoundary,
       null,
-      React6.createElement(SettingsCard, { ...props, scope, face, catalog, connection })
+      React7.createElement(SettingsCard, { ...props, scope, face, catalog, connection })
     )
   ));
 }
-var SettingsCardBoundary = class extends React6.Component {
+var SettingsCardBoundary = class extends React7.Component {
   constructor(props) {
     super(props);
     this.state = { failed: false };
@@ -2910,7 +3604,7 @@ var SettingsCardBoundary = class extends React6.Component {
   }
   render() {
     if (this.state.failed) {
-      return React6.createElement("div", { className: "mygo-notice mygo-noticeError" }, "dsh-my-go \u914D\u7F6E\u5361\u6E32\u67D3\u5F02\u5E38\uFF08\u5DF2\u62E6\u622A\uFF0C\u4E0D\u5F71\u54CD\u9875\u9762\u5176\u5B83\u90E8\u5206\uFF09\u3002");
+      return React7.createElement("div", { className: "mygo-notice mygo-noticeError" }, "dsh-my-go \u914D\u7F6E\u5361\u6E32\u67D3\u5F02\u5E38\uFF08\u5DF2\u62E6\u622A\uFF0C\u4E0D\u5F71\u54CD\u9875\u9762\u5176\u5B83\u90E8\u5206\uFF09\u3002");
     }
     return this.props.children;
   }
