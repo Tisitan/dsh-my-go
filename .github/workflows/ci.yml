@@ -1,14 +1,14 @@
 # dsh-my-go CI: typecheck + build + smoke test + unit tests on every push/PR,
 # on both Linux and Windows.
 #
-# 0.3.0-tisitan.11 (D-14) 三处结构性改动：
+# 三处结构性约定：
 #   ① 去 bun 化：旧版整条腿跑 `bun install` / `bunx tsc` / `bun run test`，而仓库
 #      从未声明或提交 bun 锁文件 → CI 解析出的依赖树既不代表本地、也不代表
 #      `npm publish` 消费者拿到的那棵树（alpha 线的 peer 约束因此从未被验证）。
 #      现在统一 npm ci + 提交 package-lock.json，本地/CI/装机同一棵树。
 #   ② 节点版本用 node-version-file: .nvmrc，与 package.json engines 同源。
-#   ③ 矩阵加 windows-latest：本仓就是在 Windows 上开发与部署的（路径分隔符、
-#      fs 语义、npm 脚本引号都在那台机器上才为真），只跑 Linux 等于没测部署环境。
+#   ③ 矩阵加 windows-latest：Windows 与 Linux 的路径分隔符、fs 语义、npm 脚本
+#      引号差异都在这条腿的覆盖内。
 name: CI
 
 on:
@@ -49,13 +49,18 @@ jobs:
         # 而不是像旧的 floating install 那样静默换一套版本）
         run: npm ci
 
-      - name: Typecheck
+      - name: Typecheck (legacy archive)
+        # 覆盖面：只检查 docs/legacy-broker-ts/ 的 TS 档案（tsc --noEmit，见 tsconfig 的 include）；
+        # src/ 与 lib/ 的 JS 类型检查待 ESLint 工程接入后另行覆盖。
         run: npm run typecheck:archive
+
+      - name: Run ESLint
+        run: npm run lint
 
       - name: Test (build client, smoke, unit)
         # npm test = 构建 client bundle → dist 新鲜度冒烟 → node --test 全档
         run: npm test
 
       - name: Verify the publishable tarball
-        # files 白名单瘦身（D-15）后，这一步保证「发布物里该有的都有」不靠肉眼
+        # files 白名单瘦身后，这一步保证「发布物里该有的都有」不靠肉眼
         run: npm pack --dry-run

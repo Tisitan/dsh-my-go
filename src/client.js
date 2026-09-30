@@ -1,7 +1,7 @@
 /**
  * dsh-my-go — Sisyphus agent orchestration (CLIENT half).
  *
- * Assembly entry only (tisitan.15 split): `apply` wires the host services
+ * Assembly entry only ( split): `apply` wires the host services
  * into the split modules and registers the DSH slots.
  *
  *  - panel-tree.js: overlay tree panel + 600ms snapshot poll + auto-jump
@@ -9,7 +9,7 @@
  *    `sessions.openSubagent`). Unchanged: the panel is not a configuration
  *    surface.
  *  - settings-core.js: the configuration card, injected into the official
- *    plugin page through `plugins.bundle.config` (0.5.0-tisitan.3) — the
+ *    plugin page through `plugins.bundle.config` — the
  *    `settings.section` entry is retired. It reads/writes the 'dsh-my-go'
  *    namespace over `configForms` (0.1.7: `settingsScope` is gone; the
  *    per-entry form is `configForms.get(entryId)` and the shared describe
@@ -33,7 +33,7 @@ export const name = 'dsh-my-go'
 
 export const inject = ['slots', 'configForms', 'connection', 'remote', 'remote.session']
 
-// 宿主 timer 服务缺席时的回落（E2/A-01）：浏览器形态下 globalThis 即 window，
+// 宿主 timer 服务缺席时的回落：浏览器形态下 globalThis 即 window，
 // 故这就是 window.setInterval/clearInterval；每次建链返回自管 disposer，
 // unapply 一并清干净，绝不留孤儿轮询。留痕只打一次。
 function createSelfManagedTimer() {
@@ -80,22 +80,21 @@ export function apply(ctx) {
 
   const connection = client.connection
   // sessions / timer 有意**不**进 inject（客户端半的既有形态）：拿不到就得
-  // 降级，而不是挂载失败。但降级不能是静默的（tisitan.8 E2/A-01）——此前
-  // timer 缺席时 `timer && timer.interval` 直接短路，面板永不刷新、也永不
-  // 说明原因；现在补一次性留痕 + 真自管的回落定时器。sessions 则走惰性
-  // 解析（createLazySessions）：装配时序不再决定面板能否拿到服务。
+  // 降级，而不是挂载失败。但降级不能是静默的——`timer && timer.interval` 短路
+  // 会让面板永不刷新、也永不说明原因，故这里补一次性留痕 + 真自管的回落定时器。
+  // sessions 则走惰性解析（createLazySessions）：装配时序不决定面板能否拿到服务。
   const sessions = createLazySessions(client)
   const timer = client.get('timer')
   const panelTimer = timer && typeof timer.interval === 'function'
     ? timer
     : createSelfManagedTimer()
 
-  // ── orchestration panel + polling + auto-jump（ tisitan.15 拆分至 panel-tree.js）
+  // ── orchestration panel + polling + auto-jump（本体在 panel-tree.js）
   const stopPanel = createOrchestrationPanel({ slots, connection, sessions, timer: panelTimer })
 
   // ── configuration card（官方插件页内的唯一配置入口）───────────────────────
-  // 0.1.7：settingsScope 退役，命名空间条目改由 configForms 寻址——get(entryId)
-  // 交出该条目的表单控制器（快照形状与旧 settingsScope 逐字段相同：
+  // 0.1.7：settingsScope 不在，命名空间条目由 configForms 寻址——get(entryId)
+  // 交出该条目的表单控制器（快照形状与 settingsScope 时代逐字段相同：
   // { status, value, base, user, revision, writable, mode }，故卡片逻辑零改动），
   // describe() 交出跨命名空间的共享 describe 镜像（served 集合的读面）。
   // get() 不再收 decode 参数：宿主默认拿 wire schema 校验 value，归一化在卡片
@@ -106,7 +105,7 @@ export function apply(ctx) {
     const scope = binder.get(NAMESPACE)
     const face = typeof binder.describe === 'function' ? binder.describe() : null
     const catalog = createCatalogStore(remote)
-    // 只有宿主真的在服务这个命名空间时才挂卡：插件被停用 / 宿主半注册失败时，
+    // 只有宿主真的在服务这个命名空间时才挂卡：插件被停用 / 宿主注册失败时，
     // 页面上不会出现一张读不到东西的空表单（官方内置插件卡同款门控）。
     client.effect(() => {
       let off = null
@@ -152,7 +151,7 @@ export function apply(ctx) {
  * One registration under the bundle identity the plugin page looks a bundle up
  * by. The page keys a bundle by the name the *profile* installed it under, so a
  * `link:` install whose key differs from the package name would silently lose the
- * card — dsh-tts tripped on exactly that. Here the dependency key, the bundle
+ * card — a sibling plugin tripped on exactly that. Here the dependency key, the bundle
  * entry and the package name are all `dsh-my-go`, so one key covers every
  * install shape; the sandbox acceptance re-confirms it.
  */

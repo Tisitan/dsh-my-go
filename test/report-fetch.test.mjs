@@ -2,7 +2,7 @@
 //
 // 规划 1.6 验收四路：正常切片 / 越界钳制 / 跨 sessionId 不可达 / 子代理侧不在册
 // （anti-bypass 同款断言模式在 anti-bypass.test.mjs 兑现，此处覆盖运行时守卫），
-// 外加主人裁决三条：sessionId 一律取主编会话自身、REPORT_EXT 闸内注册、not-found
+// 外加维护者裁决三条：sessionId 一律取主编会话自身、REPORT_EXT 闸内注册、not-found
 // 包装成主编可读返回（不抛）。板夹具直接用 writeBoard 造（1.1 round-trip 已锁
 // 写路径正确性，此处只造数据，不重复验存储层）。
 import { test } from 'node:test'

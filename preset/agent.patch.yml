@@ -1,19 +1,17 @@
 # dsh-my-go agent preset — Sisyphus orchestration (agent-plane composition).
 #
-# 0.1.7 声明行范式：预设 = `@deepseek-ai/dsh-agent-preset` 的一枚 Loader 行，由本包
-# bundle patch 声明（package.json dsh.bundle.patch 的第二枚）。旧的目录范式
-# （$DSH_HOME/.agent-presets/dsh-my-go/ 下的 preset.yml + agent.cordis.yml）在
-# 0.1.7 已无任何代码读取，随本次迁移整体退役——没有安装拷贝，也就没有安装同步。
+# 本文件是包自带的 agent preset 声明：`@deepseek-ai/dsh-agent-preset` 的一枚 Loader 行，
+# 由本包 bundle patch 声明（package.json `dsh.bundle.patch` 第二枚）；会话创建时由 Loader
+# 就地读取——预设与人设都在包内生效，无安装拷贝、无安装同步。
 #
-# 组合内容与原 agent.cordis.yml 逐字同源，只有两处随范式改变：
-#   1. 行列表搬进声明的 config.plugins；
-#   2. broker 行由 `./tools/broker.mjs`（相对预设目录）改为包说明符
-#      `dsh-my-go/preset/tools/broker.mjs`。理由：声明行 config.plugins 里的相对
-#      路径**不被 Loader 锚定**——dsh-app-boot 的 anchorInsertedPluginNames 只走
-#      insert 行自身与 `group: true` 的数组 config，而本行是映射 config，相对路径
-#      会落到 profile 目录上解析失败。官方指引的口径是「Resolve assets from
-#      installed packages rather than a preset directory」，包侧由 package.json
-#      exports 放出该子路径。
+# 组装口径两处：
+#   1. 行列表坐在本行的 config.plugins 里；
+#   2. broker 行用包说明符 `dsh-my-go/preset/tools/broker.mjs`：声明行 config.plugins 里的相对
+#      路径**不被 Loader 锚定**——dsh-app-boot 的 anchorInsertedPluginNames 只走 insert 行自身
+#      与 `group: true` 的数组 config，而本行是映射 config，相对路径会落到 profile 目录上解析
+#      失败。官方指引的口径是「Resolve assets from installed packages rather than a preset
+#      directory」，包侧由 package.json exports 放出该子路径。
+#
 #
 # 组网约束（与内置 standard 预设同款，未变）：
 #  - service 行必须坐在带 `isolate` realm 的 group 里；
@@ -21,7 +19,7 @@
 #    `isolate: workflowEngine`（触达它的行同处一个 realm）；
 #  - broker 是包内 mjs 行（自足预设，不依赖预设目录）。
 #
-# 面向模型的「编排指令」是系统提示段 `dsh-my-go:orchestration`，教 Sisyphus 四具
+# 面向模型的「编排指令」是系统提示段 `dsh-my-go:orchestration`，教 Sisyphus 全套编排
 # 工具与 AGENTS.md 的 QA 规则；人设与编排段由 broker（preset/tools/broker.mjs）
 # 按工种动态注册——Sisyphus 拿全量人设 + 编排规则，子代理只拿最小人设。
 - insert:
@@ -30,7 +28,7 @@
       config:
         id: dsh-my-go
         name: 'MyGO!!!!! 模式'
-        description: 'My tasks, where to GO????? 参考了 oh-my-openagent 设计的 DSH 智能体编排。'
+        description: '多智能体编排预设：主编（Sisyphus）调度 + 内置工种名册 + 报告落板，参考 oh-my-opencode 的编排设计针对 DSH 优化。'
         order: 2
         plugins:
           - id: agent-instructions
@@ -162,24 +160,23 @@
           - id: broker
             name: 'dsh-my-go/preset/tools/broker.mjs'
             config:
-              # 报告外部化部署面总闸（0.4.0 线一期 1.3~1.6）：**显式配置优先于代码默认**
-              # （代码缺省 `?? true`，D5 默认开不动）。基线采集期曾显式 false 保持关——
-              # metrics（config.metrics ?? true）随部署点亮采「外部化开启前」的对照基线，
-              # 外部化不同时点亮。基线关窗后翻回 true，即点亮 report_submit/report_fetch
-              # 与报告闸门（prompt 条款、收尾落板、report-gate 补发链）。同步 preset 会
-              # 覆盖本行，改完记得保留本键。
+              # 报告外部化部署面总闸：**显式配置优先于代码默认**（代码缺省 `?? true`，
+              # D5 默认开不动）。开 = 点亮 report_submit/report_fetch 与报告闸门（prompt
+              # 条款、收尾落板、report-gate 补发链）；本键与 metrics（config.metrics ?? true）
+              # 同点评估——metrics 采的是「外部化开启前」的对照基线，两者不同时点亮。
+              # 同步 preset 会覆盖本行，改完记得保留本键。
               reportExternalization: true
 
-              # 读平面并行池（0.4.0 线二期，D5/D7/D8/D9）：读平面 = explore/librarian，
+              # 读平面并行池（D5/D7/D8/D9）：读平面 = explore/librarian，
               # 写平面（Hermes/Hephaestus/Prometheus/Oracle/Looker/Apelles/自定义角色）恒单线。
               # 1 = 关闭 = 全局单线现状；2~3 = 读平面并发上限（>3 钳制 3，非法值回落 1）。
               # 挂载期读一次，不做运行时切换。缺省（`?? 1`）= 关闭。
-              # 装机口径：保守起步的 2 已扩到上限 3（2026-09-18 扩池批）。同步 preset 会
-              # 覆盖本行，改完记得保留本键且值必须为 3——防回潮哨兵
+              # 装机口径：取上限 3。同步 preset 会覆盖本行，改完记得保留本键且值必须为
+              # 3——防回潮哨兵
               # test/report-clause.test.mjs 的 readPoolSize pin 站岗，被改回 2/1 即红。
               readPoolSize: 3
 
-              # 接力链总闸（0.4.0 线三期，D21~D29）：开 → chain_start/chain_resolve 注册。
+              # 接力链总闸（D21~D29）：开 → chain_start/chain_resolve 注册。
               # 依赖 reportExternalization=true（D23 fail-fast：总闸关则 chain_start 直接
               # 报错指路，绝不静默降级）。挂载期读一次，不做运行时切换。
               # 缺省（`?? false`）= 关。

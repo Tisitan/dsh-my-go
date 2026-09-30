@@ -1,7 +1,7 @@
 /**
- * dsh-my-go — metrics 观测事件日志（0.4.0-tisitan.0，第 0 期 0.1 步）。
+ * dsh-my-go — metrics 观测事件日志。
  *
- * 规划出处：docs/plans/next-gen-architecture-0.4.0.md §第 0 期 步骤 0.1。
+ * 契约出处：docs/plans/next-gen-architecture-0.4.0.md（观测面）。
  * 刻意放 preset/tools/ 而不进 shared/：只有 broker 半消费它，收进 shared 会
  * 无谓扩大单源守卫面（host-parity 的 shared import 清单、安装目录断言都要
  * 跟着涨）。铁律与 shared 同款：不 import @deepseek-ai/*、零 ctx——本模块

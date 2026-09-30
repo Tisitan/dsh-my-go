@@ -1,10 +1,9 @@
 name: 我发现了 Bug
-description: 点击此项使用杀虫剂
+description: 报告一个 Bug
 title: '[Bug?]: '
 labels: [ "bug" ]
 assignees: []
 projects: []
-# type: bug   # 组织级功能：个人仓库校验不通过，如需启用请取消注释
 
 body:
   - type: markdown
@@ -13,8 +12,8 @@ body:
         ## 感谢您愿意花一些时间来填写这个内容！
         ## 以下是一些注意事项，能让提交更快被处理
 
-        ### ❗ | 确定没有相同提议的 ISSUE 已被提出。
-        ### ❔ | 提议时，如果文字无法说明清楚，不妨使用画图的方法辅助说明
+        ### ❗ | 确定没有相同问题的 ISSUE 已被提出。
+        ### ❔ | 描述问题时，如果文字无法说明清楚，不妨使用画图的方法辅助说明
         ### ⚠ | 如果涉及敏感信息，请自行打码
 
         ## 提问指引
@@ -57,7 +56,7 @@ body:
       label: 环境信息
       description: |
         请粘贴 DSH 版本、安装方式（`dsh plugin add dsh-my-go` / agent preset）、
-        相关配置（模型/effort/DSV4P0813 开关）；涉及敏感信息请自行打码。
+        相关配置（模型/effort）；涉及敏感信息请自行打码。
     validations:
       required: true
 
@@ -103,7 +102,7 @@ body:
         - Multimodal Looker（看图）
         - Hephaestus（写代码）
         - Prometheus（规划）
-        - Oracle（调试/终验）
+        - Oracle（最后手段：架构调试）
         - client UI（面板/设置页）
         - 我不确定
     validations:

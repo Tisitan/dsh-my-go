@@ -1,12 +1,12 @@
 /**
- * dsh-my-go — 接力链 dispatcher 簇（三期 3.2-3.6；5.3 波自 broker.mjs 抽出）。
+ * dsh-my-go — 接力链 dispatcher 簇。
  *
  * 决策逻辑在 shared/relay-chain.mjs（纯函数出 decision/patch/ops/notices/facts），
  * 本簇只做 dispatcher 落地：链记录的 patch/ops 写回、通知转发、台账 bump/save、
  * 队列驱动、hop 占位键反查表（chainHopsByWork）的登记与回收。调用方协议三条
  * （先匹配后决策 / 决策显式登记 / 同步段零 await）随簇写在该模块头，改动前先读。
  *
- * 形态与纪律同 5.1/5.2 各簇（对齐 broker-delivery.mjs 先例）：
+ * 形态与纪律（对齐 broker-delivery.mjs 先例）：
  *   - 本模块自身零 ctx、零服务解析——跨簇协作件全部经 broker.mjs 接线注入：
  *     notifyOwner / resolveParentAgent（./broker-notify.mjs 工厂产物）、
  *     bump / scheduleLedgerSave / advanceQueue / persistReportBoard（broker 本体
@@ -45,11 +45,11 @@ export function createRelayOps({
   metrics,
   persistReportBoard,
 }) {
-  // ── 接力链工具对（三期 3.3/3.4，D11：声明结构全部由 schema 扛，绝不塞 prompt 字符串）──
+  // ── 接力链工具对（D11：声明结构全部由 schema 扛，绝不塞 prompt 字符串）────────
   // 决策在 shared/relay-chain.mjs（纯函数），本簇是 dispatcher：校验 R-a~R-l 中
   // 需要 live roster / config / 编排实例的面由调用方（工具块）扛，落地
   // patch/ops/notices 在本簇。
-  // 同步段协议（relay-chain.mjs 文件头第 3 条的 3.4 精化版）：advanceChain 决策
+  // 同步段协议（relay-chain.mjs 文件头第 3 条）：advanceChain 决策
   // 与 patch/notices 落地零 await（guard 类语义不允许被 await 隔开）；链 op 词表
   // 唯一成员 enqueue-hop 非 guard 类，其落地允许 await（board 直投 I/O，§3.1
   // 时序），但必须在本函数这条异步链内顺序完成，enqueued 后立即 advanceQueue。
@@ -57,9 +57,9 @@ export function createRelayOps({
   // 子代世代自身（设计文档 §2.1）。
 
   // 数据面直投的 prompt 组装（INV-2 + §3.2 形态）：指令在前（主编预写或闸门
-  // 现场），上一棒全文以不可信数据块身份居中（闭合串转义防容器击穿——M2/M3
-  // 教训的写侧对称落法），全程不经过主编上下文。首跳（cursor=0 / prevHopChildId
-  // 缺席）无上一棒产出，instruction 原文即 prompt。D29：全文直投零 cap。
+  // 现场），上一环节全文以不可信数据块身份居中（闭合串转义防容器击穿——转义与
+  // 识别两侧对称），全程不经过主编上下文。首跳（cursor=0 / prevHopChildId
+  // 缺席）无上一环节产出，instruction 原文即 prompt。D29：全文直投零 cap。
   async function composeRelayPrompt(chain, op, { fullText } = {}) {
     const prev = chain.prevHopChildId
     if (chain.cursor === 0 || typeof prev !== 'string' || prev === '') return op.instruction
@@ -72,7 +72,7 @@ export function createRelayOps({
     if (slice.error === 'not-found') return null // → input-missing（绝不发空输入 prompt）
     if (slice.error) throw new Error(`board read failed: ${slice.error}`)
     const escaped = String(slice.text).replaceAll('</mygo_relay_input', '<\\/mygo_relay_input')
-    // 下游验收条款随数据块注入（三期 3.6）：子代层验收打回（need_help）的依据，
+    // 下游验收条款随数据块注入：子代层验收打回（need_help）的依据，
     // 只在有数据块的 hop prompt 上（首跳无上游可验收，不注入）；REPORT_CLAUSE
     // 仍由 spawnChild 尾注照常追加在本条款之后。
     return [
@@ -135,7 +135,7 @@ export function createRelayOps({
     })
   }
 
-  // hop 终局的链匹配回调（三期 3.4 接线、3.5 抽出复用）：processEnd 主体之外，
+  // hop 终局的链匹配回调：processEnd 主体之外，
   // E9 补发失败转裁决（attemptReportRepair 兜底 finalize）等「不经 attributeEnd
   // 决策分支的落账路径」也必须喂链——否则 T16 挂起永不发生，链滞留 running
   // （真空）。事件口径与 processEnd 内联段完全一致。
@@ -231,9 +231,9 @@ export function createRelayOps({
     chainHopsByWork.clear()
   }
 
-  // 备选链 × 接力链的感知点（三期 3.4，D10/T11/T12）：pending-fallback 态的链按
-  // 亡棒 childId 精确查找，评估终局喂给状态机（重派成功 → 换绑挂起等裁决；
-  // 失败落账 → 链 failed）。非链棒（绝大多数）查不到链，零开销直落。
+  // 备选链 × 接力链的感知点（D10/T11/T12）：pending-fallback 态的链按
+  // 失败子代 childId 精确查找，评估终局喂给状态机（重派成功 → 换绑挂起等裁决；
+  // 失败落账 → 链 failed）。非链子代（绝大多数）查不到链，零开销直落。
   function resolveChainFallback(orch, childId, event) {
     const relayChain = orch.chains.find((c) => c.state === 'pending-fallback' && c.hopChildId === childId)
     if (!relayChain) return

@@ -4,7 +4,7 @@
 // 后把结论丢进 broker 的 late/duplicate 分支 → 双流并发），子代理直调它们
 // 绕过 need_help 挂账体系直插父代回合，直调 interrupt_agent 则没有
 // abortExpected 护航（预期掐断被误判真失败）。
-// 覆盖：① 常量与 broker 源码 pin（防回潮）；② agent/created 双侧实际下发
+// 覆盖：① 常量与 broker 源码 pin（回归）；② agent/created 双侧实际下发
 // 的 deny 清单；③ restrict 批级抛错时逐名兜底，不连坐其余屏蔽项。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -24,13 +24,13 @@ test('pin：ADJACENT_BYPASS_TOOLS 恒为上游邻接消息三件套（名字改�
   assert.deepEqual([...ADJACENT_BYPASS_TOOLS].sort(), [...BYPASS].sort())
 })
 
-// C-10 P6 退役：原先此处钉「broker 源码 ...ADJACENT_BYPASS_TOOLS 出现 2 次 /
+// C-10 行为 pin：此处钉「broker 源码 ...ADJACENT_BYPASS_TOOLS 出现 2 次 /
 // denyTools( 出现 3 次」——纯调用点计数，helper 内联或多一处合法调用就假红；
 // 而「两侧都真的落下这三件套」由下方 agent/created 两例行为档逐名断言（比数
 // 出现次数强得多：它验证的是 restrict 实际收到的清单）。
 
 test('pin：三档投递全部经 subagents 门面，不复活「直取注册表 steer」旁路', async () => {
-  // 5.2 拆分波：M1-M5 投递链本体迁入 ./broker-delivery.mjs，本 pin 随之覆盖
+  // 投递链本体在 ./broker-delivery.mjs，本 pin 随之覆盖
   // 「broker.mjs + 投递簇模块」两半之积——负向不变量对两个文件各自成立（旁路
   // 写在哪都算回潮），正向通路在册按合并源核（通路只此一份实现）。
   const [brokerSrc, deliverySrc] = await Promise.all([
@@ -54,7 +54,6 @@ function mockCtx() {
   return createMockCtx({ keepHome: true, captureRestrict: true })
 }
 
-const parentAgent = { id: 'parent-A', session: { header: {} } }
 const childAgentOf = (restrict) => ({
   id: 'sess-1',
   session: { header: { parentSession: 'parent-A' } },
@@ -62,16 +61,18 @@ const childAgentOf = (restrict) => ({
 })
 
 test('agent/created：子代理侧 deny 含派生工具 + 邻接三件套；开关关时条件注册三件不入名单', async () => {
-  const { ctx, listeners, dispatch } = mockCtx()
+  const { ctx, dispatch } = mockCtx()
   const denied = []
   // 双开关全关（reportExternalization: false + relayChains 缺省 false）：与当前
   // 部署同形——report_fetch/chain_start/chain_resolve 均未注册，deny 名单不得
   // 再含它们（否则真宿主 restrict 对未知名批级拒绝 + 逐名兜底的查无此具噪音，
-  // tisitan.1 noise fix）。基础名单（无条件注册的派生/编排工具）与邻接三件套
+  //  noise fix）。基础名单（无条件注册的派生/编排工具）与邻接三件套
   // 照旧全量 deny。
   await broker.apply(ctx, { reportExternalization: false })
   dispatch('agent/created', { agent: childAgentOf((filter) => denied.push(...filter.deny)) })
-  for (const name of ['subagent', 'subagent_fork', 'workflow', 'ralph', 'go_work', 'continue', 'forward', ...BYPASS]) {
+  // heartbeat（ 第十一具）同样无条件注册 → 同样无条件 deny（
+  // 的回归 pin：加工具三点耦合的第②点，漏了就是星型拓扑静默开口）。
+  for (const name of ['subagent', 'subagent_fork', 'workflow', 'ralph', 'go_work', 'continue', 'forward', 'heartbeat', ...BYPASS]) {
     assert.ok(denied.includes(name), `子代理 deny 缺少 ${name}`)
   }
   for (const name of ['report_fetch', 'chain_start', 'chain_resolve']) {
@@ -82,7 +83,7 @@ test('agent/created：子代理侧 deny 含派生工具 + 邻接三件套；开�
   assert.ok(!denied.includes('report_submit'), 'report_submit 必须保留（子代面向的上报通道，1.3）')
 })
 
-// 条件注册三件的 deny 随开关联动（tisitan.1 noise fix 的另一半）：开关开 =
+// 条件注册三件的 deny 随开关联动（ noise fix 的另一半）：开关开 =
 // 工具在册 = 星型闸必须照常摘除（canOrchestrate 运行时守卫之外的目录层双保险）。
 test('agent/created：REPORT_EXT 开 → report_fetch 入子代理 deny；RELAY_CHAINS 开 → 链两件入 deny', async () => {
   const a = mockCtx()
@@ -101,21 +102,21 @@ test('agent/created：REPORT_EXT 开 → report_fetch 入子代理 deny；RELAY_
 })
 
 test('agent/created：Sisyphus 侧 deny 掉 skill 与邻接三件套（R1/R3 顶层收口）', async () => {
-  const { ctx, listeners, dispatch } = mockCtx()
+  const { ctx, dispatch } = mockCtx()
   const denied = []
   await broker.apply(ctx, { reportExternalization: false })
   dispatch('agent/created', { agent: { id: 'parent-A', session: { header: {} }, ctx: { tools: { restrict: (f) => denied.push(...f.deny) } } } })
   assert.ok(denied.includes('skill'), 'skill 屏蔽（catalog 注入守门）不回潮')
   for (const name of BYPASS) assert.ok(denied.includes(name), `Sisyphus deny 缺少 ${name}`)
-  for (const name of ['go_work', 'continue', 'forward', 'orchestration_status', 'list_subagents']) {
-    assert.ok(!denied.includes(name), `编排六件套不得被自家闸摘除：${name}`)
+  for (const name of ['go_work', 'continue', 'forward', 'orchestration_status', 'list_subagents', 'heartbeat']) {
+    assert.ok(!denied.includes(name), `编排七件套不得被自家闸摘除：${name}`)
   }
   assert.ok(!denied.includes('report_fetch'), 'report_fetch 不得被主编闸摘除（主编面向的读板通道，1.6）')
 })
 
-// ── Agent Teams 实验面（0.5.0-tisitan.2） ──────────────────────────────────
+// ── Agent Teams 实验面 ──────────────────────────────────
 // spawn_teammate / wait_agent / team_task_* 让叶子自拉队友、自建任务板——与邻接
-// 三件套同属旁路面，但处置口径**刻意不对称**：只摘子代理侧，主会话留着玩（主人
+// 三件套同属旁路面，但处置口径**刻意不对称**：只摘子代理侧，主会话留着玩（维护者
 // 拍板：Agent Teams 是主编排会话的实验玩法，收口只到叶子派生，与 subagent /
 // subagent_fork / workflow / ralph 同款）。名单另随宿主在册状态联动——这三件由
 // 宿主注册（当前 0.1.5-alpha.1 实况：未注册），硬 deny 未知名只会换来 restrict
@@ -155,7 +156,7 @@ test('agent/created：Agent Teams 六件套只摘子代理侧；宿主未注册�
 })
 
 test('restrict 批级抛错（某部署缺一个工具行）→ 逐名兜底，其余屏蔽项不连坐', async () => {
-  const { ctx, listeners, dispatch } = mockCtx()
+  const { ctx, dispatch } = mockCtx()
   const denied = []
   const warns = []
   const origWarn = console.warn
@@ -183,7 +184,7 @@ test('restrict 批级抛错（某部署缺一个工具行）→ 逐名兜底，�
 })
 
 test('agent/created 对无 agent 的载荷与 restrict 全崩场景均不炸挂载', async () => {
-  const { ctx, listeners, dispatch } = mockCtx()
+  const { ctx, dispatch } = mockCtx()
   const origWarn = console.warn
   console.warn = () => {}
   try {
@@ -198,12 +199,12 @@ test('agent/created 对无 agent 的载荷与 restrict 全崩场景均不炸挂�
   }
 })
 
-// N12（0.3.0-tisitan.7）：闸体自身抛错（agent.ctx 尚未 ready、宿主内部异常）此前落进
+// 闸体自身抛错（agent.ctx 尚未 ready、宿主内部异常）若落进
 // 一个纯静默的 catch。本闸是星型拓扑与邻接三件套的 agent 作用域防线（原
-// tool-mask standing 层已拆除迁移至 dsh-tool-guard，本闸是唯一防线，见
+// tool-mask standing 层已拆除迁移至独立工具面板插件，本闸是唯一防线，见
 // README「容错」），失守必须可见——不炸挂载，但一行 warn 点名是哪个 agent。
-test('agent/created 闸体抛错：不炸挂载且 console.warn 留痕，每 agent 恰一行（N12）', async () => {
-  const { ctx, listeners, dispatch } = mockCtx()
+test('agent/created 闸体抛错：不炸挂载且 console.warn 留痕，每 agent 恰一行', async () => {
+  const { ctx, dispatch } = mockCtx()
   const warns = []
   const origWarn = console.warn
   console.warn = (...a) => { warns.push(a.map(String).join(' ')) }

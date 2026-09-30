@@ -1,20 +1,18 @@
 /**
- * dsh-my-go — E2 end 缓冲重放（二期 2.4，read-pool-semantics.md §4.3 方案 A；
- * 5.2 波自 broker.mjs 抽出）。
+ * dsh-my-go — E2 end 缓冲重放（read-pool-semantics.md §4.3 方案 A）。
  *
  * 抢跑 spawn resolve 的 end 在此暂存：等登记（sessionTypes/bindChild/childOwner，
  * dispatchWork 与 attemptFallbackRedeploy 的 spawn resolve 后同步段）追上，按
  * **真 id 精确认领**重放全量归因管线——E4 guard/E5/E6 备选链/E7 落账/E9 闸门
  * 全量生效。认领键是真 id 本身（resolve 返回什么 id、登记就用什么 id），归因
- * 零猜测：幽灵红线在归因面上关死。替代退役的占位唯一归因兜底（更精确：重放
- * 走全管线，而非只补一条 attributed warn）。三红线口径：
+ * 零猜测：幽灵红线在归因面上关死。占位唯一归因兜底不在本模块——重放走全量
+ * 归因管线，而非只补一条 attributed warn。三红线口径：
  *   幽灵——认领即删条目、按真 id 匹配，无「恰有一条就归它」式猜测；
  *   双份——缓冲在归因管线之前，不存在两条路径消费同一 end；
  *   真空——每条目挂 grace 定时器，超时显式落档 + 占位审计回收（绝不静默蒸发）。
  *
  * 放 preset/tools/ 扁平文件而不进 shared/（对齐 metrics.mjs 先例）：本簇持进程内
- * 活状态（两张 Map + grace 定时器）并要跨簇回调——**原「头尾穿越」的现落点**（5.4
- * 波后两处消费点已各自随簇迁出，不再同处 broker.mjs 一头一尾）：直派认领点在
+ * 活状态（两张 Map + grace 定时器）并要跨簇回调——两处消费点分居两簇：直派认领点在
  * ./broker-scheduler.mjs 的 dispatchWork 登记同步段、重派认领点与重放入口 processEnd
  * 都在 ./broker-ending.mjs，broker.mjs 只做接线（两侧都拿本簇工厂产物）。本模块只管
  * 「存 / 取 / 超时回收」三件事，认领到载荷后由调用方自己调 processEnd 重放（本模块
@@ -23,19 +21,22 @@
  * 句柄 + notifyClearedHelp / bump / advanceQueue 三件回调（advanceQueue 是调度簇产物）。
  *
  * 形态：createEndBufferOps({ graceMs, metrics, orchestrations, abortExpected,
- * childRegistry, notifyClearedHelp, bump, advanceQueue }) → { bufferEnd,
- * claimBufferedEnd, auditStaleSpawningPlaceholders, clearEndBuffer }。
+ * childRegistry, notifyClearedHelp, bump, advanceQueue, now = Date.now }) →
+ * { bufferEnd, claimBufferedEnd, auditStaleSpawningPlaceholders, clearEndBuffer }。
+ * now 是时钟注入缝（默认 Date.now ⇒ 生产行为零变化）：审计的「达 grace 即回收」
+ * 判定落在毫秒边界上，只有注入确定性时钟才能把边界用例钉成回归测试。
  *   - bufferEnd：入缓冲 + 容量驱逐（END_BUFFER_CAP 超容丢最旧并留痕）+ grace 定时器。
  *   - claimBufferedEnd：登记点同步认领，命中即删条目 + 撤 timer，返回 info；
  *     未命中返回 undefined（绝大多数 spawn 无抢跑 end）。
  *   - auditStaleSpawningPlaceholders：缓冲超时的连带回收（§4.2 泄漏面最终口径）——
- *     滞留超 grace 的 spawning 占位按 disposed 兜底同款三连落账解冻。仅簇内自调
- *     （超时支路自查；broker.mjs 接线未解构、测试亦无直接消费方），现无簇外消费方，
- *     导出仅保持簇口形状完整——行为面由 end-buffer.test.mjs 经 broker 挂载实测。
+ *     滞留达 grace（含恰在边界者）的 spawning 占位按 disposed 兜底同款三连落账解冻。
+ *     仅簇内自调（超时支路自查；broker.mjs 接线未解构、测试亦无直接消费方），现无
+ *     簇外消费方，导出仅保持簇口形状完整——行为面由 end-buffer.test.mjs 经 broker
+ *     挂载实测。
  *   - clearEndBuffer：卸载收尾，撤 timer + 清表。
  */
 
-export function createEndBufferOps({ graceMs, metrics, orchestrations, abortExpected, childRegistry, notifyClearedHelp, bump, advanceQueue }) {
+export function createEndBufferOps({ graceMs, metrics, orchestrations, abortExpected, childRegistry, notifyClearedHelp, bump, advanceQueue, now = Date.now }) {
   const endBuffer = new Map()      // childId → { info, bufferedAt }
   const endBufferTimers = new Map() // childId → timer（认领即撤，超时即回收）
   const END_BUFFER_CAP = 16
@@ -77,16 +78,19 @@ export function createEndBufferOps({ graceMs, metrics, orchestrations, abortExpe
     metrics.record({ kind: 'end-buffer', phase: 'claimed', childId })
     return entry.info
   }
-  // 占位审计（缓冲超时的连带回收，防 §4.2 泄漏面的最终口径）：滞留超 grace 的
-  // spawning 占位 = spawn 链无进展（正常窗口 ≪ grace），按 disposed 兜底同款
-  // 三连落账回收——failed 落账 + retireChild + advanceQueue 解冻，一个都不少。
+  // 占位审计（缓冲超时的连带回收，防 §4.2 泄漏面的最终口径）：滞留达 grace（**含
+  // 恰在 grace 边界者**，判定式取 `>=`：审计只由 end 缓冲到期触发一次，边界毫秒上
+  // 漏收即可能再无重试机会——实测严格大于口径下「createdAt = now-graceMs」的占位
+  // 在 60 次抽样里 59 次被跳过）的 spawning 占位 = spawn 链无进展（正常窗口 ≪
+  // grace），按 disposed 兜底同款三连落账回收——failed 落账 + retireChild +
+  // advanceQueue 解冻，一个都不少。
   function auditStaleSpawningPlaceholders() {
-    const now = Date.now()
+    const at = now()
     for (const [pid, orch] of orchestrations) {
       for (const rec of [...orch.currentMap.values()]) {
         if (rec.status !== 'spawning') continue
-        if (now - (Number(rec.createdAt) || 0) <= graceMs) continue
-        console.warn(`[dsh-my-go] spawning placeholder ${String(rec.childId)} (${rec.agentType}) stale for >${graceMs}ms; recovering as failed (E2 leak guard)`)
+        if (at - (Number(rec.createdAt) || 0) < graceMs) continue
+        console.warn(`[dsh-my-go] spawning placeholder ${String(rec.childId)} (${rec.agentType}) stale for >=${graceMs}ms; recovering as failed (E2 leak guard)`)
         // 兜底掐断前同步撤 abort 护航（防 guard 泄漏误吞复活轮，同 disposed 兜底纪律）
         abortExpected.delete(rec.childId)
         const recovered = orch.finish(rec.childId, `spawning placeholder recovered: spawn did not resolve within ${graceMs}ms`, true)

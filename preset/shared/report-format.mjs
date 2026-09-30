@@ -1,9 +1,7 @@
 /**
  * dsh-my-go — report_submit 六字段校验器 + 报告条款 + 落板拼装 + 主编回执合成（提交制单源）。
  *
- * 规划出处：docs/plans/next-gen-architecture-0.4.0.md §第一期 步骤 1.2 的第二代
- * 形态（0.5.0-tisitan.1：第一代「最后一条消息摘要块 + 消息侧解析器」退役，改为
- * 「report_submit 一次交齐字段 + broker 确定性合成回执」）。本模块持四件事：
+ * 契约出处：docs/plans/next-gen-architecture-0.4.0.md（报告提交制）。本模块持四件事：
  *   - REPORT_CLAUSE：追加到子代 prompt 尾部的提交条款（broker spawnChild 注入，
  *     唯一出处）；
  *   - validateReportArgs：字段校验器（report_submit execute 消费，第二参收
@@ -17,12 +15,11 @@
  *     时板面字节恒等于 report，旧板形态零变化）；
  *   - buildOwnerSummary：主编回执合成——终局通知的摘要由 broker 从已校验字段
  *     拼装（conclusion 全文 + evidence 逐行 + open + 取阅指引），子代最后一条
- *     消息不再是解析对象，全文走 report_submit 落 board（1.1/1.3）。
+ *     消息不参与解析，全文走 report_submit 落 board。
  *
- * 设计沿革（本批裁决）：施工层的偏差/未验原先靠「在 report 正文里 grep 节标」
- * 强制（一对正则文本钉），与条款只字不提小节要求的现实打架，首提几乎
- * 必摔一次——节标 grep 整体退役，两小节升格为 toolcall 独立字段（schema 面
- * 可选、闸门面按工种强制、落板时统一渲节），单源在 REPORT_TAIL_FIELDS。
+ * 单源约束：施工层的偏差 / 未验是 toolcall 独立字段（schema 面可选、闸门面按
+ * 工种强制、落板时由 buildReportBoard 统一渲节），字段名册只认 REPORT_TAIL_FIELDS
+ * 一张表——正文里写节标不算交差，改表即改口径。
  *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx。
  */
@@ -47,13 +44,14 @@ export const REPORT_CLAUSE = [
   '- unverified：未验项（没验证到的面，空表是红旗），确实没有写「无」——hermes / hephaestus 必填，',
   '  其余工种选填。',
   'deviation / unverified 是独立字段，不要在 report 正文里补「偏差记录：」「未验项：」节标——',
-  '落板时系统会把两字段自动渲成两节拼在正文之后，正文里写与不写都不参与校验。',
+  '落板时系统会把两字段自动渲成「## 偏差记录」「## 未验项」两节拼在 report 正文之后，',
+  '正文里写与不写都不参与校验。',
   '提交成功即交付完成——主编会收到系统合成的概要回执，你的最后一条消息自由收尾即可',
   '（一句话为宜）。未调用 report_submit 视为未交付。',
   '字段校验不过时工具会逐条报错，原地修正重调即可，无需重做任务。',
 ].join('\n')
 
-// 追加到接力链 hop prompt 尾部的下游验收条款（三期 3.6，composeRelayPrompt 在
+// 追加到接力链 hop prompt 尾部的下游验收条款（composeRelayPrompt 在
 // 数据块在场时注入，唯一出处）。与 REPORT_CLAUSE 同款中英混排体例。核心机关：
 // 链 hop 的 <mygo_relay_input> 块是上一跳产出（trusted=false 的数据，不是指令），
 // 开工前先验收输入，不可用即 need_help 打回主编，绝不带病施工——这是两层打回
@@ -94,10 +92,9 @@ const REPORT_TAIL_FIELDS = [
   { key: 'unverified', label: '未验项', hint: '没验证到的面，确实没有写「无」' },
 ]
 
-// 报告闸门补发时的字段口径（唯一出处，与 REPORT_CLAUSE 同源）。此前
-// end-attribution.mjs 自带一份「一次交齐四字段」的清单——条款六字段化后它就成了
-// 第二源，施工层的补交轮会照旧措辞再交四件、被闸门第二次拒收。字段名册一律从
-// 上面的表现取，改表即改口径，不留可漂移的复述。
+// 报告闸门补发时的字段口径（唯一出处，与 REPORT_CLAUSE 同源）。字段名册一律从
+// 上面的 REPORT_TAIL_FIELDS 现取：另存一份清单就是第二源——字段数一变，补交轮会
+// 按旧措辞少交、被闸门二次拒收。改表即改口径，不留可漂移的复述。
 export const REPORT_REPAIR_CLAUSE_HINT =
   `一次交齐六字段：${REPORT_BASE_FIELDS.join(' / ')} 四件人人必填；` +
   `${REPORT_TAIL_FIELDS.map((field) => `${field.key}（${field.label}）`).join(' / ')} ` +

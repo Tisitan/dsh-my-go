@@ -1,4 +1,4 @@
-// 客户端半冒烟（0.3.0-tisitan.8 E2/A-01 + E5/A-02）：src/client.js 的 apply 与
+// 客户端半冒烟：src/client.js 的 apply 与
 // panel-tree.js 的轮询状态机在 Node 侧可跑通——宿主 timer 服务在位/缺席两条
 // 路径、卸载后两条定时器链都停、in-flight 不重入、失败退避与成功复位、
 // 「桥未注册」与「桥抛错」两种留痕口径。
@@ -180,7 +180,7 @@ test('client.apply：sessions 惰性解析——装配缺席只留痕一次，�
       1,
       '装配缺席留痕恰好一次（不随 auto-jump 每 800ms 刷屏）',
     )
-    // 服务随后在席：旧实现在装配点一次性 get 落空即永久锁死，惰性解析即刻恢复
+    // 服务随后在席：在装配点一次性 get 落空会永久锁死，惰性解析即刻恢复
     services = {
       timer,
       sessions: {

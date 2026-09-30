@@ -1,8 +1,8 @@
-// 设置页加固批（0.3.0-tisitan.9）lib 半回归：
-//   E6/A-03   revision 围栏（读面下发凭据 / 写面预检 / 宿主 expectedRevision
+// 设置页加固批lib 半回归：
+//   E6/  revision 围栏（读面下发凭据 / 写面预检 / 宿主 expectedRevision
 //             透传 / SettingsConflictError 映射 / 保存后新凭据 / 无凭据兼容写）
-//   A-06      listModels 并行拉取 + 逐渠道失败显式回报（errors 字典）
-//   A-05      snapshot 结构化 roster + 三处消费面同源（lib 文本镜像、broker
+//        listModels 并行拉取 + 逐渠道失败显式回报（errors 字典）
+//        snapshot 结构化 roster + 三处消费面同源（lib 文本镜像、broker
 //             编排状态花名册区、shared 系统提示简报共用同一份语义源）
 // 每进程独立（node --test 按文件分进程），DSH_HOME 指向本文件专属临时目录。
 import { test } from 'node:test'
@@ -49,16 +49,18 @@ function withBridge(replace) {
   }
 }
 
-// ── 0.1.7 改判：配置面改声明式（顶层 Config），settings 注册面整体退役 ────────
-// 旧写法（installSection / register(ns, schema, {base}) 双姿态）在 0.1.7 已不存在：
+// ── 0.1.7 口径：配置面改声明式（顶层 Config），settings 注册面整体退役 ────────
+// installSection / register(ns, schema, {base}) 双姿态在 0.1.7 已不存在：
 // 插件顶层导出 `Config`，宿主据此生成官方插件页表单，把行 config 里 schema 认得的
 // 那层挂成 composition base、用户层覆盖其上，并在 volatile 字段变更时就地换引用。
 // 本半因此只剩四件事：关自动页、现读段、经桥把段交给 broker、热更时刷新。
 
-test('Config 在册：四个顶层字段各自 volatile，且无嵌套 volatile（0.1.7 启动硬约束）', () => {
+test('Config 在册：五个顶层字段各自 volatile，且无嵌套 volatile（0.1.7 启动硬约束）', () => {
   const Config = host.Config
   assert.ok(Config !== undefined, 'lib 半必须顶层导出 Config（0.1.7 声明式配置面）')
-  assert.deepEqual(Object.keys(Config.dict).sort(), ['roles', 'sisyphus', 'usageCurrency', 'usagePrices'])
+  // keepAlive（主编缓存心跳）为追加的第五个顶层字段：单段对象承载四个旋钮，
+  // 只在顶层标 volatile（下面的 walk 顺带证明内层没标，启动期不会抛）。
+  assert.deepEqual(Object.keys(Config.dict).sort(), ['keepAlive', 'roles', 'sisyphus', 'usageCurrency', 'usagePrices'])
   for (const key of Object.keys(Config.dict)) {
     assert.equal(Config.dict[key].meta.volatile, true, `${key} 必须标 volatile（不标则 WebUI 改完不生效）`)
   }
@@ -146,7 +148,7 @@ test('负向：settings 注册面与旧命名空间通道零残留（单模式 0
   assert.equal(hostSrc.includes("Symbol.for('dsh-my-go.bindings')"), true, '跨平面配置桥在册')
 })
 
-// ── A-06 改判：模型目录来自宿主官方面，逐渠道失败显式化的形状锁在客户端 ──────
+// ── 模型目录来自宿主官方面，逐渠道失败显式化的形状锁在客户端 ──────
 
 test('目录装配：groups/failures → providers/models/errors，失败渠道键不缺席', async () => {
   const { createCatalogStore } = await import('../src/client.js')
@@ -218,7 +220,7 @@ test('目录装配：宿主回 ok:false 也是 error，不静默清空', async (
   assert.equal(store.get().status, 'error')
 })
 
-// ── A-05：结构化名册（不变）───────────────────────────────────────────────
+// ── ：结构化名册（不变）───────────────────────────────────────────────
 
 const FENCE_BINDINGS = {
   hermes: { provider: 'p1', model: 'm1', fallbacks: [{ provider: 'p2', model: 'm2' }, { provider: 'p3', model: 'm3' }] },
@@ -247,7 +249,7 @@ test('snapshot.roster：结构化字段齐备，表头/计数不再由 host 代�
   }
 })
 
-test('A-05 同源锁：同一 bindings 下 lib 文本镜像、shared 简报、结构化条目三者语义一致', () => {
+test('同源锁：同一 bindings 下 lib 文本镜像、shared 简报、结构化条目三者语义一致', () => {
   const entries = rosterEntries(FENCE_BINDINGS)
   const hermes = entries.find((e) => e.role === 'hermes')
   assert.equal(formatRosterRow(hermes), '- hermes | p1·m1 | 备选2 | 全量 | 内置文件')
@@ -256,7 +258,7 @@ test('A-05 同源锁：同一 bindings 下 lib 文本镜像、shared 简报、�
   assert.ok(briefing.includes('custom-x → ?·mx → 无备选链 → 工具: 仅 read；除 write → 人设: 自定义人设'), 'toolFilter 与人设摘要同样同源')
 })
 
-test('A-05 防御面：bindings 形状漂移（非数组 fallbacks / 脏 toolFilter）不炸渲染', () => {
+test('防御面：bindings 形状漂移（非数组 fallbacks / 脏 toolFilter）不炸渲染', () => {
   const entries = rosterEntries({ hermes: { fallbacks: 'nope', toolFilter: 'nope' }, 'odd-role': null })
   const hermes = entries.find((e) => e.role === 'hermes')
   assert.deepEqual(hermes.chain, [], '非数组 fallbacks 归空')
@@ -264,4 +266,26 @@ test('A-05 防御面：bindings 形状漂移（非数组 fallbacks / 脏 toolFil
   const odd = entries.find((e) => e.role === 'odd-role')
   assert.equal(odd.modelText, '跟随环境')
   assert.equal(odd.personaSource, '无（跟随环境）')
+})
+
+// ── keepAlive schema（主编缓存心跳，追加的第五个顶层 volatile 字段）────────
+// 三个消费面同源：schema 默认（宿主读面）= KEEP_ALIVE_DEFAULTS（运行时兜底 = 配置卡
+// 草稿归一）。这里只钉 schema 这一面：默认解析、段在席覆盖、.min(1) 拒掉会让定时器
+// 空转/忙循环的值（与 priceSchema 的 .min(0) 同款「写入时拒收」）。
+
+test('schema：keepAlive 缺省即默认段（enabled 关）、段在席逐字段覆盖、min(1) 拒 0/负数', () => {
+  const byDefault = resolvedHostConfig({}).keepAlive.get()
+  // 拍距默认 250000（= 5 分钟档 TTL × 5/6 的安全余量 
+  // 由 300000 改来：300s 对 300s TTL 零余量）。这里照旧钉 schema 面的具体值。
+  assert.deepEqual(byDefault, { enabled: false, orchestratorIntervalMs: 250000, childPingAfterMs: 1800000, escalateAfterPings: 3 }, '缺省 = 默认关 + 三个默认阈值')
+  const overridden = resolvedHostConfig({ keepAlive: { enabled: true, orchestratorIntervalMs: 60000, childPingAfterMs: 120000, escalateAfterPings: 5 } }).keepAlive.get()
+  assert.deepEqual(overridden, { enabled: true, orchestratorIntervalMs: 60000, childPingAfterMs: 120000, escalateAfterPings: 5 }, '四字段各自可覆盖')
+  const partial = resolvedHostConfig({ keepAlive: { enabled: true } }).keepAlive.get()
+  assert.equal(partial.orchestratorIntervalMs, 250000, '只给一个字段时其余仍落默认')
+  for (const field of ['orchestratorIntervalMs', 'childPingAfterMs', 'escalateAfterPings']) {
+    assert.throws(() => resolvedHostConfig({ keepAlive: { [field]: 0 } }), `${field}=0 拒（min 1）`)
+    assert.throws(() => resolvedHostConfig({ keepAlive: { [field]: -1 } }), `${field}=-1 拒`)
+    assert.doesNotThrow(() => resolvedHostConfig({ keepAlive: { [field]: 1 } }), `${field}=1 合法（单文件最小拍距/最小升级梯）`)
+  }
+  assert.throws(() => resolvedHostConfig({ keepAlive: { enabled: 'yes' } }), 'enabled 非布尔拒')
 })

@@ -1,4 +1,4 @@
-// dsh-my-go — report_submit 行为档（提交制 0.5.0-tisitan.1，替身 ctx 端到端）。
+// dsh-my-go — report_submit 行为档（提交制 ，替身 ctx 端到端）。
 //
 // 验收面：六字段 schema pin（四基础全 required、两尾字段 schema 可选而闸门按
 // 工种强制；身份绝不经参数面）/ 正常写板 / 字段校验不过逐条报错且不落板不登记 /
@@ -62,7 +62,7 @@ test('默认开：report_submit 在册，四基础字段全 required + 两尾字
     assert.equal(tool.parameters.properties[tail].type, 'string', `${tail} 是字符串字段`)
     assert.match(tool.parameters.properties[tail].description, /MANDATORY for hermes \/ hephaestus/, `${tail} 描述点名施工层强制`)
   }
-  assert.equal(tool.isConcurrencySafe(), true, '与六件套同例')
+  assert.equal(tool.isConcurrencySafe(), true, '与编排工具集同例')
   assert.ok(!JSON.stringify(tool).includes('mygo_report'), '工具描述 = 六字段用法，旧机制字样零出现')
   assert.match(tool.description, /all six fields/, '描述口径与条款同步升到六字段')
 })
@@ -209,7 +209,7 @@ test('工种反查两腿：注册表缺席靠 label 兜底认工种；两条腿�
 test('开关关（config.reportExternalization=false）：工具不在册', async () => {
   const { tools } = await applyBroker({ reportExternalization: false })
   assert.equal(tools.get('report_submit'), undefined, '开关关 → 工具不注册（挂载期读一次）')
-  assert.ok(tools.get('go_work'), '六件套不受该开关影响')
+  assert.ok(tools.get('go_work'), '编排工具集不受该开关影响')
 })
 
 test('D14 观测：成功写板落 board-write 行（bytes + 溯源字段），失败不落', async () => {

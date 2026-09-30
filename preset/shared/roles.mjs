@@ -10,10 +10,10 @@
 
 import { AGENT_TYPES } from './constants.mjs'
 
-// 旧形态迁移（顶级八工种键 → roles dict）：输入 settings resolved 值，输出
+// 旧形态迁移（顶级内置工种键 → roles dict）：输入 settings resolved 值，输出
 // settingsService.mutate 的 ops（无需迁移时返回 null）。语义：
 //   - sisyphus 恒为顶级键，永不迁移（旧 toolMask 顶级键已随屏蔽功能
-//   迁移至 dsh-tool-guard 而废弃，此处不再提及）；
+//   迁移至独立工具面板插件而废弃，此处不再提及）；
 //   - 顶级行无损整行搬入 roles（含 fallbacks 等全字段），同名覆盖 roles
 //     已有行（旧顶级是迁移前唯一权威来源）；
 //   - 旧键 unset（废弃不再消费），roles 中既有其他键不受影响；
@@ -33,13 +33,13 @@ export function migrateLegacyRolesOps(stored) {
 
 // settings → bindings 合并：基线 + sisyphus（顶级）+ 内置工种与 roles dict
 // 自定义键（roles 行）。角色行可携带 persona/toolFilter（自定义角色数据层，
-// 内置八工种人设仍走 prompts/*.md，故 baseBindings 无此二字段）。缺字段
+// 内置工种人设仍走 prompts/*.md，故 baseBindings 无此二字段）。缺字段
 // 回落基线，与旧逐字段 ?? 链同语义；每次整表重建，WebUI unset 正确回落。
 export function mergeRoleBindings(baseBindings, stored) {
   const merged = { ...baseBindings }
   if (!stored || typeof stored !== 'object') return merged
   const roles = stored.roles && typeof stored.roles === 'object' ? stored.roles : {}
-  // roles dict 键排除 sisyphus（棒2-L1）：sisyphus 恒为顶级键（与
+  // roles dict 键排除 sisyphus：sisyphus 恒为顶级键（与
   // migrateLegacyRolesOps「永不迁移」、rosterKeys「永不可派」同口径），dict 里
   // 的 sisyphus 行是 schema 字符集约束拦不住的死数据——合并不消费它，避免
   // 「两处来源、一处生效」的错觉；排除而非并入，不让 sisyphus 绑定出现双权威。
@@ -50,7 +50,6 @@ export function mergeRoleBindings(baseBindings, stored) {
         provider: row.provider || merged[key]?.provider,
         model: row.model || merged[key]?.model,
         reasoningEffort: row.reasoningEffort || merged[key]?.reasoningEffort,
-        dsv4p0813: row.dsv4p0813 ?? merged[key]?.dsv4p0813 ?? false,
         fallbacks: row.fallbacks ?? merged[key]?.fallbacks,
         persona: row.persona ?? merged[key]?.persona,
         toolFilter: row.toolFilter ?? merged[key]?.toolFilter,
@@ -67,12 +66,11 @@ export function rosterKeys(bindings) {
   return [...AGENT_TYPES, ...custom]
 }
 
-// 名册条目（0.3.0-tisitan.9 A-05）：花名册三处消费面（配置卡/面板、编排状态文本、
-// Sisyphus 系统提示简报）的**共同语义源**。此前 lib 半与 broker 半各持一份逐字
-// 相同的 18 行 renderRosterLines，而本文件的 renderRosterBriefing 又自成一式
-// （分隔符 `|` vs `→`、有无备选链明细）——文档宣称的「同源同格式」是假的，同一
-// 个角色在不同界面上会长出不同摘要。现在三处都从这份条目投影：文本面经
-// formatRosterRow / formatRosterChainDetail，面板面直读结构化字段自持排版。
+// 名册条目：花名册三处消费面（配置卡/面板、编排状态文本、Sisyphus 系统提示简报）
+// 的**共同语义源**——三处都从这份条目投影：文本面经 formatRosterRow /
+// formatRosterChainDetail，面板面直读结构化字段自持排版。同源是硬约束：各面各自
+// 成形会让同一个角色在不同界面上长出不同摘要（分隔符 `|` vs `→`、有无备选链
+// 明细都会飘）。
 // 纯函数：同一 bindings 两次调用逐字节全等（排序与内容都不含时间与随机）。
 export function rosterEntries(bindings) {
   const source = bindings && typeof bindings === 'object' ? bindings : {}
@@ -122,7 +120,7 @@ export function formatRosterChainDetail(entry) {
     : '无备选链'
 }
 
-// 名册简报渲染（0.2.3-tisitan.18）：Sisyphus 系统提示段「dsh-my-go:roster」的
+// 名册简报渲染：Sisyphus 系统提示段「dsh-my-go:roster」的
 // 纯渲染单一源（broker 半消费）。字节稳定铁律：工种键排序渲染、无时间戳/
 // 无随机——同一份 bindings 两次渲染逐字节全等。头部一行失败通知协议提示
 // （协议正文在 prompts/sisyphus.md「失败与备选通知协议」段，此处只做指路）。

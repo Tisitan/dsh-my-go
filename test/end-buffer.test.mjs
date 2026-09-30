@@ -9,7 +9,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as broker from '../preset/tools/broker.mjs'
-import { createMockCtx, withRealSignalContract, execOf, snapOf, waitFor } from './helpers/mock-ctx.mjs'
+import { createMockCtx, withRealSignalContract, execOf, snapOf, waitFor, drain } from './helpers/mock-ctx.mjs'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-e2buf-home-'))
 
@@ -24,7 +24,7 @@ test('T1 E2 抢跑 end 缓冲重放·成功终局（幽灵防线主测试）：�
   let releaseSpawn
   const { ctx, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
-    startContinuable: withRealSignalContract((spec) => new Promise((resolve) => {
+    startContinuable: withRealSignalContract((_spec) => new Promise((resolve) => {
       releaseSpawn = () => resolve({ childId: 'sess-1' })
     })),
     subagentsExtra: { followup: async () => 'msg-x' },
@@ -47,7 +47,7 @@ test('T2 抢跑重放走全管线·失败终局：error 载荷经重放按失败
   let releaseSpawn
   const { ctx, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
-    startContinuable: withRealSignalContract((spec) => new Promise((resolve) => {
+    startContinuable: withRealSignalContract((_spec) => new Promise((resolve) => {
       releaseSpawn = () => resolve({ childId: 'sess-1' })
     })),
     subagentsExtra: { followup: async () => 'msg-x' },
@@ -81,6 +81,8 @@ test('T3 E2 缓冲超时 + 占位审计回收三连（真空防线主测试）�
   void goWork.execute({ agent: 'librarian', prompt: '挂死读B' }, execOf(parent)) // sess-2，永不 resolve
   const q = await goWork.execute({ agent: 'explore', prompt: '排队读C' }, execOf(parent)) // read 满 → queued
   assert.equal(q.status, 'queued')
+  await waitFor(() => spawns.length === 2, { what: 'A/B 两条直派已进入 spawn 链（占位已就绪）' })
+  await drain(20)
   // 抢跑 end：sess-1 的 end 到达但 spawn 永不 resolve（4.2 泄漏场景的原料）
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'x' }] })
   // grace(50ms) 后：缓冲条目落档 + 审计回收两条滞留占位（failed 落账三连）→ 队列解冻放行 C
@@ -112,7 +114,7 @@ test('T5 同 childId 双发抢跑：缓冲覆盖保留最新载荷，重放不�
   let releaseSpawn
   const { ctx, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
-    startContinuable: withRealSignalContract((spec) => new Promise((resolve) => {
+    startContinuable: withRealSignalContract((_spec) => new Promise((resolve) => {
       releaseSpawn = () => resolve({ childId: 'sess-1' })
     })),
     subagentsExtra: { followup: async () => 'msg-x' },

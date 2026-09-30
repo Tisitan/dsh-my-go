@@ -3,12 +3,12 @@
  *
  * 本文件承载全部编排实现：作为包内 mjs 行由 preset/agent.patch.yml 的预设声明
  * （config.plugins 的 broker 行，name 为包说明符 dsh-my-go/preset/tools/broker.mjs）
- * 在会话组装时挂载；host 半（lib/index.js）自 0.3.0-tisitan.0 起只做存储/面板 RPC，
+ * 在会话组装时挂载；host 半（lib/index.js）只做存储/面板 RPC，
  * 零编排工具面。0.1.7 起没有安装拷贝：本文件就地由已安装包解析，prompts/ 亦然。
  *
  * 提供：
- *   - 编排六件套（仅本层注册，其他会话不可见）：go_work / continue /
- *     need_help / forward / orchestration_status / list_subagents
+ *   - 编排七件套（仅本层注册，其他会话不可见）：go_work / continue /
+ *     need_help / forward / orchestration_status / list_subagents / heartbeat
  *   - agent/created 双侧闸：子代理侧星型拓扑（禁派生工具 + 邻接消息三件套
  *     ADJACENT_BYPASS_TOOLS），主编排侧 deny skill + 同批邻接三件套
  *   - agent/request waterfall：按工种绑定 provider/model/reasoningEffort
@@ -25,21 +25,25 @@
  * 由 ./broker-delivery.mjs 的五个共用件承担（resolveContinueTarget /
  * tryFacadeSteer / interruptForAbort / deliverWithQueueFallback /
  * rearmAfterDelivery），同步段 await 次数与原分支逐一对应——三条协议随簇写在该
- * 模块头。批次 5 拆分进度：5.1 = 台账 / 通知 / 能力缓存，5.2 = E2 缓冲 / disposed
- * 宽限期兜底 / 上述投递链，5.3 = 接力链 dispatcher（./broker-relay.mjs）/
- * persona·bootstrap（./broker-bootstrap.mjs，碰 ctx 的动作以回调注入、簇内纯组装）/
- * 工具注册块（./broker-tools.mjs，十具注册体 + agent/created 双侧闸），5.4 =
- * 调度核（./broker-scheduler.mjs：名册路由薄壳 / spawnChild / dispatchWork /
- * advanceQueue / scheduleQueueRetry / 队列重试定时器 / 停摆可观测——互递归环
- * advanceQueue↔dispatchWork 整体随迁、环内聚同一模块）与 end 管线
- * （./broker-ending.mjs：processEnd / finalizeEnd / 备选重派 / 报告补发链与贴身
- * helper）。两簇的双向边（dispatchWork 登记同步段调 processEnd 重放、end 各决策
- * 点调 advanceQueue 推进）用**相互回调注入**解——接线见下方两簇实例化处，
- * 模块 import 环为零。本体各在同级 ./broker-<簇>.mjs（工厂 + deps 显式注入），
- * 本文件只留接线与调用点，导出面（S-1 机器闸：host-parity 的 16 键快照断言）
- * 与运行行为逐名/逐字节不变。
+ * 模块头。簇分工（各级 ./broker-<簇>.mjs 是「工厂 + deps 显式注入」，本体各在其
+ * 模块内）：
+ *   - 台账 ./broker-ledger.mjs、父会话通知 ./broker-notify.mjs、
+ *     能力缓存 ./broker-capability.mjs；
+ *   - E2 缓冲 ./broker-endbuffer.mjs、disposed 宽限期兜底 ./broker-dispose.mjs、
+ *     上述投递链共用件 ./broker-delivery.mjs；
+ *   - 接力链 dispatcher ./broker-relay.mjs、persona·bootstrap
+ *     ./broker-bootstrap.mjs（碰 ctx 的动作以回调注入、簇内纯组装）、
+ *     工具注册块 ./broker-tools.mjs（十一具注册体 + agent/created 双侧闸）；
+ *   - 调度核 ./broker-scheduler.mjs（名册路由薄壳 / spawnChild / dispatchWork /
+ *     advanceQueue / scheduleQueueRetry / 队列重试定时器 / 停摆可观测——互递归环
+ *     advanceQueue↔dispatchWork 内聚同一模块）与 end 管线 ./broker-ending.mjs
+ *     （processEnd / finalizeEnd / 备选重派 / 报告补发链与贴身 helper）。
+ * 调度核与 end 管线的双向边（dispatchWork 登记同步段调 processEnd 重放、end 各
+ * 决策点调 advanceQueue 推进）用**相互回调注入**解——接线见下方两簇实例化处，
+ * 模块 import 环为零。本文件只留接线与调用点：导出面（S-1 机器闸：host-parity 的
+ * 16 键快照断言）与运行行为逐名/逐字节不变。
  *
- * ── bump 快照枢纽纪律（5.4 裁决：bump 留守本体，不随任何簇迁出）──────────────
+ * ── bump 快照枢纽纪律（bump 留守本体，不随任何簇迁出）──────────────
  * bump() 是面板快照的唯一刷新点（整树重聚合 + seq 自增），扇入约三十处——散布
  * 本体与兄弟簇家族，各簇一律经本枢纽回调注入消费。**任何新的编排状态写点
  * （改 orchestrations / childRegistry 各表、占槽换键、落账清槽）都必须同点调用
@@ -48,7 +52,7 @@
  * 是两条独立义务：改活状态时按需同点双调，参照 dispose/endbuffer/relay 各簇的
  * 既有写法。
  *
- * ── 声明序口径（5.4 重排，D-4 布局雷清除）───────────────────────────────────
+ * ── 声明序口径（声明先于使用）───────────────────────────────────
  * apply() 按「声明先于使用」物理排布：活状态与 config 常量 → settings 块 →
  * 快照枢纽 bump 与本体留守件（orchFor / orchOfChild / findRecordEverywhere /
  * findHelpEverywhere / persistReportBoard，函数声明提前的动机是可读而非提升）→
@@ -74,24 +78,23 @@ export const name = 'dsh-my-go-broker'
 // 的服务挡住点火。
 export const inject = ['tools', 'subagents', 'systemPrompt', 'llm', 'agents', 'sessions']
 
-// ── shared 源（0.2.3-tisitan.15）：与 lib 半共用的纯函数单一源 ──────────────────
+// ── shared 源：与 lib 半共用的纯函数单一源 ──────────────────
 // broker 以 preset 内相对路径 import（../shared/），lib 以包内路径 import
 // （../preset/shared/）——两种拼法都落在同一个已安装包内（0.1.7 起不再有安装
-// 拷贝，两处指向同一批文件）。5.3 拆分后
-// 同目录簇模块（relay / tools / bootstrap）也按各自消费面直引 shared 纯函数层；
-// 5.4 波起调度核 / end 管线两簇同款（roles / misc / orchestration / report-
-// format / failure / archive / adjacent / board 按簇消费面直引，本体 import 面
-// 随之收窄到挂载期实际读到的件）。
+// 拷贝，两处指向同一批文件）。同目录簇模块（relay / tools / bootstrap / 调度核 /
+// end 管线）也按各自消费面直引 shared 纯函数层（roles / misc / orchestration /
+// report-format / failure / archive / adjacent / board），本体 import 面随之只留
+// 挂载期实际读到的件。
 import { mygoHome } from '../shared/paths.mjs'
 import { mergeRoleBindings } from '../shared/roles.mjs'
 import { Orchestration } from '../shared/orchestration.mjs'
 import { createChildRegistry } from '../shared/child-registry.mjs'
 import { defaultBindings, typeOfAgent, resolveEffectiveBinding } from '../shared/misc.mjs'
-// 观测埋点（0.4.0-tisitan.0 步骤 0.1）：broker 本地模块（只有本文件消费，不进
+// 观测埋点：broker 本地模块（只有本文件消费，不进
 // shared——避免无谓扩大单源守卫面）。事件 JSONL 追加写 + 行数 cap 截头，
 // 任何 fs 异常在模块内部吞掉，编排热路径零感知（规划风险表 R0.1）。
 import { createMetrics } from './metrics.mjs'
-// broker 本地簇模块（5.1 拆分，对齐 metrics.mjs 先例的扁平文件形态）：依赖
+// broker 本地簇模块（，对齐 metrics.mjs 先例的扁平文件形态）：依赖
 // 单向（本文件 → 簇模块），簇模块绝不回 import broker.mjs，簇间亦零互引——
 // 跨簇协作一律在本文件接线注入。5.1 = 台账 / 通知 / 能力缓存；5.2 = 宽限期两簇
 // （disposed 兜底 / E2 缓冲）与 continue-forward 投递链共用件；5.3 = 接力链
@@ -109,20 +112,24 @@ import { createBootstrapOps } from './broker-bootstrap.mjs'
 import { registerAllTools } from './broker-tools.mjs'
 import { createSchedulerOps } from './broker-scheduler.mjs'
 import { createEndingOps } from './broker-ending.mjs'
-// board 存储层（第一期 1.1）：1.5 落板兜底 persistReportBoard（本体留守，注入
+// 主编缓存心跳：per-owner 单定时器 → 空闲主编 periodic 唤醒跑维护回合
+// （续 prompt 缓存 + 长期无信号子代浮上主编台面）。本体在 ./broker-heartbeat.mjs，
+// 决策纯函数（归一 / 摘要 / 时长格式）在本文件导出面之外单独可测。
+import { createHeartbeatOps, normalizeKeepAlive } from './broker-heartbeat.mjs'
+// board 存储层：落板兜底 persistReportBoard（本体留守，注入
 // relay 簇与 end 簇补发链共用）；report_submit / report_fetch 的读写点在
 // ./broker-tools.mjs（簇自 import）。「已落板」探测 hasBoardEntry 的消费点随
 // 5.4 processEnd 迁入 ./broker-ending.mjs（簇自 import）。段名编码与根焊死都在
 // shared/board.mjs 单点。
 import { writeBoard, readBoardSlice } from '../shared/board.mjs'
-// 容量钳制（二期 2.3 接线）：clampReadCapacity 在挂载期读 READ_POOL_SIZE 时用。
-// laneOf 的派发侧消费点（dispatchWork / advanceQueue / stallHolder）随 5.4 迁入
+// 容量钳制：clampReadCapacity 在挂载期读 READ_POOL_SIZE 时用。
+// laneOf 的派发侧消费点（dispatchWork / advanceQueue / stallHolder）在
 // ./broker-scheduler.mjs（Orchestration 本体仍在上方 import，此处不重复声明）。
 import { clampReadCapacity } from '../shared/orchestration.mjs'
-// 接力链状态机（三期 3.2/3.3，relay-chain-semantics.md）的 dispatcher 本体随
-// 5.3 迁入 ./broker-relay.mjs；摘要格式条款（第一期 1.2 单源）的两个消费点
-// （REPORT_CLAUSE → spawnChild、REDISPATCH_RESUME_PREFIX → 备选重派）随 5.4
-// 迁入调度核 / end 两簇，本文件不再 import report-format。
+// 接力链状态机（relay-chain-semantics.md）的 dispatcher 本体在 ./broker-relay.mjs；
+// 摘要格式条款（单源）的两个消费点（REPORT_CLAUSE → spawnChild、
+// REDISPATCH_RESUME_PREFIX → 备选重派）分别落在调度核与 end 两簇，本文件不
+// import report-format。
 
 // 保持两半既有导出面（测试与外部消费者经由两半入口引用共享实现）。
 export { Orchestration }
@@ -140,18 +147,18 @@ export async function apply(ctx, config = {}) {
   const orchestrations = new Map()
   // 子代理侧进程内登记表：八张表的语义、镜像清理点、为何 retireChild 与
   // retireTypeRecords 不可互换——全部见 shared/child-registry.mjs 头注释（唯一出处）。
-  // 本文件只按策略调用；5.4 拆分后本体侧直接消费面收窄为四件（sessionTypes /
+  // 本文件只按策略调用；本体侧直接消费面收窄为四件（sessionTypes /
   // childOwner 供生命周期 handlers 与 agent/request，abortExpected / modelCache
   // 供簇接线），pendingFallbackByLabel / fallbackDecided / disposedTypes 的裸表
   // 消费已整体迁入 end 簇（经同一 childRegistry 句柄），promoteFallback /
   // retireChild 等走方法。
   const childRegistry = createChildRegistry()
   const { sessionTypes, childOwner, abortExpected, modelCache } = childRegistry
-  // 能力缓存簇（5.1 拆分 → ./broker-capability.mjs）：effortCache/modelCacheEpoch
+  // 能力缓存簇（本体在 ./broker-capability.mjs）：effortCache/modelCacheEpoch
   // 本体随簇迁入模块，实例化必须保持在 settings 块之前——本 apply 中段有 await
   // （loadLedger），配置段热更若恰好在窗口里到达，处理器引用未初始化的
   // 接线 const 会撞 TDZ；失效入口 invalidateCaches 同理必须在处理器定义之前就位
-  // （0.3.0-tisitan.7 N9/N10 时序约束）。modelCache 注入 childRegistry 的同一枚
+  // （时序约束）。modelCache 注入 childRegistry 的同一枚
   // Map 句柄（上方解构所得，不复制），llm 服务经回调逐点解析。
   const { supportedEfforts, modelExists, invalidateCaches } = createCapabilityOps({
     getLlm: () => ctx.get('llm'),
@@ -162,19 +169,19 @@ export async function apply(ctx, config = {}) {
   // DSH continuable 生命周期中 agent/disposed 恒先于 subagent/end（dispose
   // 内部 handle.dispose() 先于 observer.settle()，见 dsh-subagent finishDisposal）。
   // 因此活记录遭遇 disposed 时不能立即清槽——end 通常紧随而至，立即 abort 会让
-  // 合法结论无处落账（0.2.3-tisitan.6 部署实测：正常完工的 explore 不进历史）。改为
+  // 合法结论无处落账（正常完工的 explore 不进历史）。故
   // 立墓碑 + 宽限期兜底：宽限期内 end 到达则正常 finish；end 真缺席才 abort
-  // 清槽推进队列，防止队列永久冻结。兜底本体（表 + 三连落账）5.2 波迁出至
+  // 清槽推进队列，防止队列永久冻结。兜底本体（表 + 三连落账）在
   // ./broker-dispose.mjs，接线见调度簇下方（grace 时长在此读 config 后注入）。
   const DISPOSE_END_GRACE_MS = config.disposeEndGraceMs ?? 500
-  // 可观测性截断阈值（0.2.3-tisitan.8）：默认值即旧硬编码口径的放宽版，
+  // 可观测性截断阈值：默认值即硬编码口径的放宽版，
   // 均可经插件 config 覆盖。failed 记录的结论不被 STATUS_CONCLUSION_MAX
   // 截断——错误信息必须完整到达 Sisyphus。
   const STATUS_HISTORY_LIMIT = config.statusHistoryLimit ?? 12
   const STATUS_CONCLUSION_MAX = config.statusConclusionMax ?? 400
   const HELP_CONTENT_MAX = config.helpContentMax ?? 240
   const SUBAGENT_PROMPT_MAX = config.subagentPromptMax ?? 200
-  // 观测埋点开关（0.4.0-tisitan.0 步骤 0.1，D6 已裁决：第 0 期默认开——采基线是
+  // 观测埋点开关（D6：默认开——采基线是
   // 第一目的）。纯观测：只读既有状态快照组事件，零分支改动、零通知内容变化；
   // 落盘路径沿用台账惯例（DSH_HOME || ~/.dsh）/dsh-my-go/metrics/events.jsonl。
   const METRICS = createMetrics({
@@ -184,24 +191,29 @@ export async function apply(ctx, config = {}) {
   // 卸载收尾：排空在飞写入链（close 幂等，fire-and-forget——卸载路径不等异步，
   // 观测日志容忍尾巴，绝不阻塞卸载；与台账 closeLedger 同点职责、宽松一档）。
   ctx.effect(() => () => { void METRICS.close() }, 'dsh-my-go-broker.metrics()')
-  // 报告提交制开关（第一期，D5 已裁决一期默认开）：关 → report_submit 不注册、
+  // 报告提交制开关（D5：默认开）：关 → report_submit 不注册、
   // 提交闸门不启用、条款不注入——三条同闸。config 在会话组装期固定，
   // 挂载时读一次即可，不做运行时切换（规划 1.7 只补 preset/agent.patch.yml 与文档）。
   const REPORT_EXT = config.reportExternalization ?? true
-  // 读平面并发容量（二期 2.3 接线，D5 已裁决）：?? 1 = 关闭 = 全局单线现状；
+  // 读平面并发容量（D5）：?? 1 = 关闭 = 全局单线现状；
   // 2~3 启用读池（>3 钳制 3，钳制在 clampReadCapacity 内）。挂载期读一次，
   // 与 REPORT_EXT 同律不做运行时切换——orchFor 创建实例时注入。
   const READ_POOL_SIZE = clampReadCapacity(config.readPoolSize ?? 1)
-  // 接力链开关（三期 3.3，D5 三期默认关口径）：关 = chain_start/chain_resolve
+  // 接力链开关（D5：默认关）：关 = chain_start/chain_resolve
   // 不注册。与 REPORT_EXT 同律挂载期读一次，不做运行时切换。
   const RELAY_CHAINS = config.relayChains ?? false
-  // E2 缓冲 grace（二期 2.4，D16 已裁决独立键）：抢跑 end 暂存后等 spawn 登记
+  // E2 缓冲 grace（D16：独立键）：抢跑 end 暂存后等 spawn 登记
   // 追上的宽限，超时按「无从归属」落档 + 占位审计回收。等的是 spawn 网络窗口
   // （天然长于 disposed 宽限的进程内事件赛跑），故不复用 DISPOSE_END_GRACE_MS。
   const SPAWN_END_GRACE_MS = config.spawnEndGraceMs ?? 2000
-  // 队列重试线性退避基数（5.4 声明重排：读取上移到 config 段，值注入调度簇；
+  // 队列重试线性退避基数（读取上移到 config 段，值注入调度簇；
   // 重试上限 QUEUE_RETRY_MAX 是簇内协议常量，随簇落位 broker-scheduler.mjs）。
   const QUEUE_RETRY_BASE_MS = config.queueRetryBaseMs ?? 1000
+  // 心跳基线（keep-alive）：插件行 config 的 keepAlive 段是**基线**，宿主
+  // settings 段（经下方配置桥现读）覆盖其上——与 bindings 的「默认 + 插件 config
+  // 为底、settings 覆盖」同律，故 WebUI 取消某字段后回落的是基线而非残留值。
+  // 运行时值逐拍现读（readKeepAlive），配置热更因此无需订阅任何事件。
+  const KEEP_ALIVE_BASE = config.keepAlive ?? {}
   // 合并基线：默认值 + 插件 config。settings 覆盖永远从基线起算，
   // 这样 WebUI 取消某字段后能正确回落默认，而不是残留旧的已合并值。
   const baseBindings = { ...defaultBindings(), ...(config.bindings ?? {}) }
@@ -224,12 +236,12 @@ export async function apply(ctx, config = {}) {
   // mergeRoleBindings 的语义逐字不变。逐调用现读：宿主半的热更在桥的另一侧自动成立，
   // 本半无需订阅任何事件。桥缺席（宿主半未装 / 旧宿主）＝ 沿用默认绑定，绝不裸炸。
   //
-  // 缓存失效改「段版本号」驱动：旧写法把 invalidateCaches() 挂在 settings/updated 上，
-  // 而 0.1.7 的 loader/volatile-update 只在**宿主半自己的** fiber 上发，本半没有可订阅
-  // 的事件。宿主半因此把「每次 volatile 提交」记成一枚单调自增的段版本号，经
-  // Symbol.for('dsh-my-go.bindings-revision') 交出；本半逐调用比对，版本一变即执行同一枚
-  // 三连失效——N9（在飞 listModels 不回写）+ N10（能力表重解析）的语义因此逐条保住，
-  // 且仍不依赖任何事件通道（含「内容相同的保存也失效一次」这条旧语义）。
+  // 缓存失效由「段版本号」驱动：settings/updated 不能作锚——0.1.7 的
+  // loader/volatile-update 只在**宿主半自己的** fiber 上发，本半没有可订阅的事件。
+  // 宿主半把「每次 volatile 提交」记成一枚单调自增的段版本号，经
+  // Symbol.for('dsh-my-go.bindings-revision') 交出；本半逐调用比对，版本一变即执行
+  // 同一枚三连失效——在飞 listModels 不回写与能力表重解析的语义由此保住，且不依赖
+  // 任何事件通道（含「内容相同的保存也失效一次」这条语义）。
   const readRevision = () => {
     const read = globalThis[Symbol.for('dsh-my-go.bindings-revision')]
     if (typeof read !== 'function') return undefined
@@ -251,6 +263,11 @@ export async function apply(ctx, config = {}) {
       return undefined
     }
   }
+  // 心跳全量对账的前向声明（§文件头「声明序口径」）：currentBindings 的闭包必须在
+  // 心跳簇实例化**之前**就位（它挂在 settings 段的读面上，位置动不得），但它只在
+  // 接线段结束后才被调用。先接一枚空实现，接线段处换上真身——比「靠调用序保证不撞
+  // TDZ」多一道结构性保险，代价是两行。
+  let syncHeartbeat = () => {}
   const currentBindings = () => {
     const section = readSection()
     const revision = readRevision()
@@ -259,6 +276,10 @@ export async function apply(ctx, config = {}) {
       bindingsRevision = revision
       // 首读不清（挂载期本无缓存可言）；其后每次版本推进都走同一枚三连失效。
       if (!first) invalidateCaches()
+      // 心跳同点对账：段版本也承载 keepAlive 的开/关，而**热更把 enabled
+      // 从假翻成真时，在飞会话身上没有任何派发事件可挂**——这里（派发 / continue /
+      // forward / 编排工具 / 子代理请求瀑布都会经过的段读点）是那条缺口的补位。
+      if (!first) syncHeartbeat('settings-revision')
     }
     try {
       return mergeRoleBindings(baseBindings, section)
@@ -346,7 +367,7 @@ export async function apply(ctx, config = {}) {
   // 统计口径靠 phase 分开（'pass' 真登记 / 'pass-board-fallback' 仅板命中 /
   // 'verdict' 转裁决），看板观测时不要把 pass-board-fallback 当成干净直通。
   //
-  // 留守裁决（5.3 B2，5.4 复核维持）：本体侧落板底座，end 簇补发链三处兜底与
+  // 归属约定：本体侧落板底座，end 簇补发链三处兜底与
   // relay 簇直投共用——注入两兄弟簇消费（随迁会让 relay 的注入源变成兄弟簇，
   // 破坏「簇间零互引」）；消费方只认这里的落盘语义。
   async function persistReportBoard(sessionId, childId, fullText) {
@@ -362,9 +383,9 @@ export async function apply(ctx, config = {}) {
   }
 
   // ══ 簇接线（按上方文件头声明序排布）══════════════════════════════════════
-  // 台账簇接线（5.1 拆分 → ./broker-ledger.mjs）：防抖/串行写/卸载同步落盘的
+  // 台账簇接线（本体在 ./broker-ledger.mjs）：防抖/串行写/卸载同步落盘的
   // 本体在工厂内；状态持有者（orchestrations）与回调（orchFor /
-  // findRecordEverywhere / bump）、常量（ledgerPath）显式注入。5.4 重排后
+  // findRecordEverywhere / bump）、常量（ledgerPath）显式注入。
   // orchFor / findRecordEverywhere 是上方留守函数声明，本工厂不再依赖提升取值；
   // 工厂对 orchFor 的存储发生在其首次被调用（loadLedger）之前，纪律不变。
   const ledgerPath = mygoHome('orchestration-ledger.json')
@@ -384,33 +405,52 @@ export async function apply(ctx, config = {}) {
   // 自动回落到自身状态机，行为与现在一致、无回归。
   globalThis[Symbol.for('dsh-my-go.snapshot')] = () => latestSnapshot
 
-  // ── 编排台账持久化（接线；本体在 ./broker-ledger.mjs，5.1 拆分）──────────────
+  // ── 编排台账持久化（接线；本体在 ./broker-ledger.mjs）──────────────
   // history 记录落盘/读回（v1/v2/v3 恢复归一 + chains 桶）、防抖串行写、卸载
   // 同步落盘的完整语义见 broker-ledger.mjs 模块头；此处只保留挂载与卸载两个
   // 时点的接线。
   await loadLedger()
   bump() // 保证快照桥首读即拿到完整 { seq, parents } 形状
-  // 插件卸载收尾（0.3.0-tisitan.7 N8）：有 pending 防抖就同点做完这次写——
+  // 插件卸载收尾：有 pending 防抖就同点做完这次写——
   // 撤定时器 → 作废在飞异步链 → 同步落最新 payload（closeLedger；「只
   // clearTimeout 会丢掉最后一次完工」的完整理由见模块内 closeLedger 头注释）。
   ctx.effect(() => () => { closeLedger() }, 'dsh-my-go-broker.ledger()')
-  // ── 父会话补充通知（接线；本体在 ./broker-notify.mjs，5.1 拆分）─────────────
+  // ── 父会话补充通知（接线；本体在 ./broker-notify.mjs）─────────────
   // harness 的 inject 通道说明见模块头注释。agents 注册表经回调逐点读取，
-  // METRICS（notifyParent 的 inject 字节埋点，0.4.0-tisitan.0）单点透传。
+  // METRICS（notifyParent 的 inject 字节埋点）单点透传。
   const { notifyParent, resolveParentAgent, notifyOwner, notifyClearedHelp } = createNotifyOps({
     getAgents: () => ctx.get('agents'),
     metrics: METRICS,
   })
-  // ── persona / prompt 缓存 / DSV4P0813 bootstrap 簇接线（5.3 拆分；本体在
-  // ./broker-bootstrap.mjs）─────────────────────────────────────────────────────
+  // ── 主编缓存心跳簇接线（本体在 ./broker-heartbeat.mjs）──────────────────
+  // per-owner 单定时器（一个主编会话一拍，绝非 per-child）：起表点是调度簇派发
+  // 成功处（ensureHeartbeat 经回调注入调度簇）、end 之后即时重估
+  // （subagent/end 的注册点，见文件尾）、agent·session disposed 与卸载收尾各一处
+  // 停表。resolveParentAgent 取 notify 簇产物（同一枚 agents 注册表读法）；配置
+  // 逐拍现读宿主桥的 keepAlive 段 + 插件行 config 基线（热更即生效，零订阅）。
+  // 定时器与时钟走注入默认值（模块内 now/setTimer/clearTimer），单测可在不 patch
+  // 全局定时器的前提下拿确定性时钟。
+  const readKeepAlive = () => normalizeKeepAlive(KEEP_ALIVE_BASE, readSection()?.keepAlive)
+  const heartbeat = createHeartbeatOps({
+    readConfig: readKeepAlive,
+    resolveParentAgent,
+    orchestrations,
+    childRegistry,
+    metrics: METRICS,
+  })
+  // 前向声明的真身（见 currentBindings 上方）：段版本推进 → 心跳全量对账。
+  syncHeartbeat = (reason) => { heartbeat.syncAll(reason) }
+  // 卸载收尾：撤掉全部在飞心跳定时器（与 queueRetry / 宽限期 / chainHops 的
+  // 「簇状态只经簇口回收」同律）。
+  ctx.effect(() => () => { heartbeat.stopAll() }, 'dsh-my-go-broker.heartbeat()')
+  // ── persona / prompt 缓存簇接线（本体在 ./broker-bootstrap.mjs）───
   // promptCache / loadPrompt / sharedLoadAllPrompts 预热、persona·orchestration·
-  // roster 三段的组装（宿主代双分支探测随簇走）、DSV4P0813 两段式晋升（session/
-  // event 判据 + assemble 过滤）整体迁入模块。本簇是「碰 ctx 的动作以回调注入、
-  // 簇内只做纯组装」口径的实现：effect / registerSection / getSectionOrder / on
-  // 四件在此各包一层，注册时机、effect 名、段定义与两代分支逐字节不变；
-  // sessionTypes 传活句柄（roster 段儿童门控 + assemble 工种解析），bindings 经
-  // getter 现读（宿主配置桥段变化后必须看到新值，与原闭包直读时点一致）。
-  // 5.4 重排注：本簇接线点前移到调度簇之前（其产物 promptCache/loadPrompt 是
+  // roster 三段的组装（宿主代双分支探测随簇走）整体迁入模块。本簇是「碰 ctx 的
+  // 动作以回调注入、簇内只做纯组装」口径的实现：effect / registerSection /
+  // getSectionOrder / on 四件在此各包一层，注册时机、effect 名、段定义与两代分支
+  // 逐字节不变；sessionTypes 传活句柄（roster 段儿童门控），bindings 经 getter
+  // 现读（宿主配置桥段变化后必须看到新值，与原闭包直读时点一致）。
+  // 本簇接线点前移到调度簇之前（其产物 promptCache/loadPrompt 是
   // 调度簇 rolePersona 的注入源）——工厂体内只有纯组装与 fire-and-forget 预热，
   // 位移不改变任何注册序/时序。
   const { promptCache, loadPrompt } = createBootstrapOps({
@@ -421,7 +461,7 @@ export async function apply(ctx, config = {}) {
     sessionTypes,
     getBindings: () => currentBindings(),
   })
-  // ── 调度核簇接线（5.4 拆分；本体在 ./broker-scheduler.mjs）──────────────────
+  // ── 调度核簇接线（本体在 ./broker-scheduler.mjs）──────────────────
   // 名册路由薄壳（rosterKeys / rolePersona / resolveRoleToolFilter / liveToolNames）、
   // spawnChild 唯一派发出口、dispatchWork / advanceQueue / scheduleQueueRetry 与
   // queueRetryTimers（互递归环整体随迁、环内聚在簇内）、两枚停摆可观测件
@@ -448,6 +488,7 @@ export async function apply(ctx, config = {}) {
     loadPrompt,
     claimBufferedEnd: (childId) => claimBufferedEnd(childId),
     processEnd: (info) => processEnd(info),
+    ensureHeartbeat: (parentId) => heartbeat.ensure(parentId),
     backfillHopOnArrival: (queuedWork, childId) => relay.backfillHopOnArrival(queuedWork, childId),
     handleQueueWorkDropped: (orch, work, error) => relay.handleQueueWorkDropped(orch, work, error),
     REPORT_EXT,
@@ -455,14 +496,14 @@ export async function apply(ctx, config = {}) {
     HELP_CONTENT_MAX,
     QUEUE_RETRY_BASE_MS,
   })
-  // ── 两枚宽限期簇接线（5.2 拆分；本体在 ./broker-dispose.mjs 与
+  // ── 两枚宽限期簇接线（本体在 ./broker-dispose.mjs 与
   // ./broker-endbuffer.mjs）─────────────────────────────────────────────────
   // 两簇结构同构（Map + grace 定时器 + 超时三连落账）但刻意分成两模块各守一条
   // 红线（详见 broker-dispose.mjs 头注释的取舍段）。实例化需要的 notifyClearedHelp /
-  // bump / advanceQueue 三件回调在上方都已就位——advanceQueue 随 5.4 迁调度簇，
-  // 本波重排把两簇接线点移到调度簇之后，直传取值，原先「函数声明提升才安全」的
-  // 布局雷（D-4）就此消掉。grace 时长仍在上方 config 段读取后注入（配置口径集中
-  // 在 broker 本体，簇模块不碰 config）。
+  // bump / advanceQueue 三件回调在上方都已就位（advanceQueue 属调度簇）。两簇
+  // 接线点排在调度簇之后，依赖一律直传取值——不靠函数声明提升抢接线序。grace
+  // 时长仍在上方 config 段读取后注入（配置口径集中在 broker 本体，簇模块不碰
+  // config）。
   const { scheduleDisposeFallback, cancelDisposeFallback, clearDisposeFallbackTimers } = createDisposeFallbackOps({
     graceMs: DISPOSE_END_GRACE_MS,
     abortExpected,
@@ -481,21 +522,21 @@ export async function apply(ctx, config = {}) {
     bump,
     advanceQueue,
   })
-  // 插件卸载时清理重试定时器，并同点撤掉两枚宽限期簇的在飞定时器（5.2 拆分后
-  // 表本体随簇迁入模块，收尾走各自导出的 clear*；5.4 波调度簇同款
-  // clearQueueRetryTimers——同一枚 effect 名，注册序不变）
+  // 插件卸载时清理重试定时器，并同点撤掉两枚宽限期簇的在飞定时器（三张表各自
+  // 随簇住在模块内，收尾一律走各簇导出的 clear*：clearQueueRetryTimers /
+  // clearDisposeFallbackTimers / clearEndBuffer——同一枚 effect 名，注册序不变）
   ctx.effect(() => () => {
     clearQueueRetryTimers()
     clearDisposeFallbackTimers()
     clearEndBuffer()
   }, 'dsh-my-go-broker.queueRetry()')
-  // ── continue/forward 投递链共用件（5.2 拆分；本体在 ./broker-delivery.mjs）─────
+  // ── continue/forward 投递链共用件（本体在 ./broker-delivery.mjs）─────
   // M1-M5 五件（定位 / 门面 steer / abort 掐断 / queued 投递 / 投递后复籍）连同
   // **同步段承诺**三条协议整体迁入模块（协议文本随簇走，改动前先读该模块头）。
   // 这里只剩接线：台账兜底查找与两件通知件从兄弟簇实例取（工厂产物不可 import，
   // 注入即单向依赖），活状态三件（orchestrations / abortExpected / childRegistry）
   // 传句柄，服务面两件（agents 注册表 / subagents 门面）传回调保持逐调用现取——
-  // 与原实现读 ctx 的时点一致。coordinatorSource 随簇转为模块内私有（broker 半
+  // 与直接读 ctx 的时点一致。coordinatorSource 随簇转为模块内私有（broker 半
   // 再无第二个消费点）。工具注册块（下方）的调用点与参数逐名不变。
   const { resolveContinueTarget, tryFacadeSteer, interruptForAbort, deliverWithQueueFallback, rearmAfterDelivery } = createDeliveryOps({
     getAgents: () => ctx.get('agents'),
@@ -507,14 +548,14 @@ export async function apply(ctx, config = {}) {
     resolveParentAgent,
     notifyParent,
   })
-  // ── end 管线簇接线（5.4 拆分；本体在 ./broker-ending.mjs）─────────────────────
+  // ── end 管线簇接线（本体在 ./broker-ending.mjs）─────────────────────
   // processEnd（subagent/end dispatcher：缓冲闸、归因快照、ops/notices 落地、
   // 按 decision 起执行链、按 facts.advance 推进队列）与 finalizeEnd /
   // attemptFallbackRedeploy / attemptReportRepair / readTurnFailure /
   // pickFallbackEntry 整体迁入模块（归因三条协议仍见 shared/end-attribution.mjs
   // 文件头）。相互回调注入的反向半边：调度簇三件（advanceQueue / spawnChild /
   // buildStallNotice）此刻已就位直传；relay 两件在下方才实例化，包调用时读属性
-  // 的闭包（同上方调度簇口径）。persistReportBoard 按 5.3 B2 裁定留守本体，
+  // 的闭包（同上方调度簇口径）。persistReportBoard 留在本体，
   // 以回调注入本簇。dispose / endbuffer / delivery / notify / capability 各簇
   // 产物按消费面转注；sessions 服务经回调逐调用现取（readTurnFailure 的 live
   // 快路径，与原读 ctx 时点一致）。
@@ -537,6 +578,7 @@ export async function apply(ctx, config = {}) {
     bufferEnd,
     claimBufferedEnd,
     deliverWithQueueFallback,
+    ensureHeartbeat: (parentId) => heartbeat.ensure(parentId),
     relayChainOnEnd: (orch, ownerPid, childId, payload) => relay.relayChainOnEnd(orch, ownerPid, childId, payload),
     resolveChainFallback: (orch, childId, verdict) => relay.resolveChainFallback(orch, childId, verdict),
     persistReportBoard,
@@ -544,18 +586,18 @@ export async function apply(ctx, config = {}) {
     REPORT_EXT,
     SUBAGENT_PROMPT_MAX,
   })
-  // ── 接力链 dispatcher 簇接线（5.3 拆分；本体在 ./broker-relay.mjs）───────────────
+  // ── 接力链 dispatcher 簇接线（本体在 ./broker-relay.mjs）───────────────
   // composeRelayPrompt / landHopOps / relayAdvanceHops / relayChainOnEnd /
   // runChainTransition / chainDeclarationError / resolveChainFallback 与反查表
   // chainHopsByWork 整体随簇迁入模块（调用方协议三条仍见 shared/relay-chain.mjs
   // 文件头）。跨簇协作件全部经本处注入——notifyOwner / resolveParentAgent 取 notify
   // 簇工厂产物，bump / scheduleLedgerSave / persistReportBoard 是本体侧的快照广播、
-  // 台账防抖与落板兜底，advanceQueue 随 5.4 换源调度簇工厂产物（5.4 重排后全部
+  // 台账防抖与落板兜底，advanceQueue 改由调度簇工厂产物（全部
   // 在接线序前就位，直传取值，消掉原提升依赖）。反向两条边（本簇终局支调
   // advanceQueue、调度簇/end 簇消费 backfillHopOnArrival / handleQueueWorkDropped /
   // relayChainOnEnd / resolveChainFallback）已由上方两处包壳闭包承接，成环面为零。
   // 决策件（advanceChain / match* / reconcile* / readBoardSlice / RELAY_CLAUSE）
-  // 由簇直引 shared 纯函数层；簇间零互引、零回引本体，与 5.1/5.2 各簇同律。
+  // 由簇直引 shared 纯函数层；簇间零互引、零回引本体，与各簇同律。
   const relay = createRelayOps({
     notifyOwner,
     resolveParentAgent,
@@ -570,18 +612,18 @@ export async function apply(ctx, config = {}) {
   // 中性，守的是「簇状态只经簇口回收」这条线（同 queueRetry/ledger 的 effect 惯例）。
   ctx.effect(() => () => { clearChainHops() }, 'dsh-my-go-broker.chainHops()')
 
-  // ── tools（5.3 拆分；本体在 ./broker-tools.mjs）────────────────────────────────
-  // 十具工具的注册体（含 report_submit/report_fetch 随 REPORT_EXT、chain_start/
+  // ── tools（本体在 ./broker-tools.mjs）────────────────────────────────
+  // 十一具工具的注册体（含 report_submit/report_fetch 随 REPORT_EXT、chain_start/
   // chain_resolve 随 RELAY_CHAINS 的条件注册，及 agent/created 双侧 deny 闸与其随
   // 注册开关联动的名单口径）整体迁入模块，本处只剩接线：服务面四件包回调
   // （registerTool / on / getSubagents / getAgentTools——agent.ctx.tools 的读取点
-  // 留在 broker 侧包一层，闸体对未 ready agent 的抛错仍落簇内同一个 try，N12 留痕
+  // 留在 broker 侧包一层，闸体对未 ready agent 的抛错仍落簇内同一个 try，留痕
   // 口径不变）；活状态传句柄（orchestrations / sessionTypes / childRegistry /
   // abortExpected，Map/Set 本体不复制）；闭包可变值经 getter 现读（getBindings：
-  // 宿主配置桥段变化后 roster 行投影必须看到新值）；delivery / relay 两簇
-  // 的工厂产物与本体侧共用件转注；5.4 波起调度核产物（dispatchWork /
-  // rosterKeys / liveToolNames）同路径转注。挂载期固化的开关与截断常量按值注入。
-  // 注册时序与原实现一致：工具与 agent/created 闸接在 delivery/relay 接线之后、
+  // 宿主配置桥段变化后 roster 行投影必须看到新值）；delivery / relay / 调度核
+  // 三簇的工厂产物与本体侧共用件同路径转注（调度核产物为 dispatchWork /
+  // rosterKeys / liveToolNames）。挂载期固化的开关与截断常量按值注入。
+  // 注册时序是契约：工具与 agent/created 闸接在 delivery/relay 接线之后、
   // 生命周期 handlers（agent/disposed 等）之前。
   registerAllTools({
     registerTool: (tool) => ctx.tools.register(tool),
@@ -611,6 +653,20 @@ export async function apply(ctx, config = {}) {
     interruptForAbort,
     deliverWithQueueFallback,
     rearmAfterDelivery,
+    // 心跳起表：continue 两档出口与 forward 的复活投递点各调一次——
+    // 复活/询问（continue、forward 命中已完工子代）不在派发面上，dispatchWork 的
+    // ensure 照不到它，缺了这条「派 A → A 交报告 → continue(A, 下一段长活)」
+    // 整轮零心跳。via（revive / ping）**由调用点自报**、此处只转注：同一枚闭包服务
+    // 三个语义不同的出口，硬编码一个标签会让观测面说谎（「谁把拍子点着的」是排障
+    // 第一问，标错比不标更坏）。
+    ensureHeartbeat: (parentId, via) => heartbeat.ensure(parentId, via || 'revive'),
+    // 主编自助三件（heartbeat 工具：pause / resume / status）：**同一枚闭包
+    // 的三个面**在此一并注入——与上面的 ensureHeartbeat 同律（心跳状态不外泄，
+    // 工具簇只拿闭包转发，绝不 import 兄弟簇）。pause 语义见 broker-heartbeat.mjs
+    // 「主编自助闸」：零新增状态，真事件照来、下次活动自动复活。
+    pauseHeartbeat: (parentId) => heartbeat.pause(parentId),
+    resumeHeartbeat: (parentId) => heartbeat.resume(parentId),
+    heartbeatStatus: (parentId) => heartbeat.status(parentId),
     runChainTransition,
     chainDeclarationError,
     REPORT_EXT,
@@ -626,6 +682,10 @@ export async function apply(ctx, config = {}) {
   ctx.on('agent/disposed', ({ agent }) => {
     const id = agent?.id
     if (!id) return
+    // 心跳停表：该 id 是主编会话本身（它的 agent 被销毁）时撤掉它的拍子；
+    // id 是子代时这里是无害空转（表以属主会话 id 为键，两者全局唯一不会撞）。
+    // 放在路由之前：主编会话销毁路径上下面那条 owned 分支本来就走不到。
+    heartbeat.stop(id, 'disposed')
     // 经 childOwner 路由到属主实例；未登记时全局扫描活记录兜底
     const owned = orchOfChild(id)
     childOwner.delete(id)
@@ -644,6 +704,9 @@ export async function apply(ctx, config = {}) {
     if (!id) return
     const orch = orchestrations.get(id)
     if (!orch) return
+    // 主编排列会话被删除：它的心跳拍子同点撤（该实例即将摘出 Map，拍子再响
+    // 只会读到空流水线后自行停表——这里撤掉省掉那次无谓唤醒）。
+    heartbeat.stop(id, 'session-disposed')
     // Sisyphus 编排会话被删除：整条流水线随之销毁（队列/当前槽位/求助单
     // 全清，实例摘出 Map），并清除其子代理的属主登记与兜底定时器，
     // 避免悬挂到永远不会来的父会话
@@ -652,7 +715,7 @@ export async function apply(ctx, config = {}) {
       cancelDisposeFallback(cid)
     }
     for (const help of orch.helpRequests.values()) childOwner.delete(help.childId)
-    // 链桶同点清（三期 3.5，§5.2/D27）：非终态链（running/suspended/
+    // 链桶同点清（§5.2/D27）：非终态链（running/suspended/
     // pending-fallback）绝不无声悬挂——每链 warn + metrics 'aborted-by-dispose'
     // 双留痕后清空；台账桶随 ledgerPayload 空桶不写而消失（D27：主编会话已灭，
     // 链账无消费方，不留 aborted 行）。终态链清掉即可，无留痕面。
@@ -663,14 +726,14 @@ export async function apply(ctx, config = {}) {
     }
     // 移交①（3.4 → 3.5）：spawn 悬挂残余的回填表项同点清理——该 orch 排队
     // work 的占位键还挂在 relay 簇的反查表里（dispatchWork 未走到回填），实例销毁
-    // 后永远不会被消费，逐条摘除防累积（5.3 拆分后表本体随簇，走语义操作）。
+    // 后永远不会被消费，逐条摘除防累积（表本体随簇，走语义操作）。
     releaseHopHolds(orch)
     orch.queue = []
     orch.currentMap.clear()
     orch.helpRequests.clear()
     orch.chains = []
     orchestrations.delete(id)
-    // 该实例的队列重试定时器同点摘除（5.4 拆分后表本体随调度簇，走簇口语义，
+    // 该实例的队列重试定时器同点摘除（表本体随调度簇，走簇口语义，
     // 与原三行裸操作逐字节同语义）
     cancelQueueRetryTimer(orch)
     bump()
@@ -678,10 +741,10 @@ export async function apply(ctx, config = {}) {
   })
 
   // ── model/effort binding at the request waterfall（接线；本体在
-  // ./broker-capability.mjs，5.1 拆分）────────────────────────────────────
+  // ./broker-capability.mjs）────────────────────────────────────
   // reasoningEffort 的档位判定（supportedEfforts）与模型校验（modelExists）
   // 连同 effortCache/modelCacheEpoch 随簇迁出；实例化在 settings 块上方
-  // （N9/N10 时序约束），失效接线：段版本推进 → invalidateCaches()。
+  // （时序约束），失效接线：段版本推进 → invalidateCaches()。
 
   ctx.on('agent/request', async (payload, next) => {
     const seed = await next()
@@ -691,7 +754,7 @@ export async function apply(ctx, config = {}) {
     if (type === undefined && !bindSisyphus) return seed
     // 备选重派儿童以登记表为准（只换 provider/model，保留工种 reasoningEffort/
     // fallbacks 等其余字段）；spawn 解析前窗口按 label 命中 pending 登记
-    //（棒2-Z2，优先级回退在 child-registry 内实现）；常规派发无登记 → 原样 bindings[type]
+    //（优先级回退在 child-registry 内实现）；常规派发无登记 → 原样 bindings[type]
     const override = childRegistry.fallbackOverrideFor(agent.id, agent?.session?.header?.label)
     const binding = resolveEffectiveBinding(currentBindings()[type ?? 'sisyphus'] ?? {}, override)
     const nextConfig = { ...seed }
@@ -722,8 +785,15 @@ export async function apply(ctx, config = {}) {
   })
 
   // ── conclusion injection + queue advancement on subagent/end ────────────
-  // 归因决策与执行链本体在 ./broker-ending.mjs（5.4 拆分；注册时机与载荷转发
+  // 归因决策与执行链本体在 ./broker-ending.mjs（注册时机与载荷转发
   // 逐字节不变：ctx.on 仍接在全部生命周期件之后）。once-guard / 推进时机 /
   // 终局真空三条协议见该模块头与 shared/end-attribution.mjs 文件头。
-  ctx.on('subagent/end', (info) => processEnd(info))
+  // 心跳全量对账：end 处理完（含其中的 advanceQueue 可能已派下一跳）再对账
+  // ——无在飞子代的会话立刻停表，不为一次注定空转的拍子留定时器；有新占位则照常
+  // 续拍（advanceQueue 的派发同步段先于本次对账落槽，不会误停）。同一枚 syncAll 也挂
+  // 在段版本推进处（见 currentBindings），两处共用「有在飞且开启 → 起表」这条判据。
+  ctx.on('subagent/end', (info) => {
+    processEnd(info)
+    heartbeat.syncAll('end-reevaluate')
+  })
 }

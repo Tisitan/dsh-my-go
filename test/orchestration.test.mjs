@@ -43,7 +43,7 @@ test('finish clears pending helpRequests for that child (no zombie help)', () =>
   assert.equal(o.helpRequests.size, 0)
 })
 
-test('clearHelpFor returns the removed count; finish exposes clearedHelp on the returned copy only (0.3.0-tisitan.3)', () => {
+test('clearHelpFor returns the removed count; finish exposes clearedHelp on the returned copy only ()', () => {
   const o = new Orchestration()
   const rec = o.beginSpawning('hermes', 'task')
   o.bindChild(rec.childId, 'sess-1')
@@ -157,7 +157,7 @@ test('followupPrompt updates last prompt for running and history records', () =>
   assert.equal(o.history[0].prompt, 'followup after done')
 })
 
-test('followupPrompt urgency tag: 入账/扩散/清除三态（0.3.0-tisitan.2）', () => {
+test('followupPrompt urgency tag: 入账/扩散/清除三态', () => {
   const o = new Orchestration()
   const rec = o.beginSpawning('hermes', 'original')
   o.bindChild(rec.childId, 'sess-1')
@@ -211,7 +211,7 @@ test('dropQueuedFailed removes the work item and records a failed history entry'
   assert.equal(o.history[0].childId, work.id)
 })
 
-// ── 兜底闸与台账养护（0.2.3-tisitan.15） ──────────────────────────────────────
+// ── 兜底闸与台账养护 ──────────────────────────────────────
 
 test('enforceCurrentCap：超限淘汰 updatedAt 最旧的滞留记录，未超限原样', () => {
   const o = new Orchestration()

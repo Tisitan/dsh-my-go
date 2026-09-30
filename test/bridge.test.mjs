@@ -10,13 +10,13 @@ import { zstdCompressSync } from 'node:zlib'
 import * as broker from '../preset/tools/broker.mjs'
 import { createMockCtx, setHostBindings, withRealSignalContract, execOf, snapshotNow, snapOf, currentOf, waitFor, removeHomeWithRetry } from './helpers/mock-ctx.mjs'
 
-// 测试隔离：台账持久化（0.2.3-tisitan.8）会在 apply 时从 DSH_HOME 读回 history——
+// 测试隔离：台账持久化会在 apply 时从 DSH_HOME 读回 history——
 // 指向独立临时目录，避免宿主机真实台账污染本文件的 history 断言。
 const TEST_DSH_HOME = await mkdtemp(join(tmpdir(), 'dsh-my-go-test-home-'))
 
 // 台账落盘是 250ms 防抖 + tmp/rename——但 250ms 只是「无负载下限」，全套测试
-// 并行跑时写盘可能晚几秒，固定 sleep 会把断言跑到写入之前（0.3.0-tisitan.8
-// 本批新增两档测试同场竞争后现形的既有假红）。故统一改为轮询到「可解析且
+// 并行跑时写盘可能晚几秒，固定 sleep 会把断言跑到写入之前（
+// 新增两档测试同场竞争后现形的既有假红）。故统一改为轮询到「可解析且
 // 目标记录在场」，超时才红：断言语义不变，负载敏感度消失。
 async function readLedgerWhen(home, ready, timeoutMs = 10_000) {
   const file = join(home, 'dsh-my-go', 'orchestration-ledger.json')
@@ -69,12 +69,12 @@ test('snapshot accessor returns live state (not a stale copy)', async () => {
   assert.ok(before === after || (before?.seq ?? 0) <= (after?.seq ?? 0))
 })
 
-// ── apply-level orchestration tests (0.2.3-tisitan.6 regression batch) ──────────
+// ── apply-level orchestration tests ( regression batch) ──────────
 // Richer mock that captures registered tools and event listeners so tests can
 // drive go_work / subagent/end / agent/disposed end to end. queueRetryBaseMs
 // is shrunk through plugin config to keep timer-based retries fast.
 //
-// 0.2.3-tisitan.6 二次修复：mock 的 startContinuable 必须复刻 dsh-subagent 的真实
+//  二次修复：mock 的 startContinuable 必须复刻 dsh-subagent 的真实
 // 契约——SubagentContinuationManager.startContinuable 无条件调用
 // spec.signal.throwIfAborted()。旧 mock 完全忽略 spec，因此「队列回补后重试
 // 消化」在 signal=undefined 的队列路径下照样通过，没抓住部署实测的 TypeError。
@@ -85,16 +85,16 @@ function mockCtxFull(options = {}) {
   return createMockCtx({ homePrefix: 'dsh-my-go-home-', ...options })
 }
 
-// C-09 保真收益之一：替身 listeners 是 Map<event, fn[]>，注册数从此可数。
+// 保真收益之一：替身 listeners 是 Map<event, fn[]>，注册数从此可数。
 // 旧单槽写法下重复注册是静默覆盖（第二个赢，第一个永远不再跑），任何测试都
 // 看不见——而真宿主里重复注册等于同一事件被处置两遍（双发落账、双份通知）。
-test('C-09 保真：broker 七个事件恰好各注册一个 handler', async () => {
+test('替身保真：broker 五个事件恰好各注册一个 handler', async () => {
   const { ctx, registeredHandlers } = mockCtxFull()
   await broker.apply(ctx, { reportExternalization: false })
   const counts = registeredHandlers()
   assert.deepEqual(
     Object.keys(counts).sort(),
-    ['agent/created', 'agent/disposed', 'agent/request', 'session/disposed', 'session/event', 'subagent/end', 'system-prompt/assemble'].sort(),
+    ['agent/created', 'agent/disposed', 'agent/request', 'session/disposed', 'subagent/end'].sort(),
     '监听面清单本身也是契约：多一个少一个事件都要在这里说明理由',
   )
   for (const [event, n] of Object.entries(counts)) {
@@ -105,7 +105,7 @@ test('C-09 保真：broker 七个事件恰好各注册一个 handler', async () 
 test('queued dispatch failure requeues and the retry timer drains the queue', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   let spawnCalls = 0
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => {
       spawnCalls += 1
@@ -138,7 +138,7 @@ test('queued dispatch abandoned after retry cap: failed history + console.error'
   try {
     // Parent session is gone from the registry → every queued attempt throws
     const goneParent = { id: 'parent-gone', session: { header: {} } }
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       agents: { get: () => undefined },
       startContinuable: async () => ({ childId: 'sess-x' }),
     })
@@ -150,7 +150,7 @@ test('queued dispatch abandoned after retry cap: failed history + console.error'
     assert.equal(r2.status, 'queued')
     dispatch('subagent/end', { id: 'sess-x', stopReason: 'completed', lastAssistantMessage: [] })
     // 退避从 5ms 起指数增长（整轮约 150ms），固定 200ms sleep 在 20 个测试文件
-    // 并行抢 CPU 时会被拖过 → 假红（0.3.0-tisitan.11 C-12 实测约 1/5 概率）。
+    // 并行抢 CPU 时会被拖过 → 假红（实测约 1/5 概率）。
     // 改等条件：弃单落账 = current 归零 + 有一条 failed 史。
     await waitFor(
       () => currentOf('parent-gone') === null && snapOf('parent-gone')?.history?.some((h) => h.status === 'failed'),
@@ -170,7 +170,7 @@ test('queued dispatch abandoned after retry cap: failed history + console.error'
 
 test('agent/disposed before subagent/end (production order) still lands the conclusion', async () => {
   // DSH continuable 生命周期里 disposed 恒先于 end（handle.dispose() 先于
-  // observer.settle()）：0.2.3-tisitan.6 初版在此时立即 abort 活记录，导致紧随的
+  // observer.settle()）： 初版在此时立即 abort 活记录，导致紧随的
   // 合法 end 被判「no live record」、结论丢弃——部署实测正常完工的 explore
   // 不进历史。修复后：disposed 只立墓碑 + 挂宽限期兜底，end 到达正常落账。
   const warnings = []
@@ -180,7 +180,7 @@ test('agent/disposed before subagent/end (production order) still lands the conc
     const parent = { id: 'parent-1', session: { header: {} } }
     let spawnCalls = 0
     let heldResolve
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       startContinuable: withRealSignalContract(async () => {
         spawnCalls += 1
@@ -208,7 +208,7 @@ test('agent/disposed before subagent/end (production order) still lands the conc
     assert.equal(snap.currentRecords?.[0]?.agentType, 'hermes')
     assert.equal(snap.currentRecords?.[0]?.status, 'spawning')
     assert.ok(!warnings.some((line) => line.includes('no live record')))
-    // 0.2.3-tisitan.14 起 dispatchWork 含 persona/toolFilter 异步解析：等第二次
+    //  起 dispatchWork 含 persona/toolFilter 异步解析：等第二次
     // spawn 真的到达门面（heldResolve 被赋值）再放行；放行后等换键完成
     await waitFor(() => heldResolve !== undefined, { what: '第二次 spawn 已到达门面' })
     heldResolve({ childId: 'sess-hermes' })
@@ -230,7 +230,7 @@ test('agent/disposed without subagent/end: grace fallback frees the slot and dra
   // 而退化。
   const parent = { id: 'parent-1', session: { header: {} } }
   let spawnCalls = 0
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => {
       spawnCalls += 1
@@ -246,7 +246,7 @@ test('agent/disposed without subagent/end: grace fallback frees the slot and dra
   // 子代理被销毁且 subagent/end 永远不到达
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   // 谓词取到**运行态**：占位记录一入槽 agentType 就已是 hermes，只等它会把
-  // 下面 status==='running' 的断言变成自家制造的竞态（本批等待口径的反面教材）
+  // 下面 status==='running' 的断言变成自家制造的竞态
   await waitFor(() => currentOf('parent-1')?.agentType === 'hermes'
     && currentOf('parent-1')?.status === 'running'
     && snapOf('parent-1')?.queue?.length === 0, { what: '兜底回收孤儿后队首补位并跑起来' })
@@ -256,8 +256,8 @@ test('agent/disposed without subagent/end: grace fallback frees the slot and dra
   assert.equal(snap.currentRecords?.[0]?.status, 'running')
 })
 
-// ── dispatchWork 模型/渠道解析（0.2.3-tisitan.7 回归批） ───────────────────────
-// 0.2.3-tisitan.7 起 defaultBindings 全部清空（不内置任何模型名/渠道名），子代理
+// ── dispatchWork 模型/渠道解析 ───────────────────────
+//  起 defaultBindings 全部清空（不内置任何模型名/渠道名），子代理
 // 默认完全继承父会话路由。以下用例钉住派发时的 agentOptions 组装语义。
 
 test('empty binding inherits the parent provider route and sets no model', async () => {
@@ -280,7 +280,7 @@ test('configured model is applied only when modelExists passes', async () => {
   // provider、model 缺省（回落父会话模型），不得硬塞一个不存在的模型名。
   const parent = { id: 'parent-1', session: { header: {} } }
   const specs = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'beta' ? [{ id: 'good-model' }] : []) },
     startContinuable: withRealSignalContract(async (spec) => { specs.push(spec); return { childId: `sess-${specs.length}` } }),
@@ -302,7 +302,7 @@ test('configured model is applied only when modelExists passes', async () => {
 })
 
 test('host bindings rebase from baseBindings: unset field falls back to defaults', async () => {
-  // 0.2.3-tisitan.1 修复的回归保护：settings 覆盖永远从 baseBindings（默认值 +
+  //  修复的回归保护：settings 覆盖永远从 baseBindings（默认值 +
   // 插件 config）起算。0.1.7 起覆盖的到达方式变了——宿主半的配置桥逐调用现读，
   // 桥返回的段一变，下一次派发即见新值（旧 settings/updated 事件通道退役），
   // 但「整表重建 + 回落基线」的语义逐字不变。
@@ -355,7 +355,7 @@ test('settings rows with fallbacks merge and rebase without disturbing existing 
   }
 })
 
-// ── 可观测性批次（0.2.3-tisitan.8 回归批） ─────────────────────────────────────
+// ── 可观测性 ─────────────────────────────────────
 // 队列上岗映射推送 / 失败附因推送 / 截断可配置 / 台账持久化 round-trip。
 // 父会话通知经 mock agents 的 inject 通道断言（与 dsh-subagent
 // notifySettlement 的 parent.inject 用法同契约）。
@@ -364,7 +364,7 @@ test('queued dispatch binds the real childId and notifies the parent with the wo
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
   let spawnCalls = 0
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
   })
@@ -388,7 +388,7 @@ test('queued dispatch binds the real childId and notifies the parent with the wo
 test('error stopReason reads the child session log: history conclusion and parent notice carry error.message', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     sessions: {
       get: (id) => (id === 'sess-1'
@@ -415,7 +415,7 @@ test('error stopReason reads the child session log: history conclusion and paren
 test('truncation config applies to orchestration_status; failed conclusions are never truncated', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   let spawnCalls = 0
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
   })
@@ -473,7 +473,7 @@ test('orchestration ledger persists history to disk and reloads it on the next a
 })
 
 test('台账文件兜底查找：内存全实例未命中时 continue 回读台账文件命中（现场-Z3）', async () => {
-  // 真机事故面复现：记录在台账文件里（另一半/上一代际落盘），本半内存无此桶，
+  // 事故面复现：记录在台账文件里（另一半/上一代际落盘），本半内存无此桶，
   // continue 曾报 unknown-id 而文件与面板均有该记录。修复后内存未命中 → 回读
   // 文件 → 按 loadLedger 同款规则并入内存 → 走常规 revive。
   const dir = await mkdtemp(join(tmpdir(), 'dsh-my-go-z3-'))
@@ -502,7 +502,7 @@ test('台账文件兜底查找：内存全实例未命中时 continue 回读台�
     const res = await cont.execute({ id: 'sess-z3', prompt: '驳回重做' }, execOf(parent))
     assert.equal(res.accepted, true, '文件兜底命中：不再报 unknown-id')
     assert.deepEqual(followups, [{ parentId: 'parent-live', childId: 'sess-z3' }])
-    // 记录并入内存：dead 桶实例 revive 占槽（属主会话不在注册表 → 收养合法，棒2-L2 不拦）
+    // 记录并入内存：dead 桶实例 revive 占槽（属主会话不在注册表 → 收养合法， 不拦）
     const snap = snapshotNow()?.parents?.['session-dead']
     assert.equal(snap.currentRecords?.[0]?.childId, 'sess-z3')
     assert.equal(snap.currentRecords?.[0]?.status, 'running')
@@ -517,9 +517,9 @@ test('台账文件兜底查找：内存全实例未命中时 continue 回读台�
   }
 })
 
-// ── 0.2.3-tisitan.9 回归批：失败附因改读持久化档案 ─────────────────────────────
-// 根因：continuable 销毁顺序使 subagent/end 发射晚于 live store 摘除
-// （dsh-subagent/lib/types/continuation.js ~L1016-1050），0.2.3-tisitan.8 的 live
+// ── 失败附因读持久化档案 ─────────────────────────────
+// 成因：continuable 销毁顺序使 subagent/end 发射晚于 live store 摘除
+// （dsh-subagent/lib/types/continuation.js ~L1016-1050） 的 live
 // 读法必然落空。修复后主路径读 <DSH_HOME>/sessions/<projectKey(cwd)>/
 // <childId>/session.jsonl.zstd（多帧 zstd 追加容器，逐帧解压倒序找
 // turn/end 且 reason.kind==='error' 的 reason.error）。
@@ -557,7 +557,7 @@ test('live store 摘除后从持久化档案提取失败附因（多帧 zstd，e
     const childId = 'sess-archived'
     writeArchiveFixture(home, childId, { errorMessage: 'provider 429: rate limited', errorCode: 'PROVIDER_429', errorStatus: 429 })
     const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       keepHome: true,
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       // 复刻销毁顺序：end 到达时子会话已从 live store 摘除
@@ -572,7 +572,7 @@ test('live store 摘除后从持久化档案提取失败附因（多帧 zstd，e
     assert.equal(snap.history[0].status, 'failed')
     assert.ok(snap.history[0].conclusion.includes('provider 429: rate limited'), 'archive-sourced message lands in conclusion')
     assert.ok(snap.history[0].conclusion.includes('[PROVIDER_429]'), 'archive-sourced code lands in conclusion')
-    // step-2 结构化扩展：档案 error 携带 status 时，0.2.3-tisitan.8 消费点
+    // step-2 结构化扩展：档案 error 携带 status 时 消费点
     // （message + code ?? 'UNKNOWN'）格式不受影响，无 'undefined' 字样泄漏
     assert.ok(!snap.history[0].conclusion.includes('undefined'), 'status passthrough must not leak into conclusion')
     const notice = injected.find((m) => m.content?.[0]?.text?.includes('子代理失败'))
@@ -598,7 +598,7 @@ test('无持久化档案时静默退回无附因（console.warn 留痕，不抛�
   console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
   try {
     const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       keepHome: true,
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       sessions: { get: () => undefined },
@@ -614,7 +614,7 @@ test('无持久化档案时静默退回无附因（console.warn 留痕，不抛�
     assert.equal(snap.history[0].conclusion, '(error)', 'no附因时结论退回 stopReason 占位')
     assert.ok(warnings.some((line) => line.includes('readTurnFailure') && line.includes('持久化档案不可读')), 'warn 留痕，不静默吞')
     assert.ok(!injected.some((m) => m.content?.[0]?.text?.includes('子代理失败')), '无附因时不发附因通知')
-    // 棒2-L4：附因全灭（live 与档案均无失败原因）的无链路径，「取证中」之后
+    // 附因全灭（live 与档案均无失败原因）的无链路径，「取证中」之后
     // 必须补一行终局口径，协议不留真空期
     assert.ok(injected.some((m) => m.content?.[0]?.text?.includes('失败终局: sess-missing (explore) 未读到附因')), '附因全灭补「未读到附因」终局口径')
   } finally {
@@ -705,7 +705,7 @@ test('step-3 a: 链首 404 终局自动切 fallbacks[0]（生产时序 disposed�
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
   const specs = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -725,7 +725,7 @@ test('step-3 a: 链首 404 终局自动切 fallbacks[0]（生产时序 disposed�
   // 生产时序：disposed 恒先于 end（墓碑 + 宽限 timer），end 取消 timer 后决策重派
   dispatch('agent/disposed', { agent: { id: 'sess-1' } })
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
-  // 正向等待（B5 配套）：重派链是「原条目落史 → beginSpawning 占位 → spawn resolve
+  // 正向等待：重派链是「原条目落史 → beginSpawning 占位 → spawn resolve
   // 换键」三步，下面的断言同时读 history 与新 child 的正式 id，所以谓词必须等**最后
   // 一步**（占位换成真身），只等 history 会在并行压力下拿到 child-xxxx 占位 id 而假红
   await waitFor(() => currentOf('parent-1')?.childId === 'sess-2' && snapOf('parent-1')?.history?.length >= 1, { what: '链首落史且重派新 child 已换键占槽' })
@@ -770,7 +770,7 @@ test('step-3 b: 链尽（备选也失败）落失败历史，附因保留，不�
     'sess-1': { message: 'no such model: m0', code: 'HTTP_404', status: 404 },
     'sess-2': { message: 'provider 429 exhausted after retries', code: 'RATE_LIMIT', status: 429 },
   }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -806,7 +806,7 @@ test('step-3 c: abort 类终局绝不重派（stopReason=aborted 与分类器否
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
   const specs = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async () => [{ id: 'm1' }] },
     sessions: {
@@ -844,7 +844,7 @@ test('step-3 d: errorInfo 缺失 + 有链 → 保守切换，日志措辞「未�
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
   const specs = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: { get: () => undefined },
@@ -876,7 +876,7 @@ test('step-3 e: 备选条目 modelExists 不过 → warn 跳过该条，尝试�
   try {
     const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
     const specs = []
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm2' }] : []) },
       sessions: {
@@ -908,7 +908,7 @@ test('step-3 e: 备选条目 modelExists 不过 → warn 跳过该条，尝试�
   }
 })
 
-test('step-3 f: once-guard——评估窗口内双发 end 不提前落史、不弃重派（棒2-Z1）', async () => {
+test('step-3 f: once-guard——评估窗口内双发 end 不提前落史、不弃重派', async () => {
   const warnings = []
   const origWarn = console.warn
   console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
@@ -919,7 +919,7 @@ test('step-3 f: once-guard——评估窗口内双发 end 不提前落史、不�
     // p1 的 listModels 挂起不释放：把 pickFallbackEntry 钉在 await 窗口内
     //（真实环境此处是 listModels 网络往返，双发 end 正是落在这类窗口）
     let releaseModels
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       llm: {
         listModels: async (pid) => {
@@ -971,7 +971,7 @@ test('step-3 f: once-guard——评估窗口内双发 end 不提前落史、不�
 test('step-3 g: 墓碑共存——重派后旧 child 迟到的 agent/disposed 不误伤新 child 记录', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   const specs = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -1009,7 +1009,7 @@ test('step-3 h: 多会话隔离——A 会话的备选重派归属 A，B 会话�
   const specs = []
   let aSeq = 0
   let bSeq = 0
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-A' ? parentA : id === 'parent-B' ? parentB : undefined) },
     llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -1044,7 +1044,7 @@ test('step-3 h: 多会话隔离——A 会话的备选重派归属 A，B 会话�
   assert.ok(notice, '重派通知发给 A 的父会话')
 })
 
-// ── 0.2.3-tisitan.11 回归批：need_help 上报失败可观测性 / forward 信封化 / XML 转义 ──
+// ── need_help 上报失败可观测性 / forward 信封化 / XML 转义 ──
 
 test('reportFrom 失败不静默：warn 留痕 + 尽力通知父会话，求助单保留待处理', async () => {
   const injected = []
@@ -1144,9 +1144,9 @@ test('need_help consult：枚举追加 + 语义描述在册 + 通用挂起上报
   assert.equal(snapOf('parent-1').history.length, 0, '零落史——不计失败的台账面证据')
 })
 
-// ── 0.2.3-tisitan.17：fallbackEntry 随编排记录持久化（复活/重启重建的落盘锚点）──
+// ── ：fallbackEntry 随编排记录持久化（复活/重启重建的落盘锚点）──
 
-test('0.2.3-tisitan.17 a: 重派记录携带 fallbackEntry，台账 v2 round-trip 后仍在', async () => {
+test(' a: 重派记录携带 fallbackEntry，台账 v2 round-trip 后仍在', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-my-go-fbentry-'))
   const prevHome = process.env.DSH_HOME
   process.env.DSH_HOME = dir
@@ -1200,8 +1200,8 @@ test('0.2.3-tisitan.17 a: 重派记录携带 fallbackEntry，台账 v2 round-tri
   }
 })
 
-// ── 0.3.0-tisitan.2：continue 三档 urgency（queued / steer / abort）──────────────
-// mock 契约说明（0.2.3-tisitan.6 教训，mock 必须忠实真实契约）：
+// ── ：continue 三档 urgency（queued / steer / abort）──────────────
+// mock 契约说明（mock 必须忠实真实契约）：
 // - ctx.subagents.interrupt(target, authority) 为同步受理：authority.kind===
 //   'ancestor' 时若 ctx.agents.get(caller.id) !== caller 抛 UNAUTHORIZED；
 //   目标缺席是 accepted no-op（此处复刻注册表校验这一唯一与 broker 相关的抛错面）。
@@ -1272,7 +1272,7 @@ test('urgency=abort：interrupt 先于 followup，authority 为 ancestor，预�
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => { injected.push(msg) } }
   const calls = []
   // sess-1 必须在活注册表里：running 的儿童的轮次由驻留 agent 驱动，abort 支的
-  // 活体门槛（0.3.0-tisitan.7 N6）与 interrupt 的 authority 校验都读这张表
+  // 活体门槛与 interrupt 的 authority 校验都读这张表
   const agentsReg = new Map([['parent-1', parent], ['sess-1', { id: 'sess-1', session: { header: { parentSession: 'parent-1' } } }]])
   const { ctx, tools } = mockCtxFull({
     agents: { get: (id) => agentsReg.get(id) },
@@ -1302,8 +1302,8 @@ test('urgency=abort：interrupt 先于 followup，authority 为 ancestor，预�
 test('urgency=abort 护航：被掐轮的 aborted end 不落史不推进队列，续轮 end 正常收尾', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   let spawnCalls = 0
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
-    // sess-1 驻留在活注册表（abort 支的活体门槛，0.3.0-tisitan.7 N6）
+  const { ctx, dispatch, tools } = mockCtxFull({
+    // sess-1 驻留在活注册表（abort 支的活体门槛）
     agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
     subagentsExtra: {
@@ -1335,8 +1335,8 @@ test('urgency=abort 护航：被掐轮的 aborted end 不落史不推进队列�
 
 test('urgency=abort 投递失败补偿：followup 抛错撤销护航，aborted end 正常落史释放槽位', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
-    // sess-1 驻留在活注册表（abort 支的活体门槛，0.3.0-tisitan.7 N6）
+  const { ctx, dispatch, tools } = mockCtxFull({
+    // sess-1 驻留在活注册表（abort 支的活体门槛）
     agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
     subagentsExtra: {
@@ -1422,7 +1422,7 @@ test('非 running 给 abort：finished 子代理跳过 interrupt 直接 followup
   const parent = { id: 'parent-1', session: { header: {} } }
   const interrupts = []
   const followups = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
     subagentsExtra: {
@@ -1443,15 +1443,15 @@ test('非 running 给 abort：finished 子代理跳过 interrupt 直接 followup
   assert.equal(cur?.status, 'running')
 })
 
-// ── 0.3.0-tisitan.3 回归批：台账原子写 / disposed 兜底落史 / 连带清理补通知 ─────
+// ── 台账原子写 / disposed 兜底落史 / 连带清理补通知 ─────
 
-test('0.3.0-tisitan.3: 台账原子写——落盘后可读且同目录无 .tmp 残留', async () => {
+test(': 台账原子写——落盘后可读且同目录无 .tmp 残留', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-my-go-ledger-atomic-'))
   const prevHome = process.env.DSH_HOME
   process.env.DSH_HOME = dir
   try {
     const parent = { id: 'parent-1', session: { header: {} } }
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       keepHome: true,
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       startContinuable: withRealSignalContract(async () => ({ childId: 'sess-a1' })),
@@ -1472,10 +1472,10 @@ test('0.3.0-tisitan.3: 台账原子写——落盘后可读且同目录无 .tmp 
   }
 })
 
-test('0.3.0-tisitan.3: disposed 宽限期兜底掐断落 failed 历史；正常完工路径不重复落史', async () => {
+test(': disposed 宽限期兜底掐断落 failed 历史；正常完工路径不重复落史', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   let spawnCalls = 0
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
   })
@@ -1502,7 +1502,7 @@ test('0.3.0-tisitan.3: disposed 宽限期兜底掐断落 failed 历史；正常�
   assert.equal(after.history[1].conclusion, 'build done')
 })
 
-test('0.3.0-tisitan.3: 完工连带清理求助单发可见通知；无求助单时不通知', async () => {
+test(': 完工连带清理求助单发可见通知；无求助单时不通知', async () => {
   const injected = []
   const warnings = []
   const origWarn = console.warn
@@ -1510,7 +1510,7 @@ test('0.3.0-tisitan.3: 完工连带清理求助单发可见通知；无求助单
   try {
     const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
     let spawnCalls = 0
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
       subagentsExtra: { reportFrom: async () => 'delivered', followup: async () => 'msg-cleanup' },
@@ -1524,7 +1524,7 @@ test('0.3.0-tisitan.3: 完工连带清理求助单发可见通知；无求助单
     const h1 = await tools.get('need_help').execute({ intent: 'explore', content: '帮我读个文件' }, childExec)
     await tools.get('need_help').execute({ intent: 'read_doc', content: '再借个文档' }, childExec)
     assert.equal(snapOf('parent-1').helpRequests.length, 2)
-    // ── 口径变更（裁定 2026-09-09；触发事项：主人报修事项3「挂起回合被当成完工」）──
+    // ── 口径：挂起回合不得当成完工─────────────────────
     // 旧口径：need_help 挂起后那一轮的 completed end 就是完工 → finish 连带清理求助
     // 单 + 通知。新口径：那条 end 是一次求助的中场哨，走 E8（suspended-help-hold）
     // 静默出口——不落史、不清求助单、不过报告闸门、不腾槽（挂起子代续占单线槽位，
@@ -1555,21 +1555,21 @@ test('0.3.0-tisitan.3: 完工连带清理求助单发可见通知；无求助单
   }
 })
 
-// ── 0.3.0-tisitan.7 运行时语义修复批 ─────────────────────────────────────────────
+// ── 运行时语义 ─────────────────────────────────────────────
 
-// N6：alpha.4 的 interrupt 对**缺席目标**是 accepted no-op
+// alpha.4 的 interrupt 对**缺席目标**是 accepted no-op
 // （dsh-subagent/lib/types/continuation.js:273-298：activations 里没有就直接
 // return，UNAUTHORIZED 只由 authority 校验抛出）。旧 abort 支把「没抛错」当成
 // 「掐断了」，abortExpected 登记在一次什么都没掐断的回合上，随后 E5 会把该儿童
 // 真那一轮的 end（任何终局）整个吞掉。修法：掐断前加活 agent 门槛。
-test('urgency=abort 活体门槛：儿童不在活注册表 → 不掐断也不登记护航，降级 queued 文案（N6）', async () => {
+test('urgency=abort 活体门槛：儿童不在活注册表 → 不掐断也不登记护航，降级 queued 文案', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   const interrupts = []
   const warnings = []
   const origWarn = console.warn
   console.warn = (...a) => { warnings.push(a.map(String).join(' ')) }
   try {
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       // 只喂父会话：儿童非驻留/冷态（interrupt 在此形态下是 no-op）
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
@@ -1598,13 +1598,13 @@ test('urgency=abort 活体门槛：儿童不在活注册表 → 不掐断也不�
   }
 })
 
-test('abort 护航只吞非 completed 终局：掐断与完工赛跑时 completed end 照常落账、护航不留残（N6）', async () => {
+test('abort 护航只吞非 completed 终局：掐断与完工赛跑时 completed end 照常落账、护航不留残', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   const warnings = []
   const origWarn = console.warn
   console.warn = (...a) => { warnings.push(a.map(String).join(' ')) }
   try {
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       // 儿童驻留在册：门槛放行，interrupt 正常受理
       agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
       startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
@@ -1629,15 +1629,15 @@ test('abort 护航只吞非 completed 终局：掐断与完工赛跑时 complete
   }
 })
 
-// N8：台账落盘是 250ms 防抖的，卸载清理此前只 clearTimeout——防抖窗内的变更
+// 台账落盘是 250ms 防抖的，卸载清理若只 clearTimeout——防抖窗内的变更
 // （最后一次完工 / 复活）整段蒸发，重启后 continue 报 unknown-id。
-test('插件卸载 flush 台账防抖窗：清理函数点火即同步落最新 payload（N8）', async () => {
+test('插件卸载 flush 台账防抖窗：清理函数点火即同步落最新 payload', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-my-go-ledger-flush-'))
   const prevHome = process.env.DSH_HOME
   process.env.DSH_HOME = dir
   try {
     const parent = { id: 'parent-1', session: { header: {} } }
-    const { ctx, listeners, dispatch, tools, effects } = mockCtxFull({
+    const { ctx, dispatch, tools, effects } = mockCtxFull({
       keepHome: true,
       captureEffects: true,
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
@@ -1664,16 +1664,16 @@ test('插件卸载 flush 台账防抖窗：清理函数点火即同步落最新 
   }
 })
 
-// N14：disposed 宽限期兜底此前手删 childOwner 而不走 retireChild，墓碑条目滞留；
+// disposed 宽限期兜底若手删 childOwner 而不走 retireChild，墓碑条目滞留；
 // 真迟到的那条 end 仍能经墓碑认回工种、落到已无活记录的实例上，报出一句
 // 「has no live record; conclusion dropped」——结论其实早已按兜底口径落账。
-test('disposed 宽限期兜底走 retireChild：类型表全清，迟到 end 走如实留痕（N14）', async () => {
+test('disposed 宽限期兜底走 retireChild：类型表全清，迟到 end 走如实留痕', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   const warnings = []
   const origWarn = console.warn
   console.warn = (...a) => { warnings.push(a.map(String).join(' ')) }
   try {
-    const { ctx, listeners, dispatch, tools } = mockCtxFull({
+    const { ctx, dispatch, tools } = mockCtxFull({
       agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
       startContinuable: withRealSignalContract(async () => ({ childId: 'sess-g1' })),
     })
@@ -1698,8 +1698,8 @@ test('disposed 宽限期兜底走 retireChild：类型表全清，迟到 end 走
   }
 })
 
-// N18：spawning 占位记录（真身未 resolve）此前一路走完并假 accepted。
-test('continue 打 spawning 占位记录：结构化拒绝，不掐断不投递也不假 accepted（N18）', async () => {
+// spawning 占位记录（真身未 resolve）若一路走完会假 accepted。
+test('continue 打 spawning 占位记录：结构化拒绝，不掐断不投递也不假 accepted', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   const interrupts = []
   let release
@@ -1732,11 +1732,11 @@ test('continue 打 spawning 占位记录：结构化拒绝，不掐断不投递�
   assert.equal(r.status, 'running', '拒绝不影响本次派发本身')
 })
 
-// N13：need_help 的工种此前裸查 sessionTypes，竞态归随 / 墓碑期 / 冷恢复儿童
+// need_help 的工种若裸查 sessionTypes，竞态归随 / 墓碑期 / 冷恢复儿童
 // （活登记已无、label 在案）落进求助单的就是 undefined → 面板色板落空。
-test('need_help 工种识别走 typeOfAgent：活登记缺席时 label 兜底，agentType 不落空（N13）', async () => {
+test('need_help 工种识别走 typeOfAgent：活登记缺席时 label 兜底，agentType 不落空', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
     subagentsExtra: { reportFrom: async () => 'delivered' },

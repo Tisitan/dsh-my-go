@@ -4,9 +4,9 @@
 // through the loader's require, exactly like dsh-bash-terminal's client.
 //
 // esbuild 只出内存产物（write:false，D-13.1）：中间产物 client.core.js 从不落盘，
-// dist/ 里永远只有发布要用的那一份 client.js。旧写法先写 client.core.js 再读回来
-// 包一层，于是 dist/ 里长期挂着一份没人引用的裸 bundle——它会被 npm pack 收进
-// 发布物（files 白名单是整目录 dist），而任何加载它的路径都不存在。
+// dist/ 里永远只有发布要用的那一份 client.js。若改成先写 client.core.js 再读回来
+// 包一层，dist/ 里就会挂着一份没人引用的裸 bundle——它会被 npm pack 收进发布物
+// （files 白名单是整目录 dist），而任何加载它的路径都不存在。
 
 import { build } from "esbuild";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -26,7 +26,7 @@ const result = await build({
   write: false,
   external: ["react", "react/jsx-runtime", "react-dom", "@deepseek-ai/*"],
   logLevel: "warning",
-  // metafile（0.2.3-tisitan.20）：断言 bundle 的 inputs 覆盖全部 src 模块——
+  // metafile：断言 bundle 的 inputs 覆盖全部 src 模块——
   // 结构性堵「部分模块静默 tree-shake / 漏打包」空窗，断言失败非零退出
   metafile: true,
 });

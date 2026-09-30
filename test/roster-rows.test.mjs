@@ -1,7 +1,7 @@
 // roster-rows 纯函数（设置页角色的存储投影层）用例。
 // 模块零依赖，node --test 直接 import——与 client bundle 内联同源。
-// 0.5.0-tisitan.3 批次 3：行级编辑迁移（增删改行 / tool 条目 / 卡摘要 / 卡
-// JSON 导入导出）已随 0.5.0 设置页重写成为孤儿导出并删除；批次 4+6：
+//  行级编辑迁移（增删改行 / tool 条目 / 卡摘要 / 卡
+// JSON 导入导出）已随 0.5.0 设置页重写成为孤儿导出并删除；
 // normalizeRoleToolNames 同判孤儿（零生产引用）随之清理——本文件只守
 // 存储投影活面（normalize / persona 覆盖 / RPC 结果归一），行编辑行为由
 // test/settings-core-projections.test.mjs 与 client-card 行为档持有。
@@ -20,7 +20,7 @@ import { ROLE_KEY_PATTERN as SHARED_PATTERN } from '../preset/shared/constants.m
 const BUILTIN = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
 
 test('ROLE_KEY_PATTERN 与 preset/shared 单源一致（re-export 同一对象）', () => {
-  assert.equal(ROLE_KEY_PATTERN, SHARED_PATTERN, '客户端不再抄第二份 pattern（双处定义是历史教训）')
+  assert.equal(ROLE_KEY_PATTERN, SHARED_PATTERN, '客户端不再抄第二份 pattern（双处定义会产生第二源）')
 })
 
 test('isValidRoleKey：^[a-z][a-z-]*$ 客户端即时校验，与服务端 schema 同则', () => {
@@ -43,7 +43,7 @@ test('normalizeRoleRows：脏数据归一 + 内置键剔除 + toolFilter 摊平'
   const rows = normalizeRoleRows({
     hermes: { provider: 'keep-out' },
     'custom-x': {
-      provider: 'p9', model: 'm9', reasoningEffort: 'high', dsv4p0813: true,
+      provider: 'p9', model: 'm9', reasoningEffort: 'high', 
       fallbacks: [{ provider: 'p8', model: 'm8' }],
       persona: 'X 的人设',
       toolFilter: { allow: ['read', 'read', '', 42], deny: ['write'] },
@@ -53,7 +53,7 @@ test('normalizeRoleRows：脏数据归一 + 内置键剔除 + toolFilter 摊平'
   }, BUILTIN)
   assert.deepEqual(rows, [{
     key: 'custom-x',
-    provider: 'p9', model: 'm9', reasoningEffort: 'high', dsv4p0813: true,
+    provider: 'p9', model: 'm9', reasoningEffort: 'high', 
     fallbacks: [{ provider: 'p8', model: 'm8' }],
     persona: 'X 的人设',
     allow: ['read'], deny: ['write'],
@@ -74,7 +74,7 @@ test('纯函数纪律：投影与覆盖不变异输入', () => {
   assert.equal(JSON.stringify({ dict, stored }), snapshot, '输入深度未被触碰')
 })
 
-// ── 人设覆盖 + getBuiltinPersona 归一（0.2.3-tisitan.15/16b 起的活面） ────────
+// ── 人设覆盖 + getBuiltinPersona 归一（/16b 起的活面） ────────
 
 test('withPersonaOverride：部分行只带 persona 字段并透传既有字段；空文本 = 清除覆盖', () => {
   const stored = { provider: 'p9', model: 'm9', fallbacks: [{ provider: 'p8', model: 'm8' }] }
@@ -94,7 +94,7 @@ test('personaOverrideSource：状态行文案两态', () => {
   assert.equal(personaOverrideSource({ persona: 42 }), '文件默认', '非字符串视为未覆盖')
 })
 
-test('resolveBuiltinPersonaResult：getBuiltinPersona RPC 结果归一（0.2.3-tisitan.16b）', () => {
+test('resolveBuiltinPersonaResult：getBuiltinPersona RPC 结果归一', () => {
   assert.deepEqual(
     resolveBuiltinPersonaResult({ ok: true, value: { type: 'hermes', persona: '原文' } }),
     { ok: true, persona: '原文' },

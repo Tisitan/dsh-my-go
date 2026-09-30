@@ -4,6 +4,7 @@
 // 同源，无 DOM、无 React）；组件层 DOM 交互不上测试（client-smoke 先例）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   USAGE_TABS,
   BUCKET_COLUMNS,
@@ -14,6 +15,7 @@ import {
   computeTotalCost,
   hasAnyPrice,
   modelDisplayKey,
+  childRowTitle,
   formatCompactTokens,
   formatFullTokens,
   formatBucketCell,
@@ -34,7 +36,7 @@ const FULL_BUCKETS = { inputTokens: 1_000_000, outputTokens: 2_000_000, cacheRea
 
 test('priceIndexFrom：byModel 建 "{p}/{m}"→price 索引，null 侧/null 价/坏行跳过', () => {
   const byModel = [
-    { provider: 'newapi', model: 'k3-256k', price: FULL_PRICE },
+    { provider: 'my-provider', model: 'model-a', price: FULL_PRICE },
     { provider: 'openrouter', model: 'deepseek/deepseek-chat', price: { input: 1, output: 2 } },
     { provider: null, model: null, price: FULL_PRICE, messageCount: 1 },
     { provider: 'acme', model: 'free', price: null },
@@ -43,7 +45,7 @@ test('priceIndexFrom：byModel 建 "{p}/{m}"→price 索引，null 侧/null 价/
     'garbage',
   ]
   assert.deepEqual(priceIndexFrom(byModel), {
-    'newapi/k3-256k': FULL_PRICE,
+    'my-provider/model-a': FULL_PRICE,
     'openrouter/deepseek/deepseek-chat': { input: 1, output: 2 },
   })
   assert.deepEqual(priceIndexFrom(undefined), {})
@@ -82,10 +84,10 @@ test('combineCosts：空/全 null → null；求和且 partial OR', () => {
 })
 
 test('computeChildCost：segments 跨模型逐段乘价求和，unmatched 段跳过；无 segments → null', () => {
-  const priceIndex = { 'newapi/k3-256k': FULL_PRICE }
+  const priceIndex = { 'my-provider/model-a': FULL_PRICE }
   const child = {
     segments: [
-      { provider: 'newapi', model: 'k3-256k', buckets: { inputTokens: 1_000_000, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null } },
+      { provider: 'my-provider', model: 'model-a', buckets: { inputTokens: 1_000_000, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null } },
       { provider: 'acme', model: 'unmatched', buckets: { inputTokens: 999, outputTokens: 999, cacheReadTokens: null, cacheWriteTokens: null } },
     ],
   }
@@ -240,4 +242,22 @@ test('childRowCount / self 行透传（D6）：子代计数排除 isSelf；parti
 test('USAGE_TABS / BUCKET_COLUMNS：三视图与四桶列序固定（D1/D4）', () => {
   assert.deepEqual(USAGE_TABS.map((t) => t.key), ['models', 'children', 'totals'])
   assert.deepEqual(BUCKET_COLUMNS.map((c) => c.bucket), ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'])
+})
+
+test('childRowTitle：只含行内无归宿的三条提示，\n 拼接、消息数恒在、其余按布尔取舍', () => {
+  assert.equal(childRowTitle({ messageCount: 7 }, false, false), '7 条消息', '恒有消息数')
+  assert.equal(
+    childRowTitle({ messageCount: 0 }, true, true),
+    '运行中（数字随轮询实时增长）\n含未上报分桶，数字为下界\n0 条消息',
+    '三条件齐备按序 \n 拼接',
+  )
+  assert.equal(childRowTitle({}, false, true), '含未上报分桶，数字为下界\n0 条消息', '缺失计数按 0 计')
+  const carried = childRowTitle({ messageCount: 3, isSelf: true, frozen: true }, false, false)
+  assert.ok(!carried.includes('主编排') && !carried.includes('终态已冻结'), '身份/冻结两条另有归宿，不重复搬运')
+})
+
+test('usage 面板接线在册（源码 pin）：行容器透传 opts.title + child 行传入 childRowTitle', () => {
+  const src = readFileSync(new URL('../src/usage-panel.js', import.meta.url), 'utf-8')
+  assert.match(src, /title: opts\.title/, 'gridRow 把 opts.title 透传到行容器')
+  assert.match(src, /title: childRowTitle\(child, running, rowPartial\)/, 'child 行容器 title 传入三条提示')
 })

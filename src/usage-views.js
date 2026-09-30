@@ -249,3 +249,13 @@ export function childRowCount(report) {
   const children = Array.isArray(report?.children) ? report.children : []
   return children.filter((c) => c && c.isSelf !== true).length
 }
+
+/** Child row hover title: 只承载行内无归宿的三条提示（运行中 / 分桶下界 / 消息数）。
+ *  身份（chip）与终态冻结（span title）在行内各自承载，不在此重复搬运。 */
+export function childRowTitle(child, running, rowPartial) {
+  return [
+    running ? '运行中（数字随轮询实时增长）' : null,
+    rowPartial ? '含未上报分桶，数字为下界' : null,
+    `${child?.messageCount ?? 0} 条消息`,
+  ].filter(Boolean).join('\n')
+}

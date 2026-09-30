@@ -1,8 +1,8 @@
 # dsh-my-go 下一代架构改造实施规划（0.4.0-tisitan.* 线）
 
 > 产出：Prometheus 规划批。依据「已定稿设计」三期方案 + 五条硬性工程约束。
-> 号段核对结论：tisitan.13~20 全部是 0.2.3 旧线已发布批（底座化=0.2.3-tisitan.14、
-> 可视化=0.2.3-tisitan.13/15），0.3.0 线止于 .12，**0.4.0-tisitan.0 起号段空闲，无撞号**。
+> 号段核对结论：全部是 0.2.3 旧线已发布批（底座化、
+> 可视化），0.3.0 线止于 .12，**号段空闲，无撞号**。
 > 版本分配建议：第 0 期=.0，第一期=.1~.3，第二期=.4~.6，第三期=.7~.9（每期一发，批次内自增）。
 >
 > 全局不变量（每期每步都适用）：
@@ -17,7 +17,7 @@
 
 ---
 
-## 第 0 期：观测埋点（0.4.0-tisitan.0）—— 不改行为，先拿基线
+## 第 0 期：观测埋点—— 不改行为，先拿基线
 
 ### 步骤 0.1 指标事件日志模块
 - **工种**：hephaestus（新模块设计）｜**副作用**：写
@@ -51,17 +51,17 @@
 
 ### 步骤 0.2 基线采集与复盘（运营步，非派工）
 - **工种**：维护者日常使用 + Sisyphus 复盘｜**副作用**：读
-- **目标**：0.4.0-tisitan.0 装上后正常跑 3~5 天真实编排，产出基线简报：
+- **目标**：装上后正常跑 3~5 天真实编排，产出基线简报：
   结论字节分布 P50/P90/max、队列等待分布、主编注入字节/会话。
 - **验收**：简报落到本文件附录或日记；第一期的 schema 阈值（D2）用 P90 数据定，不拍脑袋。
 - **依赖**：0.1 发版。
 
 ---
 
-## 第一期：报告外部化（0.4.0-tisitan.1~.3）
+## 第一期：报告外部化
 
 > 核心机制一句话：内核 notifySettlement 全文注入不可抑制（事实 A，
-> dsh-subagent/lib/index.js:1771-1777），所以「主编上下文税封顶」靠的是
+> 上游包内 dsh-subagent/lib/index.js:1771-1777），所以「主编上下文税封顶」靠的是
 > **让子代最后一条消息本身短**（三段式 mygo_report 摘要块），全文经 report_submit
 > 与收尾自动落板双通道进 board/，主编按需 report_fetch 切片取回。
 
@@ -128,7 +128,6 @@
     （事实 C），一处改动两路同覆盖。
   - **continue 路径不动**：continue 保留子代上下文，首派注入的条款自然存续（事实 C：
     continue 走 shared/adjacent.mjs 不经 spawnChild）；「首派即覆盖」记为决策空白 D3
-    待维护者确认接受。
 - **验收**：spawn 替身断言 prompt 尾块含条款；开关关 → 无尾块；备选重派路径
   （attemptFallbackRedeploy → spawnChild，broker.mjs:1702-1710）同样含条款。
 - **依赖**：1.2（SUMMARY_CLAUSE）。
@@ -145,7 +144,7 @@
     2. `parseSummaryBlock` 合格 → 台账 conclusion 存**摘要块文本**（history 与
        orchestration_status 展示即短块；:1314 STATUS_CONCLUSION_MAX 截断逻辑不动）。
     3. 不合格 → 新出口 `report-gate-repair`：同步段登记 once-guard + 同步预告
-       （仿 E6 的 0.3.0-tisitan.18 纪律，end-attribution.mjs:19-22 协议第 1 条：
+       （仿 E6 的 纪律，end-attribution.mjs:19-22 协议第 1 条：
        **同步段零 await**，guard add 与预告之间不得插 await），随后 `void` 起异步
        补发链：**不 finish 不 revive**——记录留在 currentMap 实体占槽（「补发期间
        槽位仍占」的实体化），followupPrompt 台账照记补发 prompt（携带
@@ -165,7 +164,7 @@
   合格直通 / 不合格补发一次 / 补发后合格 / 补发后仍不合格转裁决 / failed 直通过
   五条路径全覆盖；**变异探针：删掉 once-guard → 双补发必须被测试咬出**；
   新出口未登记 DECISION_ADVANCE → 既有 throw（:249）自动咬人，无需另测。
-- **Sisyphus 裁决**：采纳方案甲（need_help help-mtn753lh），:149/:151 字面互斥
+- **Sisyphus 裁决**：采纳方案甲，:149/:151 字面互斥
   （once-guard 同律清理 × continue revive 字面路径 = 补发轮清 guard 后无限补发）
   以此为准；ambiguous 由闸门读 errors.includes('ambiguous') 视为不合格；双发
   残余窗口按「已知边界」处理（代码注释 + 测试注明）。
@@ -187,34 +186,34 @@
 - **工种**：hermes｜**副作用**：写
 - **改动文件**：
   - `preset/agent.cordis.yml` broker 行新增 config 块：`reportExternalization: false`
-    （方案 A，help-mtn8uwgr-ds1fes 裁决：**显式部署面关**覆盖代码默认——见下方裁决行）。
+    （方案 A 裁决：**显式部署面关**覆盖代码默认——见下方裁决行）。
   - `preset/tools/broker.mjs`（config 轨区）：`const REPORT_EXT = config.reportExternalization ?? true`
     （D5 默认开不动，显式配置优先）。
-  - README「插件 config 键」段 + CHANGELOG [0.4.0-tisitan.1] 条目（Unreleased/未发布口径）。
+  - README「插件 config 键」段 + CHANGELOG [] 条目（Unreleased/未发布口径）。
 - **验收**：config 关 → 两工具不在册 + 条款不注入 + `npm test` 全绿（退回现状的证据）。
 - **依赖**：1.3、1.4、1.5、1.6。
-- **Sisyphus 裁决**：采纳方案 A（help-mtn8uwgr-ds1fes）：装机 yml broker 行显式
+- **Sisyphus 裁决**：采纳方案 A：`preset/agent.patch.yml` 的 broker 行显式
   `reportExternalization: false`，代码默认 `?? true`（D5）一字不动，README 写明
   「显式配置优先于代码默认，基线采集期外部化保持关；基线关窗后改 true（或删除该行
   回落默认）即点亮」。依据：digest 门认「版本 + preset/prompts 内容摘要」不认版本号
-  单独——1.3~1.6 施工已在工作区 preset 树内，维护者下次重启 dsh web 即整树重拷上线，
+  单独——1.3~1.6 施工已在工作区 preset 树内，下一次宿主重启即整树生效，
   挂起 1.8 发版挡不住；yml 写规格字面 true 会使外部化与 metrics 同一次重启同时点亮，
-  「改造前」基线永久丢失。1.8 发版维持挂起（ tisitan.1 条目按 Unreleased 口径起草）。
+  「改造前」基线永久丢失。1.8 发版维持挂起（条目按 Unreleased 口径起草）。
 
-### 步骤 1.8 测试收口 + 发版 0.4.0-tisitan.1
+### 步骤 1.8 测试收口 + 发版 
 - **工种**：hermes｜**副作用**：写
 - 全部新测试入网；host-parity 对 board.mjs / report-format.mjs 的「唯一归属」标记按
   四判据入册；bump version → npm test → build-client → CHANGELOG（遵循 FORK-GUIDE
   发版六步；**不 git commit 由派工链决定，本步只备齐**）。
-- **主批裁决（help-mtn8uwgr-ds1fes）：本步 bump 与发版整体挂起**——基线采集尚未开始
-  （维护者未重启），现在发 tisitan.1 会让外部化与 metrics 同时点亮，「改造前」基线
-  永久丢失。tisitan.1 条目已在 CHANGELOG Unreleased 段按未发布口径备齐，等基线关窗
+- **主批裁决：本步 bump 与发版整体挂起**——基线采集尚未开始
+  （宿主尚未重启），现在发 会让外部化与 metrics 同时点亮，「改造前」基线
+  永久丢失。 条目已在 CHANGELOG Unreleased 段按未发布口径备齐，等基线关窗
   后再走 bump。
 - **依赖**：1.1~1.7 全绿。
 
 ---
 
-## 第二期：读平面并行池（0.4.0-tisitan.4~.6）
+## 第二期：读平面并行池
 
 > 改动面是 Orchestration 实例化模型（currentMap/isBusy），不是全局锁；
 > 与失败全家桶的集成是最难点，2.1 语义文档先行，未拍板不动码。
@@ -226,7 +225,7 @@
   - E2 归因加固方案（并行 spawn 下 spawningCandidates 多条是常态而非异常）
   - E6/E7 的 per-lane 槽位与推进口径
   - 队列调度策略（决策空白 D9）
-- **验收**：文档经维护者评审拍板（含 D7~D10 四枚决策空白）。
+- **验收**：口径经评审拍板（D7~D10 均已定值）。
 - **依赖**：第一期发版（独立机制，不依赖其代码，依赖的是「测试全绿的新基线」）。
 
 ### 步骤 2.2 Orchestration 泳道化
@@ -274,7 +273,7 @@
 - **验收**：panel-format.test.mjs / client-smoke.test.mjs 扩展并全绿。
 - **依赖**：2.2（snapshot 形状）。
 
-### 步骤 2.6 开关 + 收口 + 发版 0.4.0-tisitan.4
+### 步骤 2.6 开关 + 收口 + 发版 
 - **工种**：hermes｜**副作用**：写
 - config 键 `readPoolSize ?? 1`（1=现状=关闭，2~3 启用；>3 钳制 3）；文档 + CHANGELOG +
   发版六步。
@@ -282,16 +281,16 @@
 
 ---
 
-## 第三期：声明式接力链（0.4.0-tisitan.7~.9）
+## 第三期：声明式接力链
 
 > 状态机最难、防线最严。语义未拍板（3.1）绝不动码。
 
 ### 步骤 3.1 链状态机语义设计（设计交付）
 - **工种**：hephaestus｜**副作用**：读
 - **交付**：`docs/plans/relay-chain-semantics.md`：链声明 schema / 跳类型与闸门配置 /
-  **棒亡备选重派后的链续接语义（D10，先设计清再写码）** / 链 × 八出口终局归属矩阵
+  **子代失败后备选重派后的链续接语义（D10，先设计清再写码）** / 链 × 八出口终局归属矩阵
   （填 §四清单全部「三期」格子）。
-- **验收**：维护者评审拍板（D10~D14）。
+- **验收**：口径经评审拍板（D10~D14 均已定值）。
 - **依赖**：第二期发版。
 
 ### 步骤 3.2 链状态机纯模块
@@ -326,7 +325,7 @@
   链状态 suspended；主编裁决后放行/驳回（裁决通道形态与 D11 联动）。
 - gate=sync（不可逆跳）：恒挂起等主编，无 auto 档。
 - **验收**：三档路径行为测试；**终局真空探针**：挂起后主编会话销毁 → 链必须随
-  orchestration 销毁清理并留痕，不得无声悬挂（仿 0.2.3-tisitan.18「预告之后必有终局
+  orchestration 销毁清理并留痕，不得无声悬挂（仿 「预告之后必有终局
   口径」纪律）。
 - **依赖**：3.3；1.6（report_fetch 切片档）。
 
@@ -336,7 +335,7 @@
 - **验收**：链 prompt 断言含条款。
 - **依赖**：3.3。
 
-### 步骤 3.7 开关 + 收口 + 发版 0.4.0-tisitan.7
+### 步骤 3.7 开关 + 收口 + 发版 
 - **工种**：hermes｜**副作用**：写
 - config 键 `relayChains ?? false`（第三期建议默认关，D5 联动）；文档 + CHANGELOG + 发版。
 - **依赖**：3.1~3.6 全绿。
@@ -376,7 +375,7 @@
 | --- | --- | --- |
 | R3.1 注入放大（M2 复发） | 子代产出被当指令执行 | 不可信数据块包裹 + 注入探针（伪造指令必须被包裹） |
 | R3.2 链悬挂（gate 无人裁决/主编销毁） | **终局真空** | 挂起必有通知、销毁必清理留痕；真空探针测试 |
-| R3.3 棒亡重派后续接语义错误 | 跳双执行（**双份**）或断链 | D10 先拍板；双执行探针：dead-baton 迟到 end + 新世代 end 各来一发，链只推进一次 |
+| R3.3 子代失败重派后续接语义错误 | 跳双执行（**双份**）或断链 | D10 先拍板；双执行探针：dead-baton 迟到 end + 新世代 end 各来一发，链只推进一次 |
 | R3.4 自动接力绕过泳道锁 | 写平面单线地基被架空 | 一切 hop 派发走 dispatchWork/advanceQueue 同一入口 + 锁绕行探针 |
 | R3.5 台账 v2→v3 迁移 | 重启后链状态丢失/坏档炸加载 | 迁移测试 + 坏档回退测试（loadLedger :306-324 模式） |
 
@@ -394,20 +393,20 @@
 | E2 unattributable（在册无记录、spawning 占位不唯一） | 留痕 + if-owned 推进；占位「恰有一条才归因」 | **最大破坏点**：并行 spawn 下多条 spawning 占位是常态，「恰有一条」恒假 → 归因全掉 E2。必须改：优先 childOwner 直达路由（end 晚于 resolve 的正常路径不受影响），占位归因仅作兜底并需强化判别键（占位与 spawn 请求一一绑定的 nonce/label 序对）——二期 2.1 必须给方案 | 链中一棒的 end 掉 E2 = 链 stall。需链级兜底：链状态机对「应到未到的 hop 终局」有显式口径（挂起通知主编），不得无声悬 |
 | E3 no-owning-orchestration（属主实例已销毁） | 清类型侧三表、留痕、不推进 | 不变（per 实例语义） | 属主销毁时**链状态必须随 orchestration 一并清理**（台账/内存双侧面），防链真空残留 |
 | E4 expected-abort（urgency=abort 预期掐断） | 吞掉、槽位仍占、guard 无条件消费 | 不变（guard 按 childId 键，天然 per 棒）；并行下甲 lane 的 abort 与乙 lane 的正常 end 互不干扰——guard 键隔离已是现事实 | 棒被 abort：链进 suspended，**不得**把被掐轮的 end 当 hop 终局推进；续轮自己的 end 到达才恢复 hop 判定（续轮仍占槽语义与现状一致） |
-| E5 fallback-in-flight（备选评估窗口内双发第二发） | 不矛盾口径、不推进 | once-guard per childId 不变；两个 lane 各自在飞评估互不影响。「槽位仍被评估占用」要明确为**该 lane 槽**——另一 lane 的推进决策不得被它冻住 | 棒亡进备选评估：链状态 = pending-fallback（D10 决议挂起点）；评估期间链不推进、不发矛盾口径 |
-| E6 fallback-evaluation（error + 有链 + 本代际未决策） | guard add + 同步预告 + 异步重派；advance='no' | 协议第 1 条（同步段零 await）逐字保留；advance='no' 细化=「本 lane 不推进」；两 lane 并发评估时 pickFallbackEntry 的模型 I/O 并发安全（无共享可变状态，现实现已满足） | **D10 核心**：重派成功后链是否续接新世代。选项 A 自动续接（链绑「槽位/角色」而非 childId）vs 选项 B 挂起等主编裁决。规划建议 B（更安全，与不可逆跳同纪律），须维护者拍板 |
+| E5 fallback-in-flight（备选评估窗口内双发第二发） | 不矛盾口径、不推进 | once-guard per childId 不变；两个 lane 各自在飞评估互不影响。「槽位仍被评估占用」要明确为**该 lane 槽**——另一 lane 的推进决策不得被它冻住 | 子代失败进备选评估：链状态 = pending-fallback（D10 决议挂起点）；评估期间链不推进、不发矛盾口径 |
+| E6 fallback-evaluation（error + 有链 + 本代际未决策） | guard add + 同步预告 + 异步重派；advance='no' | 协议第 1 条（同步段零 await）逐字保留；advance='no' 细化=「本 lane 不推进」；两 lane 并发评估时 pickFallbackEntry 的模型 I/O 并发安全（无共享可变状态，现实现已满足） | **D10 核心**：重派成功后链是否续接新世代。选项 A 自动续接（链绑「槽位/角色」而非 childId）vs 选项 B 挂起等主编裁决。规划建议 B（更安全，与不可逆跳同纪律）；已按 B 落地（见 D10） |
 | E7 finalize（正常收尾落账） | 落账 + advance='now' | advance='now' 细化=「推进被释放的那个 lane」；shouldAdvanceQueue(:256-269) 扩 lane 维度；advanceQueue(:675-689) lane-aware | finalize 且链在 auto 跳 → 触发 hop 推进：board 取文 → 组下一棒 prompt → **走 dispatchWork 同一入口**（锁不可绕）；hop 推进与队列推进的先后顺序必须在 3.1 文档固定（建议：先链内决策出下一棒入队，再统一 advanceQueue） |
 
 **幽灵 / 双份 / 终局真空 三红线映射**：
 - 幽灵（归属错误）：并行 E2 占位歧义（R2.1）；链 E1 迟到 end 推进跳（R3.3 探针）。
-- 双份（同任务两执行）：并行 E6 跨 lane 重派串号（R2.3）；链棒亡后 dead-baton 迟到 end
+- 双份（同任务两执行）：并行 E6 跨 lane 重派串号（R2.3）；链子代失败后 dead-baton 迟到 end
   与新世代 end 各推进一次（R3.3 探针：两发 end 链只进一跳）。
 - 终局真空（无人报终局）：链挂起无通知 / 主编销毁链残留（R3.2）；并行 lane 槽泄漏
   导致队列永久冻结（R2.2）。
 
 ---
 
-## 五、决策空白（须维护者拍板，本规划不擅自定）
+## 五、决策记录
 
 | # | 问题 | 选项 | 规划建议（仅供参考） | 阻塞步骤 |
 | --- | --- | --- | --- | --- |
@@ -420,7 +419,7 @@
 | D7 | looker 是否入读平面 | 读 / 写 | 设计只点名 explore/librarian；looker 读性质强但多模态成本异质——**默认写 lane 保守** | 2.2 |
 | D8 | 自定义角色 lane 归属 | 默认写 / 可配置 | 默认写（安全）；roles schema 加可选 lane 键可放二期后话 | 2.2 |
 | D9 | 并行下队列语义 | lane-aware skip（乱序派发）/ 严格 FIFO 头阻塞 | lane-aware skip + 每 lane 内 FIFO（否则读池被队首写任务堵死=机制空转） | 2.1→2.3 |
-| D10 | 棒亡备选重派后链是否续接 | A 自动续接新世代 / B 挂起等主编 | **B**（与不可逆跳同纪律；链绑槽位的语义复杂度后置） | 3.1（先设计清再写码，设计原话） |
+| D10 | 子代失败后备选重派后链是否续接 | A 自动续接新世代 / B 挂起等主编 | **B**（与不可逆跳同纪律；链绑槽位的语义复杂度后置） | 3.1（先设计清再写码，设计原话） |
 | D11 | 链声明载体与裁决通道形态 | 新工具 chain_start+chain_resolve / go_work 扩展参数+continue 约定格式 | 新工具对（schema 干净、deny 面清晰），但工具面膨胀需维护者认可 | 3.3 / 3.5 |
 | D12 | 链状态是否跨重启持久化（台账 v3） | 持久化 / 仅内存 | 持久化（与台账纪律一致；v2→v3 迁移按 loadLedger 兼容模式） | 3.2 |
 | D13 | 读→写挂起的超时策略 | 永久挂起等主编 / 超时升级提醒 | 永久挂起 + 每次主编回合快照里带 suspended 链行（可观测兜底） | 3.5 |
@@ -431,7 +430,7 @@
 
 ## 附：关键事实锚点（核读自证）
 
-- 内核全文注入不可抑制：node_modules/@deepseek-ai/dsh-subagent/lib/index.js:1771-1777（explore 取证）
+- 内核全文注入不可抑制：node_modules/@deepseek-ai/dsh-subagent/lib/index.js:1771-1777（上游包内；explore 取证）
 - 台账路径与原子写模式：broker.mjs:304 / :340-373 / :381-387
 - spawnChild 唯一共用组装点：broker.mjs:722-749（prompt 数组 :731-741）
 - continue 不经 spawnChild：走 shared/adjacent.mjs（事实 C）
@@ -442,4 +441,4 @@
 - config 挂载轨：agent.cordis.yml:148-149 + broker.mjs:87/:132-139
 - settings schema 三块：lib/index.js:308-316（本规划不动 settings，全走 broker config）
 - 防回潮守卫：test/apply.mjs:24、test/host-parity.test.mjs:85-100
-- 版本号段：CHANGELOG.md:6-19 命名空间声明；tisitan.13~20 全在 0.2.3 线已发布批
+- 版本号段：CHANGELOG.md:6-19 命名空间声明；全在 0.2.3 线已发布批

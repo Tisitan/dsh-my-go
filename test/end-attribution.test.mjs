@@ -1,8 +1,8 @@
 /**
- * dsh-my-go — subagent/end 归因决策直测（0.3.0-tisitan.12，棒② B5）。
+ * dsh-my-go — subagent/end 归因决策直测。
  *
  * 这批用例**不起 ctx 替身**：attributeEnd 只吃纯数据与只读谓词，所以这里全部是
- * 「表状态进、决策出」的直测——这是 B5 抽函数的唯一收益诉求：八条控制出口从此
+ * 「表状态进、决策出」的直测——纯函数化的唯一收益诉求：八条控制出口从此
  * 可以逐条排列组合地验，而不必为了触发一条分支去搭整套 mock-ctx + 异步链。
  *
  * 两类断言各有分工：
@@ -280,7 +280,7 @@ test('E7 completed 终局 → finalize：结论取 text 块串接，零通知（
   assert.equal(r.calls.readFailure, 0, '成功终局不读附因')
 })
 
-test('E7b 空载荷兜底结论 = (stopReason)，附因全灭时补终局一行（棒2-L4 协议不留真空）', () => {
+test('E7b 空载荷兜底结论 = (stopReason)，附因全灭时补终局一行（ 协议不留真空）', () => {
   const r = fixture({ info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] }, type: 'explore', failure: undefined })
   assert.equal(r.facts.conclusion, '(error)')
   const ns = ownerNotices(r)
@@ -379,7 +379,7 @@ test('facts.lane 事实字段（二期 2.3，D18）：type 已定出口携带 la
   assert.equal(finWrite.facts.advance, 'now')
 })
 
-// ── E9（报告提交制闸门，0.5.0-tisitan.1）直测批 ──────────────────────────────
+// ── E9（报告提交制闸门）直测 ──────────────────────────────
 // 闸门判定全部在 attributeEnd 纯函数层（同步段协议），这里「表状态进、决策出」
 // 直测三分支 + 零进入：已提交直通 / 从未提交补发 / 已补发转裁决 / failed 与开关关。
 
@@ -416,7 +416,7 @@ test('闸门·已提交直通：finalize 但 conclusion = 合成概要（conclus
   assert.ok(r.facts.conclusion.includes('全文落板，report_fetch childId=sess-1 切片取阅'), '取阅指引随回执')
 })
 
-// 板兜底（复活轮误判修复批改点2）：表为快路径、板为准。表空而板有货 = 已交付，
+// 板兜底（复活轮误判的板侧口径）：表为快路径、板为准。表空而板有货 = 已交付，
 // 只是回执无从合成真字段（登记值缺席）→ 走显式最小兜底并把 phase 分开口径；
 // 表命中时一律按常规 pass 走（板根本不参与判定，热路径不多一次谓词调用）。
 test('闸门·板兜底：表空+板有货 → pass-board-fallback 直通；表命中 → 常规 pass', () => {

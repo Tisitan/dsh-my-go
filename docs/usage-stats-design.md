@@ -2,7 +2,7 @@
 
 > 状态：设计定稿（0.4.0-tisitan.x 线）。本文是**契约**，不是实现说明：
 > 后续施工（Hermes/Hephaestus）以本文为唯一规格源，不再二次设计。
-> 前置：可行性调研已结案（2026-09-06 会话，tisitan.9 相位坑与读取双路径已采信）。
+> 前置：可行性调研已结案（2026-09-06 会话，相位坑与读取双路径已采信）。
 
 ## 1. 背景与目标
 
@@ -29,7 +29,7 @@ token 聚合与价格解耦：单价热更零失效成本，聚合缓存永不�
 | F6 | 子代枚举持久权威：台账 `DSH_HOME/dsh-my-go/orchestration-ledger.json`，无上限；`childOwner`/`sessionTypes` 内存表是 broker 侧互补（lib 半不可达，本契约不依赖） | broker.mjs:354；preset/shared/child-registry.mjs:38-46 |
 | F7 | **复活即新世代**：continue/forward 命中已结束记录时 `rearmChild` 回填登记，childId 不变、产生新事件代际 | child-registry.mjs:113-140 |
 | F8 | 面板 600ms 轮询 `connection.rpc.call('/dsh-my-go','snapshot',{})`；`currentSessionId()` 读 `sessions.list.getSnapshot().current` | src/panel-tree.js:78-99, 429-438 |
-| F9 | RPC 单通道：`webServer.register({ kind:'prefix', path:'/dsh-my-go', handler })` 直注册（0.5.0-tisitan.2 F1 起不再经宿主 `connection.rpc.handle`——它在 0.1.5-alpha.1 上注册即抛），handler 内先 `connection.requestRejection` 直出 401/403、再按 `client-request`/`server-response` 封装；端点 camelCase（snapshot/listModels/listTools/getBuiltinPersona/loadSettings），信封 `{ok:true,value}` / `{ok:false,error:{code,message,details}}`，端点自带 try 回结构化 internal | lib/index.js:594-884（分发体），:101-235（注册壳） |
+| F9 | RPC 单通道：`webServer.register({ kind:'prefix', path:'/dsh-my-go', handler })` 直注册（F1 起不再经宿主 `connection.rpc.handle`——它在 0.1.5-alpha.1 上注册即抛），handler 内先 `connection.requestRejection` 直出 401/403、再按 `client-request`/`server-response` 封装；端点 camelCase（snapshot/listModels/listTools/getBuiltinPersona/loadSettings），信封 `{ok:true,value}` / `{ok:false,error:{code,message,details}}`，端点自带 try 回结构化 internal | lib/index.js:594-884（分发体），:101-235（注册壳） |
 | F10 | settings 注册样板：`settings.register('dsh-my-go', z.object({...}))`，字典用 `z.dict(schema, z.string().pattern(KEY_PATTERN))`；`settings/updated` 热更两侧各挂 | lib/index.js:319-329, 346-353；broker.mjs:241-252 |
 | F11 | metrics end 埋点 `METRICS.record({kind:'end', childId, agentType, ...})`（v1 不搭车，裁决见 D2） | broker.mjs:2666-2679 |
 | F12 | lib 半可直接 import preset/shared（先例：`sharedRosterKeys`） | lib/index.js:367 |
@@ -60,7 +60,7 @@ token 聚合与价格解耦：单价热更零失效成本，聚合缓存永不�
 ```jsonc
 // settings.get('dsh-my-go').usagePrices
 {
-  "newapi/k3-256k":    { "input": 2,  "output": 8,  "cacheRead": 0.4 },
+  "my-provider/model-a":      { "input": 2,  "output": 8,  "cacheRead": 0.4 },
   "anthropic/claude-sonnet-4": { "input": 3, "output": 15 }   // cache 两桶缺省=未定价
 }
 ```
@@ -88,10 +88,10 @@ token 聚合与价格解耦：单价热更零失效成本，聚合缓存永不�
 - ❌ 纯 model 名键：跨 provider 同名模型价不同（中转渠道重标价常态），串价。
 - ❌ 嵌套对象 `{provider: {model: price}}`：两层导航 UI 复杂；与 `z.dict` 编辑器
   样板（F10 roles/tool-mask 卡）不匹配；`"a/b"` 归属歧义（provider=a,model=/b？）。
-- ❌ 通配符/前缀匹配（`newapi/*`、`*` 兜底价）：引入匹配优先级冲突消解（YAGNI）；
+- ❌ 通配符/前缀匹配（`my-provider/*`、`*` 兜底价）：引入匹配优先级冲突消解（YAGNI）；
   且兜底价把「没配」静默变成「配错价」，违反反静默原则——unmatched 显示「—」
   是诚实的，错价不是。
-- ❌ 价格编码进 key 的单串（`"newapi/k3:2/8"`）：解析地狱，且含 `/` 的 model 彻底歧义。
+- ❌ 价格编码进 key 的单串（`"my-provider/model-a:2/8"`）：解析地狱，且含 `/` 的 model 彻底歧义。
 - ❌ 每 token 单价 / 人民币计价：数字过小易错、跨行不可比；业界报价
   （LiteLLM/OpenRouter/官方 pricing）默认 $/MTok，复制粘贴零换算。
 
@@ -107,7 +107,7 @@ token 聚合与价格解耦：单价热更零失效成本，聚合缓存永不�
 
 ### D1a — 单价表币种：全局单选 `usageCurrency`（'USD' | 'CNY'，默认 'USD'）
 
-> 0.5.0-tisitan.0 施工后追加（维护者真机反馈：四桶裸数字 + 只有美元，难填）。
+> 施工后追加（实际使用反馈：四桶裸数字 + 只有美元，难填）。
 
 **裁决**：settings 顶级键 `usageCurrency: z.union(['USD', 'CNY']).default('USD')`，
 整张单价表共用一个币种；`getUsage` 响应组装时随价格 join 一并回显 `currency`
@@ -326,7 +326,7 @@ tab 切换只是同一渲染缓存的排序变化。
 | Z18 | 子代 30+ 规模 / 数据量超预期 | 不分页不截断，全量返回 | 面板自滚动；性能风险由 D2 缓存兜住 |
 | Z19 | 父会话自身流读不到（无 assistant 消息 / 冷父无档） | 不注入 self 合成行（空行不翻 `found` 语义，Z8 保持）；档案尝试走 Z6/Z7 降级 | 面板与 v1 形状完全同形，无零值噪音行 |
 
-### D6 — 父会话自身用量入账（parent-usage，维护者拍板追加）
+### D6 — 父会话自身用量入账（parent-usage，追加段）
 
 **裁决**：`getUsage(parentSessionId)` 在子代枚举之外，**恒常扫描父会话自身的
 事件流**，把主编排会话（本会话）的模型消耗并入账本——「本次会话的完整开销」。

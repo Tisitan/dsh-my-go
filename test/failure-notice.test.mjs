@@ -1,4 +1,4 @@
-// 0.2.3-tisitan.18 失败通知真空期消灭战·三件套：
+//  失败通知真空期消灭战·三件套：
 //   ① 名册简报系统提示段（dsh-my-go:roster，函数态 text、儿童门控、字节稳定）
 //   ③ broker 失败同步预告（评估中/取证中）+ attemptFallbackRedeploy 终局通知
 // 双半对称源码断言在 host-parity.test.mjs（新范式断言）。
@@ -150,7 +150,7 @@ test('名册简报字节稳定：同 settings 两次渲染逐字节全等（渲�
 test('名册简报 bindings 取法：宿主配置桥逐调用现读，函数态天然免刷新管道', async () => {
   // 0.1.7：bindings 不再靠 settings/updated 事件整表重建，而是每次消费现读宿主半的
   // 配置桥（getBindings → currentBindings）。函数态 text 每次渲染现调，故配置一变
-  // 即见新值——「无需刷新管道」这条性质比旧写法更强。
+  // 即见新值——「无需刷新管道」这条性质比直接订阅事件更强。
   const restore = setHostBindings({ roles: { hermes: { provider: 'p0', model: 'm0' } } })
   try {
     const { ctx, sections } = mockCtxFull()
@@ -178,7 +178,7 @@ test('预告：有链失败同步 inject「备选评估中」，先于异步重�
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
   const specs = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -200,7 +200,7 @@ test('预告：有链失败同步 inject「备选评估中」，先于异步重�
   assert.ok(preview.content[0].text.includes('失败已知悉: sess-1 (hermes) 备选评估中（1 条），暂缓失败处置'), '预告口径含 childId/工种/链数/暂缓指令')
   assert.equal(injected.filter((m) => m.content?.[0]?.text?.includes('备选重派')).length, 0, '同步段内重派通知尚未到达（异步处置）')
   // 等「重派通知真的到了」而不是等 25ms：中间隔着 listModels + spawn 两个 await
-  // 边界，并行抢 CPU 时固定 sleep 会让 iRedeploy 还是 -1 而假红（C-12）
+  // 边界，并行抢 CPU 时固定 sleep 会让 iRedeploy 还是 -1 而假红
   await waitFor(() => injected.some((m) => m.content?.[0]?.text?.includes('备选重派')), { what: '备选重派通知到达父会话' })
   const texts = injected.map((m) => m.content?.[0]?.text ?? '')
   const iPreview = texts.findIndex((t) => t.includes('备选评估中'))
@@ -211,7 +211,7 @@ test('预告：有链失败同步 inject「备选评估中」，先于异步重�
 test('预告：无链失败同步 inject「无备选链，取证中」，先于附因通知', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     sessions: {
       get: (id) => (id === 'sess-1'
@@ -236,7 +236,7 @@ test('预告：无链失败同步 inject「无备选链，取证中」，先于�
 test('预告：有链但非 error 终局（aborted）→「不进入备选评估，取证中」，绝不谎报评估中', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
   })
@@ -259,7 +259,7 @@ test('终局通知：备选链尽（备选也失败）→「备选链尽，按�
     'sess-1': { message: 'no such model: m0', code: 'HTTP_404', status: 404 },
     'sess-2': { message: 'provider 429 exhausted', code: 'RATE_LIMIT', status: 429 },
   }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p0' ? [{ id: 'm0' }] : pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -276,7 +276,7 @@ test('终局通知：备选链尽（备选也失败）→「备选链尽，按�
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'task' }, execOf(parent))
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
   // 等「条件成立」而不是「墙钟走过 25ms」：备选重派要穿过 listModels / spawn 两个
-  // await 边界，20 文件并行时固定 sleep 会假红（0.3.0-tisitan.11 C-12 实测约 1/5）。
+  // await 边界，20 文件并行时固定 sleep 会假红（实测约 1/5）。
   await waitFor(() => specs.length === 2, { what: '链首失败后备选重派（specs=2）' })
   assert.equal(specs.length, 2, '链首失败已切备选重派')
   dispatch('subagent/end', { id: 'sess-2', stopReason: 'error', lastAssistantMessage: [] })
@@ -295,7 +295,7 @@ test('终局通知：备选链尽（备选也失败）→「备选链尽，按�
 test('终局通知：分类器否决（abort 类附因）→「附因属中断类，不重派，按失败终局落账」', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     llm: { listModels: async (pid) => (pid === 'p1' ? [{ id: 'm1' }] : []) },
     sessions: {
@@ -321,7 +321,7 @@ test('终局通知：分类器否决（abort 类附因）→「附因属中断�
 test('预告：成功 end 零预告（失败已知悉/失败终局均不出现）', async () => {
   const injected = []
   const parent = { id: 'parent-1', session: { header: {} }, inject: (msg) => injected.push(msg) }
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
   })

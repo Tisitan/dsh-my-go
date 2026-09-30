@@ -1,21 +1,20 @@
 /**
- * dsh-my-go — 声明式接力链状态机（三期步骤 3.2）。
+ * dsh-my-go — 声明式接力链状态机（决策纯函数）。
  *
- * 规划出处：docs/plans/next-gen-architecture-0.4.0.md :297-303（步骤 3.2）；
  * 语义唯一出处：docs/plans/relay-chain-semantics.md §二（六态状态机 + T1~T17
- * 迁移表）、§四（链 × 九出口交互矩阵）。设计文档的决策空白 D21~D29 已由主人
- * 全数按建议值裁决（D21 hop 冻结 / D22 suspended('gate-verdict') / D23 fail-fast /
- * D24 严格 read→read / D25 活跃链恒 1 / D26 两处解释收束 / D27 桶删双留痕 /
- * D28 suspended('restart') / D29 全文直投），本文按裁决值实现，不再留开关。
+ * 迁移表）、§四（链 × 九出口交互矩阵）。设计文档的决策空白 D21~D29 均已定值
+ * （hop 冻结 / suspended('gate-verdict') / fail-fast / 严格 read→read / 活跃链恒 1 /
+ * 两处解释收束 / 桶删双留痕 / suspended('restart') / 全文直投），本模块按这些值
+ * 实现，不留开关。
  *
- * 风格仿 shared/end-attribution.mjs：**决策纯函数**，输入链记录与事件的只读
- * 视角，输出 `{ decision, patch, ops, notices, facts }`——本模块不持有任何一条
- * 链记录，dispatcher（broker 半，3.3~3.5 接线）按返回值落地。与 end-attribution
- * 的一点结构差异：链记录是状态机**自有状态**（不像 abortExpected 那种共享表），
- * 字段变更不走 ops 而走 `patch`（链记录增量，dispatcher 原样 Object.assign）；
- * ops 只承载**跨域副作用**（enqueue/通知素材），词表刻意收窄为唯一成员
- * `enqueue-hop`——链请求派发只有入队一条通道，直派词表根本不存在（INV-1 锁
- * 不可绕的结构面，变异探针见 test/relay-chain.test.mjs P1）。
+ * 风格同 shared/end-attribution.mjs：输入链记录与事件的只读视角，输出
+ * `{ decision, patch, ops, notices, facts }`——本模块不持有任何一条链记录，
+ * dispatcher（broker 半）按返回值落地。与 end-attribution 的一点结构差异：链记录
+ * 是状态机**自有状态**（不像 abortExpected 那种共享表），字段变更不走 ops 而走
+ * `patch`（链记录增量，dispatcher 原样 Object.assign）；ops 只承载**跨域副作用**
+ * （enqueue/通知素材），词表收窄为唯一成员 `enqueue-hop`——链请求派发只有入队一条
+ * 通道，直派词表不存在（INV-1 锁不可绕的结构面，变异探针见
+ * test/relay-chain.test.mjs P1）。
  *
  * 调用方协议（三条，接线前必读）：
  *  1. **先匹配后决策**：end/queue-dropped 事件必须先经 matchChainForEnd /
@@ -31,18 +30,18 @@
  *     ops 之间不得插 await（协议第 1 条同律）——挂起通知（notices）必须先于
  *     enqueue-hop 的异步落地链。
  *
- * 恢复归一（D28 裁决 + 一处对设计文档 §5.3 的精化，报备在案）：台账 v3 行经
+ * 恢复归一（D28 值 + 一处对设计文档 §5.3 的精化）：台账 v3 行经
  * normalizeRestoredChain 归一——running→suspended('restart')、pending-fallback
  * →failed；hopWorkId 恒作废（work-* 纯内存挂靠）。精化点：**suspended('fallback')
- * 的 hopChildId 保留**——它是 T8 自查（§4.2-③ D10 裁决赛跑）的查询键，台账
- * history 恢复后该查询跨重启仍有效；其余情形 hopChildId 作废置 null。精化
- * 依据：设计文档 §5.3「一律作废」字面与 §4.2-③ 自查机制冲突，以机制为准；
+ * 的 hopChildId 保留**——它是 T8 自查（§4.2-③）的查询键，台账 history 恢复后该
+ * 查询跨重启仍有效；其余情形 hopChildId 作废置 null。取机制为准：设计文档 §5.3
+ * 「一律作废」的字面与 §4.2-③ 自查机制冲突；
  * fallback 挂起恢复时若代际未终局（hasSettledGeneration 谓词为假），归一为
  * suspended('restart')——重派口径，防「换绑等一个永不到来的 end」真空变体。
  *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx。
- * 依赖只有 shared/orchestration.mjs 的 laneOf（泳道判定表复用，二期 §1.1 同源
- * ——设计文档 §八预埋兑现）。
+ * 依赖只有 shared/orchestration.mjs 的 laneOf（泳道判定表复用，设计文档
+ * §1.1 / §八 同源）。
  */
 
 import { laneOf } from './orchestration.mjs'
@@ -61,7 +60,7 @@ export const RELAY_CHAIN_STATES = Object.freeze([
 export const RELAY_SUSPEND_REASONS = Object.freeze([
   'review', // 入闸挂起：审阅后放行/驳回
   'sync', // 不可逆跳强制同步门：指令必须现场给（R-k）
-  'fallback', // D10：棒亡备选重派成功，链绑新世代 childId 等裁决
+  'fallback', // D10：子代失败，备选重派成功，链绑新世代 childId 等裁决
   'input-missing', // board 缺席，数据面直投无输入
   'gate-verdict', // D22：报告补发后仍不合格，等主编裁量（带病续链 or 弃）
   'restart', // D28：重启恢复 / 恢复时代际未终局的 fallback 归一
@@ -107,7 +106,7 @@ export function validateChainDeclaration(hops) {
   if (errors.some((e) => e.startsWith('hop-shape:') || e.startsWith('agent:'))) {
     return { ok: false, errors }
   }
-  // R-b：首跳声明即审（主编亲笔写的 prompt，无「上一棒产出」可审）——gate 非 auto 拒。
+  // R-b：首跳声明即审（主编亲笔写的 prompt，无「上一环节产出」可审）——gate 非 auto 拒。
   // 末跳 gate 合法（review/sync）：入闸语义管「本跳派发前」，末跳同样有派发时刻
   // ——「两跳链、末跳写平面要 sync 审」正是核心场景（0.3 冒烟自检抓出的 R-c 设计
   // 矛盾，已回修设计文档 §一）。
@@ -144,7 +143,7 @@ export function createChain({ id, parentSessionId, hops, now }) {
     suspendReason: null,
     hopWorkId: null, // enqueue 后上岗前的占位键（reconcileWorkEnqueued 回填）
     hopChildId: null, // 当前世代真 id（reconcileHopDispatch 回填；匹配唯一键）
-    // 上一跳最近世代 id（3.4 实现期字段补充，报备：设计文档 §2.4 未列）——
+    // 上一跳最近世代 id（设计文档 §2.4 未列，按实现约定补足）——
     // 数据面直投从 board 读它的报告（§3.1 时序），cursor 推进时由 settleCurrentHop
     // 写入；台账持久化（board 在磁盘，重启后 restart 重派仍可直投）。
     prevHopChildId: null,
@@ -157,7 +156,7 @@ export function createChain({ id, parentSessionId, hops, now }) {
 // end 归因回调的链匹配：running 且 hopChildId 精确等于 end.childId。三条幽灵
 // 防线全在此收敛：① 旧世代 id 查不到（D10 换绑后）；② 未回填（hopChildId=null）
 // 恒不命中——上岗前不存在 end 可言；③ 非 running 态不命中（suspended 挂起的
-// 上一跳已置 null，pending-fallback 的亡棒 id 不再是推进键）。
+// 上一跳已置 null，pending-fallback 的失败子代 id 不再是推进键）。
 export function matchChainForEnd(chains, childId) {
   if (!Array.isArray(chains) || typeof childId !== 'string' || childId === '') return undefined
   return chains.find((c) => c.state === 'running' && c.hopChildId === childId)
@@ -412,7 +411,7 @@ function onFallbackRedeployed(chain, event, at) {
     decision: 'suspend-fallback',
     patch: { state: 'suspended', suspendReason: 'fallback', hopChildId: newChildId, hopWorkId: null, updatedAt: at },
     ops: [],
-    notices: [{ target: 'owner', parentId: chain.parentSessionId, text: `[dsh-my-go] 链 ${chain.id} 跳 ${chain.cursor + 1} (${chain.hops[chain.cursor]?.agent ?? '?'}) 棒亡备选重派成功（新世代 ${newChildId}），链挂起等主编裁决 [fallback]（chain_resolve continue = 链绑新世代 / abort = 弃链，新世代自然跑完非链落账）` }],
+    notices: [{ target: 'owner', parentId: chain.parentSessionId, text: `[dsh-my-go] 链 ${chain.id} 跳 ${chain.cursor + 1} (${chain.hops[chain.cursor]?.agent ?? '?'}) 子代失败，备选重派成功（新世代 ${newChildId}），链挂起等主编裁决 [fallback]（chain_resolve continue = 链绑新世代 / abort = 弃链，新世代自然跑完非链落账）` }],
     facts: { chainId: chain.id, cursor: chain.cursor, phase: 'suspended', reason: 'fallback', generation: newChildId },
   }
 }
@@ -442,7 +441,7 @@ export function isChainRow(row) {
   return true
 }
 
-// 恢复归一（D28 裁决 + §5.3 精化，见文件头）。返回新记录（绝不 mutate 输入行）；
+// 恢复归一（D28 + §5.3 精化，见文件头）。返回新记录（绝不 mutate 输入行）；
 // 归一口径：
 //   running            → suspended('restart')，两运行时键作废置 null（T17：在飞
 //                        hop 的 end 不可跨进程复得，重派走全新 enqueue）

@@ -1,4 +1,4 @@
-// 子代理登记表（preset/shared/child-registry.mjs）单元回归批（健康度批新增）。
+// 子代理登记表（preset/shared/child-registry.mjs）单元测试。
 // 八张表原本住在 broker 的 apply() 闭包里，跨表不变量只能靠 bridge 集成用例
 // 间接触发；抽出后这里直测四组「漏一张就静默串号」的不变量：墓碑镜像清理与
 // 有界驱逐、end 收尾的两个面（retireChild / retireTypeRecords 不可互换，以及
@@ -61,7 +61,7 @@ test('retireChild 与 retireTypeRecords 的分工：后者故意保留属主路�
   for (const table of [r.sessionTypes, r.disposedTypes, r.activeFallback, r.childOwner]) {
     assert.equal(table.has('a'), false, 'end 收尾四张表一起翻篇')
   }
-  assert.equal(r.reportSubmitted.has('a'), true, '提交成功是永久历史事实，终局不摘（复活轮误判的根因点）')
+  assert.equal(r.reportSubmitted.has('a'), true, '提交成功是永久历史事实，终局不摘（复活轮误判的成因点）')
   arm('b')
   r.retireTypeRecords('b')
   assert.equal(r.sessionTypes.has('b'), false)
@@ -71,9 +71,9 @@ test('retireChild 与 retireTypeRecords 的分工：后者故意保留属主路�
   assert.equal(r.reportSubmitted.has('b'), true, '属主先走一步同样不撤销「它交过」这件事实')
 })
 
-// 复活轮报告误判修复批（主修）：reportSubmitted 曾随终局清空，而 rearmChild 不
+// 复活轮报告误判（主修）：reportSubmitted 曾随终局清空，而 rearmChild 不
 // 回灌，于是 continue/forward 复活轮只要不重交报告，闸门就判「从未提交」并发射
-// 补发（历史现场 2026-09-07 7f6c44fa）。现在这张表跨终局保留，唯一的收缩手段是
+// 补发（历史竞态现场）。现在这张表跨终局保留，唯一的收缩手段是
 // 有界 FIFO 容量——下面两例钉住「保留」与「有界」两端。
 test('提交登记跨终局仍在：retireChild 后 rearmChild 复活，闸门读到的一直是已交付', () => {
   const r = newRegistry()
@@ -141,10 +141,10 @@ test('复活重建：工种恒回填；备选覆盖只在条目畸形守卫通�
   assert.equal(r.activeFallback.has('c4'), false, 'provider 非字符串同样拒填')
 })
 
-// 0.3.0-tisitan.7 N5：复活即新世代——两张一次性表必须同点清零。
+// 复活即新世代——两张一次性表必须同点清零。
 // 病灶链（端到端行为面见 roster-route.test.mjs 的队列解冻用例）：childId 只要
 // 进过一次备选评估（决策点在 end 入口，早于 attemptFallbackRedeploy 的三个早退
-// 分支），fallbackDecided 里那条就随 childId 永挂（全仓此前零 .delete）；带着它
+// 分支），fallbackDecided 里那条就随 childId 永挂（全仓没有别的 .delete）；带着它
 // 复活，复活轮**正常完工**的 end 会被「评估在飞」分支当自己人吞掉 → 记录永挂
 // running → advanceQueue 被 isBusy 恒真堵死 → 该编排会话队列永久冻结。
 test('复活即新世代：rearmChild 清备选 once-guard 与 abort 护航，且只清复活者自己', () => {
@@ -166,7 +166,7 @@ test('复活即新世代：rearmChild 清备选 once-guard 与 abort 护航，�
 // 1.5 方案甲裁决：repairRetried 的清理双点各司其职——retireChild 是防无限循环的
 // 关键（补发链不走 rearmChild，guard 存续到补发轮 end 的转裁决），rearmChild 防
 // 主编复活做新任务被旧 guard 误吞补发资格。两处都只清自己。
-// 对照面（复活轮误判修复批）：同两个清理点上 reportSubmitted **一律不跟着翻篇**——
+// 对照面（复活轮误判）：同两个清理点上 reportSubmitted **一律不跟着翻篇**——
 // 授权是「本代际还能不能再补发」（一次性），提交是「它历史上交过报告」（永久事实），
 // 两者语义相反，曾经被写在同一处正是误判的源头。
 test('repairRetried（报告补发 once-guard）：retireChild 终局清 + rearmChild 复活清，且只清自己', () => {

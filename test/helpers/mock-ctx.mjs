@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — broker.apply 集成测试的统一 ctx 替身（健康度批收敛）。
+ * dsh-my-go — broker.apply 集成测试的统一 ctx 替身（收敛）。
  *
  * 六个 broker 级测试文件（bridge / multi-session / roster-route /
  * failure-notice / compat-alpha4 / anti-bypass）原本各抄一份 cordis ctx mock，
@@ -13,7 +13,7 @@
  *   - 台账隔离：每次调用默认换一枚全新临时 DSH_HOME（keepHome=true 时不动，
  *     由台账 round-trip 用例自管）——用例间 history 不串档靠的就是这一条。
  *
- * 0.3.0-tisitan.11 C-09 起替身**变严**（保真度对齐真宿主），以下五条都是刻意
+ *  替身**变严**（保真度对齐真宿主），以下五条都是刻意
  * 的：它们各自关掉一类「替身比宿主宽容」造成的假绿。
  *   - `listeners` 是 Map<event, fn[]>：真 cordis 一个事件可挂 N 个 handler，
  *     旧的单槽写法让「重复注册」静默覆盖（第二个赢），谁也不知道自己注册了两遍。
@@ -218,7 +218,7 @@ export function createMockCtx({
     on,
     inject,
     effect: (fn, name) => {
-      // 不再吞异常（C-09）：真宿主里这段抛错就是 apply 失败，替身 swallow 一次
+      // 不再吞异常：真宿主里这段抛错就是 apply 失败，替身 swallow 一次
       // 就把「section 注册写错」这类真 bug 永久藏起来。
       const cleanup = fn()
       // 真实 cordis：effect(scope 工厂) 返回的 Dispose 只在 scope 卸载时才跑。
@@ -278,7 +278,7 @@ export const currentAll = (pid) => snapOf(pid)?.currentRecords ?? []
 // 定时器类用例的让步（queueRetryBaseMs 已缩到毫秒级）。
 // 只用于「等一会儿看有没有坏事发生」的负向窗口（宽限期/防抖窗未触发类断言）——
 // 正向等待一律改用 waitFor：固定 sleep 是墙钟赌注，20 个测试文件并行时 CPU 抢
-// 不过就假红（0.3.0-tisitan.11 C-12 实测：备选链尽与重试上限两例约 1/5 概率翻脸）。
+// 不过就假红（实测：备选链尽与重试上限两例约 1/5 概率翻脸）。
 export const drain = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // 等到条件成立为止（有界）：把「等固定时长后断言」换成「等条件成立后断言」。
@@ -292,10 +292,57 @@ export const waitFor = async (pred, { timeoutMs = 2000, intervalMs = 5, what = '
   }
 }
 
+/**
+ * 确定性时钟 + 定时器桩（心跳测试用）：单测里给心跳簇注入 `now/setTimer/
+ * clearTimer`，就能一拍一拍地手动推进，不必等墙钟、也不必 patch 全局定时器。
+ *
+ * **为什么不 patch globalThis.setTimeout**：同一个 Node 进程里还跑着台账防抖、
+ * disposed 宽限期、队列重试与 waitFor/drain 自己的计时器；全局替换会把这些一起
+ * 冻住（waitFor 会直接超时假红）。故桩是**注入式**的：只服务被显式传入它的模块。
+ *
+ * 形态：const clock = createFakeClock(); 传入 now/setTimer/clearTimer；
+ * clock.advance(ms) 推进并触发到期回调（含期间新挂的表）；clock.pending() 看在飞
+ * 定时器数；clock.at 是当前时刻（ms）。
+ */
+export function createFakeClock({ start = 1_700_000_000_000 } = {}) {
+  let current = start
+  let seq = 0
+  const timers = new Map()
+  return {
+    now: () => current,
+    get at() { return current },
+    setTimer: (fn, ms) => {
+      const id = ++seq
+      timers.set(id, { at: current + Math.max(0, Number(ms) || 0), fn })
+      // 真定时器有 unref（心跳与队列重试都会调）；桩必须同形，否则「不阻止进程退出」
+      // 这条线上的 TypeError 会被当成被测代码的 bug。
+      return { id, unref: () => {} }
+    },
+    clearTimer: (timer) => { if (timer && typeof timer.id === 'number') timers.delete(timer.id) },
+    pending: () => timers.size,
+    /** 推进到 now+ms 并**按到期序**逐一触发（触发期间新挂的表只要也到期就继续跑）。 */
+    advance: (ms) => {
+      const target = current + Math.max(0, Number(ms) || 0)
+      const fired = []
+      for (;;) {
+        const due = [...timers.entries()].filter(([, entry]) => entry.at <= target).sort((a, b) => a[1].at - b[1].at)
+        if (due.length === 0) break
+        const [id, entry] = due[0]
+        timers.delete(id)
+        current = Math.max(current, entry.at)
+        fired.push(id)
+        entry.fn()
+      }
+      current = target
+      return fired
+    },
+  }
+}
+
 // 删除临时 DSH_HOME 的稳妥版：有界重试 ENOTEMPTY / EBUSY / EPERM。
-// 存在理由（0.3.0-tisitan.12 实测）：插件带一枚台账防抖写（scheduleLedgerSave，
+// 存在理由（ 实测）：插件带一枚台账防抖写（scheduleLedgerSave，
 // 默认 50ms），用例结束裸 rm 时，那次迟到的写入正好把已删空的目录重新填满，rm
-// 当场 ENOTEMPTY——并行 20 个文件抢 CPU 时最容易撞上（B5 把 end 决策搬进纯函数、
+// 当场 ENOTEMPTY——并行 20 个文件抢 CPU 时最容易撞上（end 决策搬进纯函数、
 // 同步段多几微秒，第一次把它逼出来）。产品写自己的 HOME 是职责，不是 bug；错的
 // 是测试跟自己的清理抢跑。正解是卸载插件（cleanup effect 会同步 flush 并撤表），
 // 但多数用例没捕获 effect，故清理统一走这里。新增带临时 HOME 的用例请用本函数。

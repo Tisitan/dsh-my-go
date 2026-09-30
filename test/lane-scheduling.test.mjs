@@ -1,9 +1,9 @@
 // 二期 2.3 调度面泳道化行为批（read-pool-semantics.md §二；D9/D18/D19 已裁决）。
 // 覆盖：T1 端到端读池并行 / 写平面单线地基 / 跨 lane 并行 / lane-aware skip /
-// lane 内 FIFO / 容量 1 退化全局单线（等价性）/ 复活闸 lane 化 / T9 装机口径容量 3
+// lane 内 FIFO / 容量 1 退化全局单线（等价性）/ 复活闸 lane 化 / T9 容量 3
 // （三读在飞 + 第四读入队 + 读池满时写任务越过上岗）。
 // 所有「默认容量 1」路径的逐字节等价性另由既有 405 例全套件背书——它们全部
-// 跑在 readPoolSize 缺省（=1）下，是本批最重的等价矩阵。
+// 跑在 readPoolSize 缺省（=1）下，是最重的等价矩阵。
 //
 // 时序纪律：dispatch('subagent/end') 的同步段只保证「落账 + 出队 + 占位入槽」；
 // 上岗任务的 bindChild 换键发生在 spawn resolve 后的微任务。因此「谁上岗了」
@@ -82,7 +82,7 @@ test('T3 跨 lane 并行：容量 2 下 explore 与 hermes 各占各的槽同时
   assert.equal(e.status, 'running')
   assert.equal(h.status, 'running', '读平面在飞不阻塞写平面直派（泳道隔离）')
   // D20 一步到位（二期 2.5）：current 单条已由 currentRecords 全量数组取代，
-  // 本批与数据层/消费面同批复闭环（2.2+2.5 同批前提兑现）
+  // 与数据层/消费面同批复闭环（2.2+2.5 同批前提兑现）
   const snap = snapshotNow().parents['parent-1']
   assert.ok(Array.isArray(snap.currentRecords), 'currentRecords 全量数组（D20 一步到位）')
   assert.ok(!('current' in snap), '旧 current 单条形状已删除（无过渡双字段）')
@@ -158,7 +158,7 @@ test('T7 复活闸 lane 化：读池满时复活读任务拒绝（报错点名 l
     )
   }
   // 场景二：写平面占用 + 读有空位 → 复活读任务放行（旧 isBusy 判定下会被误拒）。
-  // 复籍在投递成功之后（M5），current 换回被复活记录要等微任务 → waitFor。
+  // 复籍在投递成功之后，current 换回被复活记录要等微任务 → waitFor。
   {
     const { dispatch, tools } = await applyWithPool(2)
     const goWork = tools.get('go_work')
@@ -187,7 +187,7 @@ test('T8 直派成功路径回归：D19 补位推进为无害调用（满池/无
   assert.ok(Array.isArray(snap.currentRecords) && snap.currentRecords.length > 0, '在飞状态自洽（读+写各一）')
 })
 
-// 装机口径批（2026-09-18 扩池 2→3）：显式 3 = 钳制上限顶格。T1 咬的是 2，本例把
+// （扩池 2→3）：显式 3 = 钳制上限顶格。T1 咬的是 2，本例把
 // 同一端到端形状外扩一档，并咬住「读池 3/3 满 ≠ 全局满」——写 lane 的空位仍能把
 // 队列里排在满池读任务之后的写任务放行（broker.mjs advanceQueue 的 lane-aware skip）。
 test('T9 端到端读池扩容：readPoolSize=3 时三条读任务同时在飞、第四条排队；读池满时写任务仍可越过上岗', async () => {

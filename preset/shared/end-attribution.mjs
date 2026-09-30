@@ -1,12 +1,12 @@
 /**
- * dsh-my-go — subagent/end 归因决策（0.3.0-tisitan.12，棒② B5 自 broker.mjs 抽出）。
+ * dsh-my-go — subagent/end 归因决策（纯函数层）。
  *
  * 「一条 end 事件该归到谁头上、归完之后做什么」是 broker 里分支最密的一段：八个
  * 控制出口，每个都牵动一次性表（abortExpected / fallbackDecided）、登记清理
  * （retireChild / retireTypeRecords）、通知协议（同步预告）与队列推进时机。这些
- * 判断本身不需要 ctx、不需要 I/O、不认识任何 harness 符号——原实现却把决策和执行
- * （inject / spawn / advanceQueue / bump）混在一个 130 行的事件回调里，于是「决策
- * 正确性」只能靠起一整套 ctx 替身才能验证，改一个分支要连替身一起改。
+ * 判断本身不需要 ctx、不需要 I/O、不认识任何 harness 符号——决策与执行
+ * （inject / spawn / advanceQueue / bump）分开是本模块的立身之本：「决策正确性」
+ * 因此可以脱离 ctx 替身单独验证，改一个分支不必连替身一起改。
  *
  * 本模块把决策抽成纯函数：输入是**已经取好的状态快照与只读谓词**，输出是
  * `{ decision, ops, notices, facts }`：
@@ -15,8 +15,8 @@
  *   notices   要对谁说哪一句话（target: 'owner' 注入属主 / 'log' 留痕）
  *   facts     执行所需事实（归因到的 parentId、工种、结论文本、失败附因、advance）
  *
- * **调用方协议（改动前必读，三条都是实战批留下的规矩）**：
- *  1. **同步段零 await**（0.3.0-tisitan.18）：decision === 'fallback-evaluation' 时，
+ * **调用方协议（改动前必读，三条都是行为契约）**：
+ *  1. **同步段零 await**：decision === 'fallback-evaluation' 时，
  *     dispatcher 落地 ops（`fallbackDecided.add`）之后的**第一件事必须是发 notices**，
  *     之后才可以 `void` 起异步重派链。add 与预告之间插一个 await，就等于把「主流程
  *     在备选评估真空期自行报死」那个原 bug 请回来。
@@ -34,7 +34,7 @@
  * 唯一的注入例外是 `readFailure`（失败附因读取）——本模块不认识文件也不认识会话，
  * 但它需要那份事实才能组结论文本，故由调用方给一个只读回调。
  *
- * 报告提交制闸门（0.5.0-tisitan.1，第二代替换第一代消息块解析闸）：第九出口
+ * 报告提交制闸门：第九出口
  * `report-gate-repair`。completed 终局且调用方传 `reportGate.enabled` 时过闸：
  *   - 本轮（含历史轮）report_submit 已成功（reportGate.reportSubmitted 命中，
  *     或 hasBoard 兜底命中——表为快路径、板为准）→
@@ -47,7 +47,7 @@
  *     ——防无限循环（「rearmChild 同点清理 × revive 路径」的规格字面矛盾以此
  *     消解）。
  *   - 已补发过（repairRetried 命中）→ 仍走 'finalize'，conclusion 加「未交付：」
- *     前缀转主编裁决，advance='now' 正常推进，不再二次补发。
+ *     前缀转主编裁决，advance='now' 正常推进，不做二次补发。
  *   - failed（stopReason!=='completed'）永不过闸；reportGate 缺省/关 = 现路径
  *     一字不动。双发残余窗口（end#1' 在补发链 tick 前到达 → 走转裁决分支落账）
  *     为已知边界：结论按未交付落账，不比现状差。
@@ -116,10 +116,10 @@ const BOARD_ONLY_SUBMITTED = Object.freeze({
  *                      （该 childId 在板上是否已有货，broker 侧 existsSync 现算）。
  *                      缺省 () => false：本模块零 fs、既有替身零扰动，判定退回纯内存表
  *
- * 二期 2.4（read-pool-semantics.md §4.3 方案 A）：spawningCandidates 参数与占位
- * 归因兜底（bind-spawning-child / set-child-owner 两 op）**退役**——end 抢跑场景
- * 改由 broker 侧 end 缓冲重放接管（真 id 精确认领，零猜测）。E2 出口保留但语义
- * 收窄为「缓冲前最终无从归属」的落档口径。
+ * spawningCandidates 参数（read-pool-semantics.md §4.3 方案 A）：占位归因兜底
+ * （bind-spawning-child / set-child-owner 两 op）不在本模块——end 抢跑场景由
+ * broker 侧 end 缓冲重放接管（真 id 精确认领，零猜测），E2 出口只承载「缓冲前
+ * 最终无从归属」的落档口径。
  */
 export function attributeEnd({
   childId,
@@ -160,15 +160,15 @@ export function attributeEnd({
         }, { warn: `late/duplicate subagent/end for finished child ${String(childId)} (${resolvedType}); ignored` })
       }
     } else {
-      // E2（二期 2.4 起语义收窄，read-pool-semantics.md §4.3 方案 A）：end 抢跑
+      // E2（语义收窄，read-pool-semantics.md §4.3 方案 A）：end 抢跑
       // spawn resolve 的场景由 broker 侧 **end 缓冲重放** 接管——暂存后等登记
       // 追上，按真 id 精确认领重放（认领时登记已落地、type 命中，根本不会进到
-      // 本分支）。原「恰有一条 spawning 占位即归因」的猜测式兜底退役：并行下
+      // 本分支）。「恰有一条 spawning 占位即归因」的猜测式兜底不可用：并行下
       // 多条占位是常态，find-first 收集会把第二发的 end 静默归给第一条占位
-      // （串号 = 幽灵，0.2.3-tisitan.6 教训的并行放大形态）。能抵达本分支的
-      // 只剩缓冲超时后的最终落档口径。
+      // （串号 = 幽灵的并行放大形态）。能抵达本分支的只剩缓冲超时后的最终落档
+      // 口径。
       //
-      // **此处故意不 retire**（B5 补注，棒②点名的无注释脆弱点）：类型侧三张表
+      // **此处故意不 retire**（补注：此处无注释即脆弱点）：类型侧三张表
       // 本来就没有这个 childId——正因为它不在册才走到这条分支，retireTypeRecords
       // 是纯空转。而 childOwner 这一张表**更不能清**：它可能指向一个仍然活着的
       // 属主实例（本分支的 ownerPid 就是这么来的），清了就把同时段其它儿童的
@@ -187,7 +187,7 @@ export function attributeEnd({
     })
   }
 
-  // E4：urgency=abort 护航（0.3.0-tisitan.2；收紧于 0.3.0-tisitan.7 N6）。
+  // E4：urgency=abort 护航。
   // interrupt 掐断的那一轮必以非 completed 终局上报 end——它是编排方自造的预期
   // 事件，落史会让 interrupt 前排队的 followup 续轮游离于单线阻塞之外，「失败已知
   // 悉」预告/附因推送还会误导主流程进入失败处置。
@@ -208,7 +208,7 @@ export function attributeEnd({
   // E5：双发 end 的第二发落在备选评估的 await 窗口内（pickFallbackEntry 含真实
   // 网络 I/O）：once-guard 已登记、评估中预告已发、活记录仍在原槽位。此处若照常
   // finalizeEnd，会把活记录提前落史——评估返回后 finish 落空、重派被静默放弃，
-  // 主流程收过「评估中」预告却永等不到终局口径（棒2-Z1）。
+  // 主流程收过「评估中」预告而永等不到终局的口径。
   // 不落史、不发矛盾口径、不推进队列（槽位仍被评估占用，推进时机归重派各终局分支）。
   if (fallbackDecided(childId) && live) {
     return done('fallback-in-flight', ops, { ownerPid, type: resolvedType, notices }, {
@@ -218,9 +218,9 @@ export function attributeEnd({
 
   // E8：need_help 挂起回合的静默出口。子代调 need_help 即 suspend（台账 status 转
   // waiting），而它挂起前的那一轮在 harness 侧仍以 completed 终局上报 end——这条
-  // end 不是完工口径，是「一次求助的中场哨」。此前它一路掉进报告闸门，被判成
-  // 「完工未交报告」：发射第九出口 + queued 补发 prompt，把已经挂起的子代
-  // coldResume 唤醒（求助单还挂在册上，人却被踢回去补交报告）。闸门在这里不适用：
+  // end 不是完工口径，是「一次求助的中场哨」——不可以交给报告闸门判成「完工未交
+  // 报告」：那会发射第九出口 + queued 补发 prompt，把已经挂起的子代 coldResume
+  // 唤醒（求助单还挂在册上，人却被踢回去补交报告）。闸门在这里不适用：
   // 不 finish、不补发、不推进队列——记录留在 waiting 原位，等主编 forward/continue。
   if (ledgerRecord?.status === 'waiting') {
     return done('suspended-help-hold', ops, { ownerPid, type: resolvedType }, {
@@ -235,7 +235,7 @@ export function attributeEnd({
     .join('\n')
   const failed = info?.stopReason !== 'completed'
   // 失败附因兜底：subagent/end 载荷无 error 字段，读子会话最后一条 turn/end 的
-  // reason.error（live 快路径 + 持久化档案主路径，0.2.3-tisitan.9）；读档失败
+  // reason.error（live 快路径 + 持久化档案主路径）；读档失败
   // 静默退回无附因（console.warn 留痕，不报错）。
   const failure = failed ? readFailure(childId) : undefined
   const baseConclusion = text || `(${String(info?.stopReason)})`
@@ -247,7 +247,7 @@ export function attributeEnd({
   // 才进入异步重派，同步登记 once-guard 防双派。
   if (info?.stopReason === 'error' && chain.length > 0 && !fallbackDecided(childId) && live) {
     ops.push({ op: 'add-fallback-guard', childId })
-    // 同步预告（0.3.0-tisitan.18，同步段零 await）：harness 原生 failed 通知在
+    // 同步预告（同步段零 await）：harness 原生 failed 通知在
     // settle 瞬间同步唤醒主流程，而备选处置是异步的——真空期内主流程不知道备选
     // 存在，可能自行报死/手动重派撞车。进入异步评估前同步 inject 一行预告，告知
     // 主流程暂缓失败处置、静默等待 broker 的备选处置通知。
@@ -267,7 +267,7 @@ export function attributeEnd({
     })
   }
 
-  // E7：正常收尾。同步预告（0.3.0-tisitan.18）：不进备选评估的失败终局（无链 /
+  // E7：正常收尾。同步预告：不进备选评估的失败终局（无链 /
   // 非 error 终局）也要同步告知取证中，消灭失败通知真空期；成功 end 不发预告。
   // E5 已把「once-guard 在册的双发」拦在前面，这里不会发矛盾口径。
   if (failed && !fallbackDecided(childId)) {
@@ -276,7 +276,7 @@ export function attributeEnd({
       parentId: ownerPid,
       text: `[dsh-my-go] 失败已知悉: ${childId} (${resolvedType}) ${chain.length > 0 ? '不进入备选评估，取证中' : '无备选链，取证中'}`,
     })
-    // 附因全灭的终局口径（棒2-L4）：live 与档案都没读到失败原因且不进重派评估时，
+    // 附因全灭的终局口径：live 与档案都没读到失败原因且不进重派评估时，
     // 「取证中」预告之后也必须有终局一行，协议不留真空期
     if (!failure) {
       notices.push({
@@ -287,7 +287,7 @@ export function attributeEnd({
     }
   }
 
-  // E7'（报告提交制闸门，0.5.0-tisitan.1）：completed 终局且开关开时过闸。
+  // E7'（报告提交制闸门）：completed 终局且开关开时过闸。
   // failed 永不过闸（上方 failed 分支照旧）；reportGate 缺省 = 现路径一字不动。
   // 判定源是成功提交登记，子代最后一条消息不参与任何解析。
   if (reportGate?.enabled && !failed) {
@@ -315,7 +315,7 @@ export function attributeEnd({
       })
     }
     if (reportGate.repairRetried(childId)) {
-      // 已补发过（补发轮 end 或双发残余窗口）：转裁决落账，不再二次补发。
+      // 已补发过（补发轮 end 或双发残余窗口）：转裁决落账，不做二次补发。
       // 结论前缀「未交付：」+ 最后消息全文（唯一的现场材料，不比现状差）。
       return done('finalize', ops, {
         ownerPid,
@@ -360,7 +360,7 @@ export function attributeEnd({
   function done(decision, decisionOps, decisionFacts, extra = {}) {
     const advance = DECISION_ADVANCE[decision]
     if (advance === undefined) throw new Error(`attributeEnd: 决策 ${decision} 未在 DECISION_ADVANCE 登记队列推进时机`)
-    // facts.lane（二期 2.3，D18 口径）：纯事实记录——被释放槽位所属泳道，供
+    // facts.lane（D18 口径）：纯事实记录——被释放槽位所属泳道，供
     // metrics 与测试断言，**不参与任何推进决策**（global-scan 下推进决策由
     // isLaneFree 驱动，见 read-pool-semantics.md §2.5）。type 未定（E0/E2）则
     // lane 缺席，不猜。

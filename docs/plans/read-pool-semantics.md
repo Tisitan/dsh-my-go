@@ -1,8 +1,8 @@
 # dsh-my-go 读平面并行池：归因与失败语义设计（二期 2.1）
 
 > 交付：Hephaestus 设计批（二期步骤 2.1，规划 docs/plans/next-gen-architecture-0.4.0.md :222-230）。
-> 纯设计文档，零代码改动。行号一律以 **0.4.0-tisitan.0 工作区（含一期未 commit 成果）** 为准——
-> 一期 1.5 施工后 end-attribution.mjs 出口已扩为九个，规划文档内引用的部分行号相对本批次发生平移，
+> 纯设计文档，零代码改动。行号一律以 ** 工作区（含一期未 commit 成果）** 为准——
+> 一期 1.5 施工后 end-attribution.mjs 出口已扩为九个，规划文档内引用的部分行号相对该次施工发生平移，
 > 本文行号均为实测重锚后的当前值。
 >
 > 已裁决参数（本文直接采用，不再展开论证）：
@@ -17,8 +17,8 @@
 
 ## 〇、实施状态（二期 2.6 收口时标注——本文全部决议均已落地）
 
-> 状态基准：二期 2.1~2.5 施工完成、2.6 收口（版本保持 0.4.0-tisitan.0 未 bump，
-> tisitan.4 段 Unreleased 口径，待基线关窗后由主编统一定稿）。测试编号对应：
+> 状态基准：二期 2.1~2.5 施工完成、2.6 收口（版本保持 未 bump，
+> Unreleased 口径，待基线关窗后由主编统一定稿）。测试编号对应：
 > T1~T9 = 本文 §六规划项；S 系列 = `test/orchestration.test.mjs` 泳道段；
 > E 系列 = `test/end-buffer.test.mjs`；L 系列 = `test/lane-scheduling.test.mjs`。
 
@@ -168,7 +168,7 @@ advanceQueue(orch, parentHint):
 
 ### 4.2 泄漏子路径（R2.1 × R2.2 复合，现状单线已存在、并行放大）
 
-E2 的成因是「end 抢在 spawn resolve 登记之前」（end-attribution.mjs:139-140）。对被丢的那条 end，其 spawn 链随后仍会正常走完 broker.mjs:833-836（spawnChild resolve → sessionTypes.set → bindChild 换键 → childOwner.set）——但 end 已经丢了，没有任何后续事件会再触发该记录的终局 ⇒ **记录永挂 running，lane 槽永久泄漏**：write lane 泄漏 1 = 该实例编排整体冻结；read lane 泄漏 1 = 池产能永久 -33%~50%，无自愈路径（CURRENT_MAP_CAP=500 的驱逐几乎永不触达）。现状单线下此窗口为进程内 promise 交错，实测罕见（0.2.3-tisitan.6 一族）；并行下 spawnChild 网络窗口 ×N 交错，概率同倍放大。**E2 兜底必须覆盖泄漏面，而不只是归属面。**
+E2 的成因是「end 抢在 spawn resolve 登记之前」（end-attribution.mjs:139-140）。对被丢的那条 end，其 spawn 链随后仍会正常走完 broker.mjs:833-836（spawnChild resolve → sessionTypes.set → bindChild 换键 → childOwner.set）——但 end 已经丢了，没有任何后续事件会再触发该记录的终局 ⇒ **记录永挂 running，lane 槽永久泄漏**：write lane 泄漏 1 = 该实例编排整体冻结；read lane 泄漏 1 = 池产能永久 -33%~50%，无自愈路径（CURRENT_MAP_CAP=500 的驱逐几乎永不触达）。现状单线下此窗口为进程内 promise 交错，实测罕见（一族）；并行下 spawnChild 网络窗口 ×N 交错，概率同倍放大。**E2 兜底必须覆盖泄漏面，而不只是归属面。**
 
 ### 4.3 方案 A（决议采纳）：end 缓冲重放——确定性归因，插件侧自足
 
@@ -232,7 +232,7 @@ subagent/end 入口（broker.mjs:1972 起）：
 
 ### 5.3 终局口径与补发链
 
-- 「预告之后必有终局」纪律（0.2.3-tisitan.18 一族）的全部配对按 ownerPid+childId 寻址，多子代并发终局时通知在主编侧交错但每对各自闭合，无共享游标——不变；
+- 「预告之后必有终局」纪律的全部配对按 ownerPid+childId 寻址，多子代并发终局时通知在主编侧交错但每对各自闭合，无共享游标——不变；
 - attemptReportRepair 正常路径：记录占原 lane 槽 → 补发轮 end → repairRetried 命中 → finalize 释放槽 ✓；投递失败路径：落账 + advanceQueue 释放槽 ✓；
 - 双发残余窗口（一期已知边界）：guard 同步段时序未变 ⇒ 窗口不放大 ⇒ 维持「已知边界」口径（end-attribution.mjs:51-52），测试注明即可。
 
@@ -262,7 +262,7 @@ subagent/end 入口（broker.mjs:1972 起）：
 
 ---
 
-## 七、决策空白清单（须维护者拍板，本文不擅自定）
+## 七、决策记录
 
 | # | 问题 | 选项 | 本文倾向（仅供参考） |
 | --- | --- | --- | --- |

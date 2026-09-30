@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — configuration card stylesheet (0.5.0-tisitan.3).
+ * dsh-my-go — configuration card stylesheet.
  *
  * The settings face used to be a stack of inline styles: one column, everything
  * always expanded, and no way to state a layout contract (a grid column width or
@@ -262,6 +262,72 @@ export const SETTINGS_CSS = `
   color: var(--dsw-alias-label-secondary, #999);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.mygo-calc {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, #444);
+  background: var(--dsw-alias-bg-layer-2, #161616);
+}
+.mygo-calcHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mygo-calcTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #ddd);
+}
+.mygo-calcNote {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, #777);
+  overflow-wrap: anywhere;
+}
+.mygo-calcGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.mygo-calcField {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mygo-calcOuts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.mygo-calcOut {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.04));
+}
+.mygo-calcValue {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary, #ddd);
+}
+.mygo-calcValue[data-tone='idle'] {
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, #777);
+}
+.mygo-calcActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
 }
 .mygo-legend {
   display: flex;

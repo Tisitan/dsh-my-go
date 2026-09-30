@@ -10,7 +10,7 @@
 // 换入独立临时目录；node --test 文件间进程隔离、文件内串行，env 还原在 finally。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { boardRoot, writeBoard, readBoardSlice, hasBoardEntry } from '../preset/shared/board.mjs'

@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — orchestration tree panel (tisitan.15 split).
+ * dsh-my-go — orchestration tree panel ( split).
  *
  * Owns the polling/panel state machine that used to live at the top of
  * client.js: the 600ms snapshot poll, the overlay TreePanel (current /
@@ -9,7 +9,7 @@
  *
  * Consumes the snapshot RPC value: { seq, parents: { [id]: { parentSessionId,
  * current, queue, helpRequests, history } }, roster, rosterLines }. `roster`
- * is the structured roster (tisitan.9 A-05) the panel lays out itself;
+ * is the structured roster the panel lays out itself;
  * `rosterLines` is its deprecated text mirror, only kept as a fallback for an
  * older host half. The usage section (contract step 6/7) rides the same poll
  * beat with a getUsage call — see pollUsage below.
@@ -22,7 +22,7 @@ import { UsageSection } from './usage-panel.js'
 import { usageSessionTarget, sessionsListPhase } from './usage-views.js'
 import { GraphSection } from './panel-graph.js'
 import {
-  AGENT_LABELS,
+  
   AGENT_COLORS,
   MONO_FONT,
   ACCENT_RUNNING,
@@ -41,11 +41,11 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
   // current, queue, helpRequests, history } } }
   let snapshot = { seq: 0, parents: {} }
   let snapshotLoaded = false
-  // 快照桥健康度（E10/B-03 后分两型）：null=正常，'absent'=host 端 RPC 根本没
-  // 应答（插件未激活/仍在启动），'internal'=host 端在、但桥函数抛了错。
+  // 快照桥健康度：null=正常，'absent'=宿主端 RPC 根本没
+  // 应答（插件未激活/仍在启动），'internal'=宿主端在、但桥接函数抛了错。
   let bridgeProblem = null
   let bridgeDetail = ''
-  // 轮询节流（E5/A-02）：一次 in-flight 只允许一个刷新在跑（快照体积随编排
+  // 轮询节流：一次 in-flight 只允许一个刷新在跑（快照体积随编排
   // 历史线性增长，慢宿主上 600ms 一轮会自我堆叠）；连续失败按
   // 600 → 1500 → 3000ms 退避，成功即复位到基准档。
   const POLL_BASE_MS = 600
@@ -103,7 +103,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
         // currently open session (no-op while the section is not visible).
         void pollUsage()
       } else if (res && res.error && res.error.code === 'internal') {
-        // host 端桥函数抛错（lib snapshot 端点自带 try 后的结构化失败信封）：
+        // 宿主端桥接函数抛错（lib snapshot 端点自带 try 后的结构化失败信封）：
         // 与「桥未注册」分开提示，前者说明装配完成但状态读挂了
         notePollFailure('internal', String(res.error.message ?? ''))
       } else {
@@ -202,7 +202,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
       const rerender = () => force((c) => c + 1)
       listeners.add(rerender)
       // 相对时间（「3 分钟前」）需要自刷新：快照不变时不触发重渲染。
-      // 刷新链只在面板可见时做功（tisitan.8 A-09）：面板关着时这枚 30s tick
+      // 刷新链只在面板可见时做功：面板关着时这枚 30s tick
       // 每轮都强制重渲染一个返回 null 的组件，纯烧电。
       const tick = setInterval(() => { if (panelOpen) force((c) => c + 1) }, 30_000)
       return () => { listeners.delete(rerender); clearInterval(tick) }
@@ -220,7 +220,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
     // parentSessionId 短后缀 chip 区分归属。
     // LEGACY_PARENT_ID 是台账 v1 兼容桶（broker 载入时造出的幽灵父区）：它没有属主
     // 会话、current 恒空、点开无处可跳，出现在父区列表里只会被误认成一个
-    // 真实编排会话（tisitan.8 A-04，父区直接过滤）。
+    // 真实编排会话。
     const parentList = Object.values(parents).filter((p) => p && p.parentSessionId !== LEGACY_PARENT_ID)
     const multi = parentList.length > 1
 
@@ -334,11 +334,11 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
       bridgeProblem === 'internal'
         ? React.createElement('div', {
             style: { marginBottom: 10, padding: '6px 8px', borderRadius: 6, background: 'rgba(255,152,0,0.12)', border: '1px solid rgba(255,152,0,0.35)', fontSize: 12 },
-          }, `⚠ host 端编排快照读取异常（装配已完成，桥函数抛错）：${bridgeDetail || '未提供原因'}；面板停在最后一次实况，按退避节奏自动重试。`)
+          }, `⚠ 宿主端编排快照读取异常（装配已完成，但桥接函数抛错）：${bridgeDetail || '未提供原因'}；面板停在最后一次实况，按退避节奏自动重试。`)
         : bridgeProblem === 'absent'
           ? React.createElement('div', {
               style: { marginBottom: 10, padding: '6px 8px', borderRadius: 6, background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', fontSize: 12 },
-            }, '⚠ 编排桥未就绪：host 端 /dsh-my-go RPC 无响应（插件未激活或仍在启动），面板将持续自动重试。')
+            }, '⚠ 编排服务未就绪：宿主端 /dsh-my-go 无响应（插件未激活或仍在启动），面板将持续自动重试。')
           : null,
 
       React.createElement(GraphSection, { records: currents, queue: queues, histories, sessions }),
@@ -386,7 +386,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
         ? React.createElement('div', { style: { marginBottom: 10 } },
             sectionHeader('求助', helps.length),
             helps.map((h, i) => row({
-              // 求助单 id 才是这一行的身份（tisitan.8 A-08）：同一儿童可以
+              // 求助单 id 才是这一行的身份：同一儿童可以
               // 先后挂着两张不同 intent 的求助单，按 childId 做 key 会让 React
               // 把第二张就地复用成第一张（intent 文案串台）
               key: `hlp-${h.parentSessionId}-${h.id ?? i}`,
@@ -428,7 +428,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
           )
         : null,
 
-      // 用量统计区（契约步骤 6/7）：纯展示组件，自身不发 RPC——数据来自上方
+      // 用量统计区：纯展示组件，自身不发 RPC——数据来自上方
       // 共享轮询的 usage 快照；从折叠展开时立即补一发，省掉最多 600ms 空窗。
       React.createElement(UsageSection, {
         usage,
@@ -440,8 +440,8 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
         },
       }),
 
-      // 花名册常驻区（tisitan.15；tisitan.9 A-05 起吃结构化 roster）：渲染依据
-      // 是 snapshot.roster 数组——表头文案、计数、行排版全部客户端自持。旧写法
+      // 花名册常驻区：渲染依据
+      // 是 snapshot.roster 数组——表头文案、计数、行排版全部客户端自持。
       // 靠「rosterLines[0] 必为表头」的位置约定 slice(1) 取数、用 length-1 当
       // 计数，等于把 host 的字符串格式当 API：host 一改措辞（或哪天想加个脚注）
       // 这里就静默少一行或多渲染一行标题。rosterLines 只作旧 host 的兼容回落。
@@ -472,7 +472,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
               React.createElement('span', null, `${entry?.role ?? '?'}`),
               React.createElement('span', { style: { color: '#c8c8c8' } }, `· ${entry?.modelText ?? '跟随环境'}`),
               Array.isArray(entry?.chain) && entry.chain.length > 0 ? chip(`+${entry.chain.length}`, `备选链 ${entry.chain.length} 条`, ACCENT_QUEUE) : null,
-              entry?.builtin === false ? chip('自定义', '自定义角色（不在内置八工种内）') : null,
+              entry?.builtin === false ? chip('自定义', '自定义角色（不在内置工种内）') : null,
             ))
             : legacyLines
               ? legacyLines.map((line, i) => React.createElement('div', {
@@ -480,7 +480,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
                 title: line,
                 style: { fontFamily: MONO_FONT, fontSize: 11, color: '#a0a0a0', padding: '2px 8px', overflowWrap: 'anywhere' },
               }, line))
-              : React.createElement('div', { style: { color: '#888', fontSize: 12, padding: '2px 8px' } }, '花名册不可用（host 未就绪）'),
+              : React.createElement('div', { style: { color: '#888', fontSize: 12, padding: '2px 8px' } }, '花名册不可用（宿主未就绪）'),
         )
       })(),
     )

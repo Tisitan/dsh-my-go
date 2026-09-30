@@ -1,10 +1,10 @@
 /**
- * dsh-my-go — 泳道星图（canvas 2d + requestAnimationFrame 独立帧循环）。
+ * dsh-my-go — 泳道图（canvas 2d + requestAnimationFrame 独立帧循环）。
  *
  * docs/design/panel-graph-demo.html 的移植件（冻结稿 v1.2）：几何坐标、粒子参数、
  * 状态→视觉映射、reduced-motion 降级逐条照稿还原。差异只在数据侧——demo 吃
  * 自带演出脚本，这里吃面板快照差分：currentRecords 按 childId 分三类触发
- * （新 id = 派工脉冲 / status 跳变 = 转场 / id 消失 = 终局回流或静默淡出）。
+ * （新 id = 派工动画 / status 跳变 = 转场 / id 消失 = 终局回流或静默淡出）。
  *
  * 终局回流的触发源是 history 而非 currentRecords：宿主 finish() 把记录从
  * currentMap 摘除、终局只落 history（preset/shared/orchestration.mjs:220-240），
@@ -663,10 +663,10 @@ export function GraphSection({ records, queue, histories, sessions }) {
       style: { cursor: 'pointer', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 4 },
       onClick: () => setOpen((v) => !v),
       title: open
-        ? '收起星图'
-        : '展开泳道星图（Sisyphus 子代实时动画；展开时按当前子代重放一次派工脉冲）',
+        ? '收起泳道图'
+        : '展开泳道图（Sisyphus 的子代理实时动画；展开时按当前子代理重放一次派工动画）',
     },
-      React.createElement('span', { style: { fontWeight: 600, fontSize: 12 } }, `${open ? '▾' : '▸'} 星图`),
+      React.createElement('span', { style: { fontWeight: 600, fontSize: 12 } }, `${open ? '▾' : '▸'} 泳道图`),
       React.createElement('span', {
         style: { fontSize: 11, lineHeight: '15px', padding: '0 6px', borderRadius: 8, background: 'rgba(255,255,255,0.08)', color: '#999' },
       }, String(scope.records.length)),

@@ -1,6 +1,6 @@
-> 🗄️ **历史存档（tisitan.15 归档）**：本报告为 2026-08-27 审查时点的快照，所述行号、行数与结论不随实现更新；现行机制以 [ARCHITECTURE.md](../ARCHITECTURE.md) / [FORK-GUIDE.md](../FORK-GUIDE.md) 为准。
+> 🗄️ **历史存档（归档）**：本报告为 2026-08-27 审查时点的快照，所述行号、行数与结论不随实现更新；现行机制以 [ARCHITECTURE.md](../ARCHITECTURE.md) / [FORK-GUIDE.md](../FORK-GUIDE.md) 为准。
 
-# dsh-my-go v0.2.3-tisitan.10 核心运行时代码审查报告
+# dsh-my-go 核心运行时代码审查报告
 
 > 审查对象：`preset/tools/broker.mjs`（1627 行，agent 平面）＋ `lib/index.js`（1541 行，host 平面）
 > 方式：只审不改。逐函数通读＋外围交叉验证（cordis.patch.yml / preset.yml / package.json / prompts/*.md / test/*.{mjs}）
@@ -20,7 +20,7 @@
   }
   ```
 - **触发场景**：harness 通知链路瞬时故障、父会话注入通道拒收。此后求救单已入 `helpRequests`、记录已 `waiting`，父会话却**收不到任何信号**——子代理无限期悬挂，直到属主会话完工/销毁才被 `clearHelpFor` 顺带清理。Sisyphus 若不主动查 `orchestration_status` 无法察觉。
-- **对比**：本项目对失败附因推送（tisitan.8）、队列停摆等都做了「绝不静默」原则（dropQueuedFailed 有 console.error、dispose 兜底有 console.warn），唯独这条最关键的「 SOS 丢失」路径零留痕，是原则贯彻的漏网点。
+- **对比**：本项目对失败附因推送、队列停摆等都做了「绝不静默」原则（dropQueuedFailed 有 console.error、dispose 兜底有 console.warn），唯独这条最关键的「 SOS 丢失」路径零留痕，是原则贯彻的漏网点。
 - **建议**：catch 内至少 `console.warn('[dsh-my-go] need_help report delivery failed for ${id}')`；更优做法再走一次 `notifyParent(parent, '求助单 … 未能送达，请查看 orchestration_status')` 二次触达。
 
 ### 【Major】M2 — forward 将 help.content 原文裸传为新 prompt：跨信任边界的注入放大器
@@ -121,7 +121,7 @@
 ## 三、优秀设计确认
 
 1. **「任务不蒸发」三段式收口**：队列派发失败 → requeueHead 保持队序 → 线性退避重试（timer.unref 不挡退出）→ 超 cap 后 dropQueuedFailed 落 failed 史 + console.error + 继续消化后续。任何一段都有落账与日志，无静默滞留路径。
-2. **spawning 归因的克制**：唯一可归因才 bindChild，歧义即弃（配合 m4 可更好），彻底杜绝 tisitan.6 的历史串号根因。
+2. **spawning 归因的克制**：唯一可归因才 bindChild，歧义即弃（配合 m4 可更好），彻底杜绝 的历史串号根因。
 3. **负缓存规避**：effortCache/modelCache 均只缓存查询成功结果，llm 服务瞬时缺席不会把 effort/模型绑定在本进程生命期内永久打哑——这类「宁可重试不可错记」的取舍贯穿全局。
 4. **父会话兜底上移**：advanceQueue 按 `work.parentId` 从 agents 注册表现取现用，父会话死亡自动走 retry→abandon 排空成 failed 史；注释里还明确否决了 `agents.roots()[0]` 这种会跨会话漏任务的写法（`lib/index.js:926-928`）。
 5. **错误消息可直接行动**：unknown sub-agent id 的报错自带「是否重启过/是否被 200 条上限挤出 + 请 go_work 重派」诊断指引，运维摩擦小。

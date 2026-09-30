@@ -1,19 +1,19 @@
 # dsh-my-go 总审查报告（2026-08-30）
 
-> **已销账**：10 项工单 8 修 / 1 变质切除 / 1 数据遗留（legacy 桶），详见 2026-09-02 全面审查（棒④）；本报告随 0.3.0-tisitan.10 文档总账批归档至 `docs/archive/`，正文不再更新。
+> **已销账**：10 项工单 8 修 / 1 变质切除 / 1 数据遗留（legacy 桶），详见 2026-09-02 全面审查（棒④）；本报告随 文档总账批归档至 `docs/archive/`，正文不再更新。
 
 ## 头部元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-30 |
-| 版本 | 0.2.3-tisitan.19 |
+| 版本 | 0.2.3 线（2026-08-30 快照） |
 | 基线 | npm test 179/179 绿 |
 | 方法 | 五棒流水线（explore 全量勘察 → hephaestus 运行时深审 → hephaestus 前端深审 → explore 一致性核查 → librarian 文档对账）+ 真机事故淬炼 |
 
 ## 总评
 
-结构健康度高于预期——测试 179 对账精确闭合、shared 铁律 6/6 满分、零孤儿文件、零隐私泄漏、双半 30+ 机制逐对齐、CHANGELOG 六节 18+ 条声明抽验全部落实（含 dist 字节级吻合）、React 生命周期与注入面干净、tisitan.16/17/18/19 新机件独立复审通过。**零 Critical。**
+结构健康度高于预期——测试 179 对账精确闭合、shared 铁律 6/6 满分、零孤儿文件、零隐私泄漏、双半 30+ 机制逐对齐、CHANGELOG 六节 18+ 条声明抽验全部落实（含 dist 字节级吻合）、React 生命周期与注入面干净、/17/18/19 新机件独立复审通过。**零 Critical。**
 
 ## Critical
 
@@ -43,7 +43,7 @@
 
 ### 棒2-Z2 spawn 解析前回跳残留
 
-activeFallback.set 在 await startContinuable 之后（`broker:1345-1354`），窗口内重派儿童请求经 typeOfAgent label 兜底回跳主模型——tisitan.16 同款机制的最后存活窗口。
+activeFallback.set 在 await startContinuable 之后（`broker:1345-1354`），窗口内重派儿童请求经 typeOfAgent label 兜底回跳主模型—— 同款机制的最后存活窗口。
 
 修复 = spawn 前登记 pending 备选表供 waterfall 匹配。
 
@@ -61,11 +61,11 @@ activeFallback.set 在 await startContinuable 之后（`broker:1345-1354`），�
 
 `broker:1464-1465` 实发三分支，`prompts/sisyphus.md:70-78` 只写两支；CHANGELOG .18 明写三分支，prompt 层漏同步。
 
-### 棒4-Z2 dsv4p0813 UI 文案作用域误导
+### 棒4-Z2 补丁开关 UI 文案作用域误导
 
 `settings-core.js:254` 未说明执行面仅 broker 半，lib-only 形态零效果零提示。
 
-### 棒4-Z3 sisyphus 卡 dsv4p0813 死开关
+### 棒4-Z3 sisyphus 卡补丁开关死开关
 
 assemble 识别面 `broker:495-498` 恒不命中 sisyphus 会话，任何配置不生效。
 
@@ -79,7 +79,7 @@ assemble 识别面 `broker:495-498` 恒不命中 sisyphus 会话，任何配置�
 
 修复 = 一行 engines 改 >=22.15。
 
-### 现场-Z3（审查途中 Nova 真机擒获）
+### 现场-Z3（审查途中真机擒获）
 
 continue b79b127f 报 unknown-id「不在编排台账」，但台账文件与 broker status 视图均有该记录（三方矛盾）；continue 同桶同年代的 550a6669 成功 → 记录特异非系统性。另台账文件存在空 parentSessionId 的 56 条记录桶。移交修复棒诊断。
 
@@ -88,7 +88,7 @@ continue b79b127f 报 unknown-id「不在编排台账」，但台账文件与 br
 锚点从略，全文各棒报告在案。
 
 - **棒1 ×8**：normalizeRoleToolNames 死码 `roster-rows.js:58` / describeAgent+resolveEffectiveBinding+encodeSegment 再导出无消费者 / ROLE_KEY_PATTERN 双处定义 `roster-rows.js:16`≡`constants.mjs:20` / AGENT_TYPES 同名异义 / 六 peerDeps 零 import / build 用 bun 当跑器 / peer rc.6 vs dev rc.8 偏斜 / INTENT_LABELS 可降非导出
-- **棒2 ×7**：roles.sisyphus 只写死数据 / 跨会话 continue 抢属主 `broker:231-242`+`765-767` / 双半 model 校验三处不对称 `lib:1148,1211` vs `broker:1163-1199` / 附因全灭时无链路径静默 `broker:1243-1247` / 废弃面 dropQueuedFor+nextId 未用 import+promotionStateFor steps 计数器 / DSV4 开关时序边界 / promotion 零行为测试
+- **棒2 ×7**：roles.sisyphus 只写死数据 / 跨会话 continue 抢属主 `broker:231-242`+`765-767` / 双半 model 校验三处不对称 `lib:1148,1211` vs `broker:1163-1199` / 附因全灭时无链路径静默 `broker:1243-1247` / 废弃面 dropQueuedFor+nextId 未用 import+该补丁 steps 计数器 / 补丁开关时序边界 / 该补丁零行为测试
 - **棒3 ×6（减 2）**：链内空行持久化语义 / 保存不回写归一化 / slots 三处无反注册 `client.js:48-51`+`panel-tree.js:322-338` / build 日志 UTF-16 码元冒充字节 `build-client.mjs:36` / listModels 畸形响应炸整页 `settings-core.js:48-50,171` / 假备选徽章 `panel-format.js:52-60`
 - **棒4 ×5**：「数秒内必到」无看门狗 `broker:1234` listModels 无超时 / 内置 roles.toolFilter 无 UI 编辑口 / `settings-core.js:235` 注释行号越界 broker 实仅 1473 行 / `FORK-GUIDE.md:16` client.js 46→57 / `CHANGELOG.md:209` 裸词 glm
 
@@ -106,8 +106,8 @@ continue b79b127f 报 unknown-id「不在编排台账」，但台账文件与 br
 | # | 级别 | 锚点 | 漂移内容 |
 |---|---|---|---|
 | A1 | 中 | §2.1:58-65 | OrchestrationState 旧形状（实况 currentMap Map cap500 + helpRequests Map，`shared/orchestration.mjs:22-24,209`） |
-| A2 | 中 | §3:214-217 | 设置页四字段与 §2.2:100-102 五字段同文档自相矛盾，且 tisitan.13-19 UI 增量缺席 |
-| A3 | 中 | §2.3:120-134 | DSV4P0813 未注明仅 broker 半 |
+| A2 | 中 | §3:214-217 | 设置页四字段与 §2.2:100-102 五字段同文档自相矛盾，且 UI 增量缺席 |
+| A3 | 中 | §2.3:120-134 | 该补丁未注明仅 broker 半 |
 | A4 | 低 | §2:44-48 | 工具清单缺 orchestration_status / list_subagents |
 | A5 | 低 | §2.1:93 | 档案路径应 encodeSegment(childId) |
 | A6 | 低 | §3:202-207 | 面板缺花名册常驻区 |
@@ -118,7 +118,7 @@ continue b79b127f 报 unknown-id「不在编排台账」，但台账文件与 br
 
 | # | 级别 | 锚点 | 漂移内容 |
 |---|---|---|---|
-| F1 | 中 | :55 | 「tisitan.18/176」实为 .19/179，与自身测试表矛盾 |
+| F1 | 中 | :55 | 「/176」实为 .19/179，与自身测试表矛盾 |
 | F2 | 低 | :103-125 | 测试树四处例数过时，且缺 failure-notice / dump-session 行 |
 | F3 | 低 | :16 | client.js 46→57 |
 | F4 | 低 | 全景图 | 左框四行错位、行宽参差 |
@@ -128,7 +128,7 @@ continue b79b127f 报 unknown-id「不在编排台账」，但台账文件与 br
 
 | # | 级别 | 锚点 | 漂移内容 |
 |---|---|---|---|
-| R1 | 中 | :4 | meta version tisitan.15 落后 4 版 |
+| R1 | 中 | :4 | meta version 落后 4 版 |
 | R2 | 中 | :339 | 「159 例」与 :318「179 例」同文件矛盾 |
 | R3 | 低 | | 46→57 |
 | R4 | 低 | | scripts 树缺 dump-session |
@@ -141,8 +141,8 @@ continue b79b127f 报 unknown-id「不在编排台账」，但台账文件与 br
 - 多跳台账一致性（bindChild 继承链）
 - 剪枝完备（LEDGER_PARENTS_CAP 200 + CURRENT_MAP_CAP 500 双点覆盖）
 - shared 六模块纯函数逐检通过
-- tisitan.16 回跳修复与 tisitan.17 复活重建双测试锁定
-- tisitan.19 链编辑器独立复审通过
+- 回跳修复与 复活重建双测试锁定
+- 链编辑器独立复审通过
 - schema↔UI 零逃逸字段
 - 七工种工具名零漂移
 - 隐私扫描 CLEAN
@@ -159,9 +159,9 @@ continue b79b127f 报 unknown-id「不在编排台账」，但台账文件与 br
 
 上游流中断伪装成功——glm 额度耗尽前后，长输出回合的流被掐断，错误文本「上游响应超时，流已中断」注入消息正文，回合却按成功收尾，备选链（失败终局才触发）对此类失明；两个 librarian 回合同一位置被掐断实证。
 
-另：tisitan.13 已治 turn/end 级失明（崩溃伪装 200），流级伪装是上一层同族问题。
+另：已治 turn/end 级失明（崩溃伪装 200），流级伪装是上一层同族问题。
 
-## 修复优先级建议（供主人裁决 tisitan.20）
+## 修复优先级建议（供维护者裁决）
 
 1. 棒2-M1 台账竞态
 2. 棒2-Z1 协议空等

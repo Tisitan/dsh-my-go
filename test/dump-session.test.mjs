@@ -1,4 +1,4 @@
-// dump-session 取证 CLI 单测（0.2.3-tisitan.16c）：zstdCompressSync 合成多帧档案
+// dump-session 取证 CLI 单测：zstdCompressSync 合成多帧档案
 // hermetic 验证——摘要规则、逐帧事件流、末帧截断容错、解压全灭非零语义、
 // childId 全项目目录搜索定位（档案名按 Session 格式代枚举：现行 v4 / 旧档 v0）。
 import { test } from 'node:test'
@@ -49,7 +49,7 @@ test('summarizeEvent：turn/end 打 reason.kind 与 error.message 前 200 字', 
 test('summarizeEvent：assistant/chunk 打 chunk.type；tool/call 打工具名；v3 旧档 tool/result 走 wrapper 兜底；其余空串', () => {
   assert.equal(summarizeEvent({ type: 'assistant/chunk', data: { chunk: { type: 'text' } } }), 'chunk=text')
   assert.equal(summarizeEvent({ type: 'tool/call', data: { name: 'pwsh' } }), 'name=pwsh')
-  // v3 旧档兼容分支（本机仍有 395 份 v3 档案在读）：isError 挂在 message.content[0]
+  // v3 旧档兼容分支仍在役：isError 挂在 message.content[0]
   // 的 tool-result 块上、message 顶层没有该键——顶层缺席时回落此处。
   assert.equal(summarizeEvent({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', isError: true }] } } }), 'isError=true')
   assert.equal(summarizeEvent({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result' }] } } }), 'isError=false', '成功调用照常 false')
@@ -62,7 +62,7 @@ test('summarizeEvent：tool/result 采信 V4 一等消息的顶层 isError（生
   // 宿主 0.1.7-alpha.2 的 createToolResultMessage（dsh-llm/lib/index.js:101-112）
   // 产出 { role:'tool', source:{kind:'tool',callId}, toolCallId, content, isError }
   // ——isError 在**消息顶层**；content[0] 是普通文本块，旧 tool-result wrapper 已被
-  // v4 迁移链明令拒收。真机全量扫描：v4 档案的 tool/result 全走此形状（wrapper 零命中）。
+  // v4 迁移链明令拒收。全量扫描：v4 档案的 tool/result 全走此形状（wrapper 零命中）。
   assert.equal(
     summarizeEvent({ type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: 'denied' }], isError: true } } }),
     'isError=true',
@@ -131,7 +131,7 @@ test('dumpArchive：档案不可读 / 无完整帧 → 抛错（CLI 转非零退
 
 // 档案名定位族：宿主 Session 档案名按格式代版本命名（v0 = session.jsonl.zstd，
 // vN = session.vN.jsonl.zstd，现行 v4），生产上只有现行名 —— 写死旧名会让
-// childId 定位全灭（tisitan.17 修复）。以下逐面覆盖：现行名命中 / 旧名兜底 /
+// childId 定位全灭（ 修复）。以下逐面覆盖：现行名命中 / 旧名兜底 /
 // 同目录多代并存取最高代 / 跨项目目录多命中取 mtime 最新 / 全不存在。
 function makeRoot(...projectDirs) {
   const root = mkdtempSync(join(tmpdir(), 'dump-session-root-'))
@@ -208,4 +208,18 @@ test('locateArchive：档案不存在返回 undefined，CLI/读取器报错文�
     warnings.some((m) => m.includes(join(root, '--proj-empty--', 'child-missing', SESSION_ARCHIVE_CURRENT_NAME))),
     `报错文案应给现行名期望路径，实际 ${JSON.stringify(warnings)}`,
   )
+})
+
+test('dumpArchive：badFrames 在返回契约里（健康档案恒 0，供汇总行做运维信号）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dump-session-'))
+  const file = writeArchive(dir, [
+    [{ type: 'session', id: 'child-1' }],
+    [{ type: 'turn/start', seq: 0, time: 1 }],
+  ])
+  const { frames, events, badFrames } = dumpArchive(file)
+  assert.equal(frames, 2)
+  assert.equal(events, 2)
+  // 解压失败帧的计数：帧扫描器先于解压拒绝畸形帧（帧头/块大小不符即抛错），
+  // 故常规构造下 >0 不可达——此处钉住契约字段与健康档案的恒零，>0 分支靠逐帧 warn 兜底。
+  assert.equal(badFrames, 0)
 })

@@ -1,4 +1,4 @@
-// 角色名册数据层（0.2.3-tisitan.14）：roles dict schema + 旧顶级键迁移 + 合并
+// 角色名册数据层：roles dict schema + 旧顶级键迁移 + 合并
 // 泛化回归。本文件只加载 lib/index.js（独立进程，避免 Symbol.for 快照桥被
 // broker 半覆盖）。
 import { test } from 'node:test'
@@ -21,18 +21,18 @@ const layersOf = (value) => ({ value, user: value, base: {} })
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-roster-home-'))
 
-// 迁移源形状：旧 settings.yaml（0.2.3-tisitan.13 及之前）= sisyphus + 七个顶级
+// 迁移源形状：旧 settings.yaml（ 及之前）= sisyphus + 七个顶级
 // 工种键。工种行含 fallbacks 全字段，验证无损搬运。（旧 toolMask 顶级键随屏蔽
-// 功能迁移至 dsh-tool-guard 而废弃，不再进入迁移形状。）
+// 功能迁移至独立工具面板插件而废弃，不再进入迁移形状。）
 const LEGACY_STORED = {
-  sisyphus: { provider: 'p-s', model: 'm-s', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] },
-  hermes: { provider: 'p1', model: 'm1', reasoningEffort: 'default', dsv4p0813: true, fallbacks: [{ provider: 'p2', model: 'm2' }] },
-  explore: { provider: 'p1', model: 'm3', reasoningEffort: 'default', dsv4p0813: false, fallbacks: [] },
-  librarian: { provider: 'p1', model: 'm3', reasoningEffort: 'default', dsv4p0813: false, fallbacks: [] },
-  looker: { provider: 'p3', model: 'm4', reasoningEffort: 'default', dsv4p0813: false, fallbacks: [] },
-  hephaestus: { provider: 'p4', model: 'm5', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] },
-  prometheus: { provider: 'p5', model: 'm6', reasoningEffort: 'max', dsv4p0813: false, fallbacks: [] },
-  oracle: { provider: 'p5', model: 'm7', reasoningEffort: 'max', dsv4p0813: false, fallbacks: [] },
+  sisyphus: { provider: 'p-s', model: 'm-s', reasoningEffort: 'high', fallbacks: [] },
+  hermes: { provider: 'p1', model: 'm1', reasoningEffort: 'default',  fallbacks: [{ provider: 'p2', model: 'm2' }] },
+  explore: { provider: 'p1', model: 'm3', reasoningEffort: 'default', fallbacks: [] },
+  librarian: { provider: 'p1', model: 'm3', reasoningEffort: 'default', fallbacks: [] },
+  looker: { provider: 'p3', model: 'm4', reasoningEffort: 'default', fallbacks: [] },
+  hephaestus: { provider: 'p4', model: 'm5', reasoningEffort: 'high', fallbacks: [] },
+  prometheus: { provider: 'p5', model: 'm6', reasoningEffort: 'max', fallbacks: [] },
+  oracle: { provider: 'p5', model: 'm7', reasoningEffort: 'max', fallbacks: [] },
 }
 const WORKER_KEYS = ['hermes', 'explore', 'librarian', 'looker', 'hephaestus', 'prometheus', 'oracle']
 
@@ -78,9 +78,9 @@ async function captureSchema() {
 const resolveSection = (row) => resolvedHostConfig(row)
 
 test('schema：roles dict 接受 persona/toolFilter 且保持形状', async () => {
-  const schema = await captureSchema()
+  await captureSchema()
   const row = {
-    provider: 'p', model: 'm', reasoningEffort: 'high', dsv4p0813: false,
+    provider: 'p', model: 'm', reasoningEffort: 'high',
     fallbacks: [],
     persona: '你是自定义角色',
     toolFilter: { allow: ['read', 'glob'], deny: [] },
@@ -142,7 +142,7 @@ test('迁移幂等：迁移后形状再次检测返回 null', () => {
 test('迁移并存：roles 已有同名行时顶级旧行覆盖（旧顶级是权威来源）', () => {
   const stored = {
     ...MIGRATED_STORED,
-    hermes: { provider: 'legacy-p', model: 'legacy-m', reasoningEffort: 'default', dsv4p0813: false, fallbacks: [] },
+    hermes: { provider: 'legacy-p', model: 'legacy-m', reasoningEffort: 'default', fallbacks: [] },
   }
   const ops = migrateLegacyRolesOps(stored)
   assert.ok(ops)
@@ -160,19 +160,19 @@ test('merge：roles.custom-x 键进入 bindings 并携带 persona/toolFilter', (
     roles: {
       explore: { provider: 'p1', model: 'm3' },
       'custom-x': {
-        provider: 'p9', model: 'm9', reasoningEffort: 'high', dsv4p0813: true,
+        provider: 'p9', model: 'm9', reasoningEffort: 'high', 
         fallbacks: [{ provider: 'p8', model: 'm8' }],
         persona: '你是测试角色', toolFilter: { allow: ['read'], deny: ['write'] },
       },
     },
   })
   assert.deepEqual(bindings['custom-x'], {
-    provider: 'p9', model: 'm9', reasoningEffort: 'high', dsv4p0813: true,
+    provider: 'p9', model: 'm9', reasoningEffort: 'high', 
     fallbacks: [{ provider: 'p8', model: 'm8' }],
     persona: '你是测试角色', toolFilter: { allow: ['read'], deny: ['write'] },
   }, '自定义角色行完整进入 bindings')
-  assert.deepEqual(bindings.explore, { provider: 'p1', model: 'm3', reasoningEffort: undefined, dsv4p0813: false, fallbacks: undefined, persona: undefined, toolFilter: undefined }, '内置工种改从 roles 读取')
-  assert.deepEqual(bindings.sisyphus, { provider: 'p-s', model: 'm-s', reasoningEffort: undefined, dsv4p0813: false, fallbacks: undefined, persona: undefined, toolFilter: undefined }, 'sisyphus 仍读顶级')
+  assert.deepEqual(bindings.explore, { provider: 'p1', model: 'm3', reasoningEffort: undefined, fallbacks: undefined, persona: undefined, toolFilter: undefined }, '内置工种改从 roles 读取')
+  assert.deepEqual(bindings.sisyphus, { provider: 'p-s', model: 'm-s', reasoningEffort: undefined, fallbacks: undefined, persona: undefined, toolFilter: undefined }, 'sisyphus 仍读顶级')
   assert.deepEqual(
     Object.keys(mergeRoleBindings(base, { roles: { 'custom-x': {} } })).filter((k) => !['sisyphus', 'explore', 'custom-x'].includes(k)),
     [],
@@ -187,7 +187,7 @@ test('merge 回归：空/缺 roles 与旧基线语义一致', () => {
   assert.deepEqual(mergeRoleBindings(base, null), base, 'null 存储原样回落基线')
 })
 
-test('merge：roles.sisyphus 死数据不消费——sisyphus 恒为顶级键（棒2-L1）', () => {
+test('merge：roles.sisyphus 死数据不消费——sisyphus 恒为顶级键', () => {
   const base = { sisyphus: {} }
   const merged = mergeRoleBindings(
     base,
@@ -229,11 +229,11 @@ test('apply：迁移失败保留原配置且 apply 不中断（mutate 抛错）'
   await assert.doesNotReject(() => hostApply(ctx, resolvedHostConfig(LEGACY_STORED)), '迁移失败只 warn，不炸插件装载')
 })
 
-// ── 读面投影 + 写面泛化（0.5.0-tisitan.3 起随 ops 编译层搬到浏览器侧）──────
+// ── 读面投影 + 写面泛化（ 起随 ops 编译层搬到浏览器侧）──────
 
 test('draftFromSection：roles 内置工种行提升回顶级，roles 原样附带', () => {
   const draft = draftFromSection(MIGRATED_STORED)
-  for (const field of ['provider', 'model', 'reasoningEffort', 'dsv4p0813', 'fallbacks']) {
+  for (const field of ['provider', 'model', 'reasoningEffort', 'fallbacks']) {
     assert.deepEqual(draft.hermes[field], LEGACY_STORED.hermes[field], `内置工种 ${field} 从 roles 提升回顶级`)
   }
   assert.deepEqual(draft.roles.hermes, LEGACY_STORED.hermes, 'roles 原样附带')
@@ -274,7 +274,7 @@ test('写面：draft 顶级值优先于 roles 同名旧值（用户编辑面生�
   assert.deepEqual(op, { op: 'set', path: ['roles', 'hermes', 'model'], value: 'edited' }, '顶级编辑值胜出')
 })
 
-test('写面：draft.roles.sisyphus 不产生任何写面（sisyphus 恒为顶级键，棒2-L1 写面）', () => {
+test('写面：draft.roles.sisyphus 不产生任何写面（sisyphus 恒为顶级键， 写面）', () => {
   const ops = buildSettingsOps({
     roles: {
       sisyphus: { provider: 'dict-p', model: 'dict-m' },
@@ -285,13 +285,13 @@ test('写面：draft.roles.sisyphus 不产生任何写面（sisyphus 恒为顶�
   assert.ok(ops.some((o) => o.path[1] === 'hermes' && o.path[2] === 'provider'), '正常角色行不受影响（哨兵）')
 })
 
-// ── 0.2.3-tisitan.15 前端功能批：persona 部分行 + snapshot 花名册 ──────────────
+// ── 前端：persona 部分行 + snapshot 花名册 ──────────────
 
 test('写面：只带 persona 的部分行不产生 5 字段 ops（已配绑定绝不被误清）', () => {
   const ops = buildSettingsOps({
     roles: { hermes: { persona: '覆盖人设' }, explore: { persona: '' } },
   }, layersOf({ roles: { hermes: { provider: 'p1', model: 'm1' }, explore: { provider: 'p2' } } }))
-  for (const field of ['provider', 'model', 'reasoningEffort', 'dsv4p0813', 'fallbacks']) {
+  for (const field of ['provider', 'model', 'reasoningEffort', 'fallbacks']) {
     assert.equal(ops.filter((o) => o.path[0] === 'roles' && o.path[1] === 'hermes' && o.path[2] === field).length, 0, `hermes.${field} 无 ops（字段缺失 = 不触碰）`)
   }
   assert.deepEqual(
@@ -322,4 +322,42 @@ test('snapshot 响应恒附 rosterLines：桥未就绪（无编排会话）也�
   assert.equal(res.value.roster.find((e) => e.role === 'apelles')?.builtin, true, 'apelles 是内置工种，结构化条目钉 builtin=true')
   assert.ok(!lines.some((l) => l.startsWith('- sisyphus')), 'sisyphus 是编排者单例，永不在可派花名册')
   assert.ok(lines.some((l) => l.includes('跟随环境')), '无绑定时标注跟随环境')
+})
+
+// ── 存量配置兼容（功能已移除）──────────────────────────────
+// 移除某个按工种开关时，用户层 yaml 里往往还留着那枚旧键。宿主 config schema 是
+// schemastery 的 z.object——实测行为：未知键**原样透传**（既不 strip 也不 strict）
+// 且不阻断同层已知字段的解析，故残键不会被宿主拒。本条把这条性质在三个消费层上
+// 钉住：宿主解析不炸 / bindings 合并不消费它 / 页面草稿 + ops 编译不回写它。
+// 夹具用中性占位键名代表「任何被移除的旧字段」，与具体功能解耦（被移除的那枚键名
+// 只留在 CHANGELOG 产品史里）；将来宿主改成 strip 语义时，断言②会红——那说明该行
+// 需要放宽（strip 比透传更干净，兼容性只增不减）。
+
+test('存量配置兼容：角色行里的已移除旧键按未知键处理，宿主解析 / bindings 合并 / ops 回写三层都不炸也不消费', () => {
+  const RESIDUAL = 'obsoletePatchFlag'
+  const rawRoles = {
+    hermes: { provider: 'p1', model: 'm1', reasoningEffort: 'high', fallbacks: [{ provider: 'p2', model: 'm2' }], [RESIDUAL]: true },
+  }
+  const raw = { sisyphus: { provider: 'p-s', model: 'm-s', [RESIDUAL]: true }, roles: rawRoles }
+  // ① 宿主解析（真 cordis resolveConfig + 真 lib/config.js schema；volatile 字段出活访问器）
+  const resolved = resolvedHostConfig(raw)
+  const rolesRow = resolved.roles.get()
+  const sisyphusRow = resolved.sisyphus.get()
+  assert.equal(rolesRow.hermes.provider, 'p1', '残键不阻断加载：已知字段照常解析')
+  assert.equal(rolesRow.hermes.reasoningEffort, 'high')
+  assert.equal(sisyphusRow.model, 'm-s', '顶级行同理')
+  assert.equal(rolesRow.hermes[RESIDUAL], true, '未知键原样透传（schemastery 不 strip 不 strict）——加载不炸的机制根因')
+  assert.deepEqual(rolesRow.hermes.fallbacks, [{ provider: 'p2', model: 'm2' }], '备选链等既有字段不受残键影响')
+  // ② bindings 合并：不消费未知键（被移除的字段不再进绑定表）
+  const stored = { sisyphus: sisyphusRow, roles: rolesRow }
+  const bindings = mergeRoleBindings({}, stored)
+  assert.equal(bindings.hermes.model, 'm1', '合并照常产出')
+  assert.equal(Object.keys(bindings.hermes).includes(RESIDUAL), false, '未知键不进绑定表')
+  assert.equal(Object.keys(bindings.sisyphus).includes(RESIDUAL), false, '顶级行同理')
+  // ③ 页面草稿 + ops 编译：不炸，且回写路径里绝不出现未知键（保存不会把残键复写）
+  const draft = draftFromSection(stored)
+  const ops = buildSettingsOps(draft, layersOf(stored))
+  assert.ok(Array.isArray(ops) && ops.length > 0, 'ops 正常产出')
+  assert.equal(ops.some((op) => op.path.includes(RESIDUAL)), false, 'ops 路径不含未知键')
+  assert.equal(ops.some((op) => JSON.stringify(op.value ?? '').includes(RESIDUAL)), false, '写入值里也不含未知键')
 })

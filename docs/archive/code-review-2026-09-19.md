@@ -1,7 +1,7 @@
 # dsh-my-go 全面体检报告（2026-09-19）
 
 > 审查范围：解耦性 / 可读性 / 可维护性 / 可扩展性 / 测试规划与实施 / 文档一致性。
-> 基线：工作区 0.5.0-tisitan.3（49 文件未提交批次进行中），HEAD = 0.5.0-tisitan.2。
+> 基线：工作区（49 文件未提交批次进行中）。
 > 方法：阶段 1 三棒并行勘察（结构 / 测试基建 / 文档漂移）+ 阶段 2 两棒代码级深审（运行时核心 / 前端与面板半），全部只读；唯一写面为 `npm test` 自产的 dist/ 构建产物。
 > 测试实测：**600 / 600 全绿**（node --test 阶段 3.8s，全程约 5.2s，exit 0）。
 > 体量：84 源文件 28248 行（手写生产源码约 10959 行，测试 13904 行占 51%，dist 2987 行为构建产物）。
@@ -42,7 +42,7 @@
 | D-5 | src/settings-core.js:45 vs preset/shared/constants.mjs:26 | **PRICE_KEY_PATTERN 双定义且已实际漂移**：本地版禁 model 段含 `/`，shared 版放行（OpenRouter 式 `openrouter/deepseek/...` 是设计意图）。结果：手编 YAML 合法的键，配置页无法新建同款；校验规则两半各说各话，且 host-parity 无此 parity 闸。**这是现行行为不一致，P1 中最接近 bug 的一条** |
 
 ### P2 精选
-- **内聚 vs 纠缠盘点**：18 个职责区块中 9 类（台账簇 :345-499 / 通知簇 :507-543 / 能力缓存簇 :2251-2313 / E2 缓冲簇 :2607-2677 / dispose 兜底簇 :187-219 / M1-M5 投递链 :1045-1209 / 链 dispatcher :1795-1922 / persona+DSV bootstrap :607-785 / 工具注册块 :1211-2193）是「本来就内聚、只是同住」，闭包依赖可枚举、抽取难度低-中；真纠缠只有 D-1/D-2/D-3 三处 + D-4 布局雷。
+- **内聚 vs 纠缠盘点**：18 个职责区块中 9 类（台账簇 :345-499 / 通知簇 :507-543 / 能力缓存簇 :2251-2313 / E2 缓冲簇 :2607-2677 / dispose 兜底簇 :187-219 / M1-M5 投递链 :1045-1209 / 链 dispatcher :1795-1922 / persona 装配块 :607-785 / 工具注册块 :1211-2193）是「本来就内聚、只是同住」，闭包依赖可枚举、抽取难度低-中；真纠缠只有 D-1/D-2/D-3 三处 + D-4 布局雷。
 - shared/misc.mjs 是「杂物抽屉」（8 个互不相关导出），新 helper 落点不可预期；board.mjs/archive.mjs 带真实副作用与「shared=纯」的直觉宣称有出入（属豁免非违约，但无标记）。
 - panel-tree.js 573 行三台状态机同居，listeners 集合既当渲染通知又当轮询驱动（点关闭按钮也会触发轮询尝试），无注释点明；settings-core.js 628 行五职责同居（容器/状态机/RPC 客户端/校验器/文案投影）。
 - 'legacy' 魔法串三处分布无共享常量（panel-tree.js:222 / usage-views.js:186 / 生产者在 broker 半）。
@@ -119,7 +119,7 @@
 | T-4 | usage-panel.js（359 行） | **唯一真零覆盖渲染面**（修正后口径：settings-core 主体实际被 client-card.test.mjs 假 React 行为档覆盖，原「1371 行零覆盖」收窄至此）；client-card 保真度受限于自制 React 替身 |
 | T-5 | bridge 等时序敏感面 | waitFor 轮询 + 负向 drain 窗口的 flake 余留（bridge 自曝并行下曾 1/5 假红）；windows 矩阵负载差异下仍是潜在源 |
 | T-6 | 1371 行测试定性三类清单 | A 类可低成本补测：settings-core 13 个私有纯投影（需 export）+ effortLabel + createCatalogStore；B 类需新设施：usage-panel 交互态、hooks 语义、真实受控输入；C 类不测合理：CSS 字面量、DOM 注入胶水、两行文案组件 |
-| T-7 | README.md:519 | 声称 589 例 vs 实测 600（+11 漂移，0.5.0-tisitan.3 的 usage-prices 套件所致）——文档侧 D 类问题一并修 |
+| T-7 | README.md:519 | 声称 589 例 vs 实测 600（+11 漂移，usage-prices 套件所致）——文档侧 D 类问题一并修 |
 
 ---
 
@@ -129,7 +129,7 @@
 
 | # | 内容 | 漂移 |
 |---|---|---|
-| D1 | 版本号三方不符 | README meta `0.5.0-tisitan.0` vs package.json `.3` vs FORK-GUIDE `.0`；HEAD 上就已错位，违反 FORK-GUIDE 自定的发版对齐纪律 |
+| D1 | 版本号三方不符 | README meta `` vs package.json `.3` vs FORK-GUIDE `.0`；HEAD 上就已错位，违反 FORK-GUIDE 自定的发版对齐纪律 |
 | D2 | peer 上界 | README 两处 `<0.1.6` vs package.json 实际 `<0.1.7`；CHANGELOG 全文无 0.1.7 记录 |
 | D3 | lib/index.js 行数 | README/FORK-GUIDE 说 632 vs 实际 687 |
 | D4 | src/client.js 行数 | README 104 / FORK-GUIDE 82 / 实际 267——三处三个数 |
@@ -163,10 +163,10 @@
 
 - 各「可独立成模块」簇的抽取难度判断基于静态闭包依赖分析，未做实际抽取验证。
 - 600 用例的断言质量未逐一审读（只对账数量与绿红 + 3 文件抽样）。
-- DSV4P0813 双代宿主行为仅静态核读；npm test 的 Windows 路径行为未验证（本机 Linux，CI 有 windows 矩阵兜底）。
+- 该补丁的双代宿主行为仅静态核读；npm test 的 Windows 路径行为未验证（本机 Linux，CI 有 windows 矩阵兜底）。
 - roles-editor/usage-prices-editor 在 client-card.test.mjs 中的断言覆盖度仅抽样核对，未逐断言穷举。
 - usage-panel 零引用、孤儿导出零引用基于静态 grep（排除 node_modules/dist），未做动态验证。
-- 本报告基于工作区 0.5.0-tisitan.3（49 文件未提交批次）现状；该批次收口方式变化时相关条目需复核。
+- 本报告基于工作区（49 文件未提交批次）现状；该批次收口方式变化时相关条目需复核。
 
 ## 九、棒次溯源
 

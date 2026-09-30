@@ -1,4 +1,4 @@
-// 反向 parity（0.3.0-tisitan.0 Wave 1）：lib 半编排面整体切除后的分界断言。
+// 反向 parity（ Wave 1）：lib 半编排面整体切除后的分界断言。
 //   ① lib 源码零编排面标记（编排工具注册/状态机/台账/备选链/生命周期钩子
 //      grep=0），broker 半（preset scope）全量保留——编排实现唯一归属 broker。
 //   ② RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有，
@@ -35,8 +35,8 @@ import { PRICE_KEY_PATTERN as ROWS_PRICE_PATTERN } from '../src/usage-price-rows
 const layersOf = (value) => ({ value: value ?? {}, user: value ?? {}, base: {} })
 
 // 测试隔离：DSH_HOME 指向独立临时目录（getBuiltinPersona 读盘用），并且全部
-// lib.apply 都带 ROW_CONFIG —— 0.1.7 起安装同步机制整体退役，行 config 经真 resolveConfig 解析（0.3.0-tisitan.8
-// E3/B-01）：旧写法全靠「版本标记碰巧已写」躲开那次后台拷贝，而 marker 语义本
+// lib.apply 都带 ROW_CONFIG —— 0.1.7 起安装同步机制整体退役，行 config 经真 resolveConfig 解析（
+// E3）：靠「版本标记碰巧已写」躲开那次后台拷贝是不成立的，而 marker 语义本
 // 批换成 version+内容摘要，那种侥幸会当场失效并让测试与安装器抢同一批文件。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-host-home-'))
 
@@ -68,13 +68,12 @@ const readBothHalves = () => Promise.all([
   readFile(new URL('../preset/tools/broker.mjs', import.meta.url), 'utf-8'),
   readFile(new URL('../lib/index.js', import.meta.url), 'utf-8'),
 ])
-// 健康度批：子代理侧八张登记表的定义已抽入 shared/child-registry.mjs，
+// 子代理侧八张登记表的定义已抽入 shared/child-registry.mjs，
 // 反向 parity 的「状态族」断言因此有了第三个源文件。
 const readChildRegistry = () => readFile(new URL('../preset/shared/child-registry.mjs', import.meta.url), 'utf-8')
 // 5.3 拆分波：dispatcher/persona-bootstrap/工具注册块的本体随簇迁入同级
 // broker-*.mjs，源码归属断言随之多三枚源锚。
 const readRelayCluster = () => readFile(new URL('../preset/tools/broker-relay.mjs', import.meta.url), 'utf-8')
-const readBootstrapCluster = () => readFile(new URL('../preset/tools/broker-bootstrap.mjs', import.meta.url), 'utf-8')
 const readToolsCluster = () => readFile(new URL('../preset/tools/broker-tools.mjs', import.meta.url), 'utf-8')
 // 5.4 拆分波：调度核 / end 管线两簇同款源锚（互递归环与双向回调注入的归属断言
 // 见下方 5.4 专条；随波换钉的既有锚点只迁家、不降级）。
@@ -82,7 +81,7 @@ const readSchedulerCluster = () => readFile(new URL('../preset/tools/broker-sche
 const readEndingCluster = () => readFile(new URL('../preset/tools/broker-ending.mjs', import.meta.url), 'utf-8')
 const countOf = (src, marker) => src.split(marker).length - 1
 
-// ── 源码 pin 的裁决口径（0.3.0-tisitan.11 C-10，逐条映射表见 CHANGELOG）──────
+// ── 源码 pin 的裁决口径（逐条映射表见 CHANGELOG）──────
 // 本文件是「源码断言」的集中地，而源码断言有两种命：一种锁不变量，一种锁实现。
 // 只保留前者，判据四条形：
 //   ① **唯一归属 / 某写法不得出现**（X=1 的 single-source 声明、grep=0 的负向
@@ -117,7 +116,7 @@ const ORCHESTRATION_IDENTITY = [
   'orchestration-ledger.json',
   'shared/orchestration.mjs',
   'createChildRegistry',
-  // end 归因决策（0.3.0-tisitan.12 B5）同属编排身份：lib 半既不该有这个决策，
+  // end 归因决策同属编排身份：lib 半既不该有这个决策，
   // 也不该出现对它 import 的可能性——真主只在天上的 broker 一处（5.4 起
   // dispatcher 本体随 end 簇，import 与消费同迁 './broker-ending.mjs'）。
   ['shared/end-attribution.mjs', 'ending'],
@@ -158,11 +157,11 @@ test('lib 半零编排面（反向 parity）：编排身份标记 grep=0，broke
   }
   assert.equal(countOf(hostSrc, 'createChildRegistry'), 0, 'lib 半不接登记表（编排面整体切除）')
   // 负向不变量（绝不动）：备选覆盖表与墓碑逻辑 broker 一律零直引——手抄一份
-  // 就是「未来新增清理点漏表」的根因复活（activeFallback 归 child-registry 独享）
+  // 就是「未来新增清理点漏表」的成因复活（activeFallback 归 child-registry 独享）
   assert.equal(countOf(brokerSrc, 'activeFallback.'), 0, 'broker 半零直引备选覆盖表')
   assert.equal(countOf(brokerSrc, 'function tombstoneType('), 0, '墓碑逻辑不在 broker 手抄')
   assert.equal(countOf(brokerSrc, 'DISPOSED_TYPES_CAP'), 0, '墓碑容量常量归 child-registry')
-  assert.equal(countOf(brokerSrc, "events[i].type === 'step/end'"), 0, 'N7 倒扫死支不得复活')
+  assert.equal(countOf(brokerSrc, "events[i].type === 'step/end'"), 0, '倒扫死支不得复活')
 })
 
 test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有，broker 半只读', async () => {
@@ -175,7 +174,7 @@ test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有
   assert.equal(countOf(hostSrc, "ctx.on('loader/volatile-update'"), 1, '热更监听单点（0.1.7 事件）')
   assert.equal(countOf(hostSrc, 'path: PANEL_CHANNEL'), 1, 'lib 半面板通道经 webServer 直注册（唯一注册点）')
   assert.equal(countOf(hostSrc, "rpc.handle('/dsh-my-go'"), 0, '宿主缺陷面 connection.rpc.handle 不得复活（0.1.5-alpha.1 下通道静默失踪）')
-  // 批次 4+6 端点收口后，lib 半分发比较改为 PANEL_ENDPOINTS.*（shared/constants
+  // 端点收口后，lib 半分发比较改为 PANEL_ENDPOINTS.*（shared/constants
   // 单源）；正向 needle 同步换口径，负向仍盯字面量分发形态不许复活。
   for (const endpoint of ['snapshot', 'listTools', 'getBuiltinPersona', 'getUsage']) {
     assert.equal(countOf(hostSrc, `endpoint === PANEL_ENDPOINTS.${endpoint}`), 1, `lib 半保留端点: ${endpoint}`)
@@ -190,31 +189,31 @@ test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有
   assert.equal(brokerHalf.inject.includes('settings'), false, 'broker 半 inject 不含 settings（服务门禁声明面）')
   assert.equal(countOf(brokerSrc, 'ctx.get(\'settings\')'), 0, 'broker 半不再 ctx.get settings（配置段只经全局桥）')
   assert.ok(countOf(brokerSrc, "Symbol.for('dsh-my-go.bindings')") >= 1, 'broker 半经配置桥读段')
-  assert.ok(countOf(brokerSrc, "Symbol.for('dsh-my-go.bindings-revision')") >= 1, 'broker 半经段版本号驱动缓存失效（N9/N10）')
+  assert.ok(countOf(brokerSrc, "Symbol.for('dsh-my-go.bindings-revision')") >= 1, 'broker 半经段版本号驱动缓存失效')
   assert.equal(countOf(brokerSrc, 'rpc.handle('), 0, 'broker 半零 RPC 端点')
   assert.equal(countOf(brokerSrc, 'webServer.register('), 0, 'broker 半零 webServer 路由注册（通道唯一归属 lib 半）')
   assert.ok(countOf(brokerSrc, "globalThis[Symbol.for('dsh-my-go.snapshot')]") >= 1, 'broker 半发布快照桥')
 })
 
-// ── ①c 无行为档覆盖的共享通路：按 C-10 口径降级为「在册 >=1」──────────────
+// ── ①c 无行为档覆盖的共享通路：口径降级为「在册 >=1」──────────────
 // 这十一条都是「走共享实现还是走本地副本」这类跨模块事实，任何 mock 行为测试都
 // 观察不到差别（副本与原件行为一样，直到某天只改一边）。所以保留最弱的存在性
-// 标记 + lib 半零残留；原先 ~50 条精确计数与整行字面量复刻已退役，逐条去向见
-// CHANGELOG 0.3.0-tisitan.11 的映射表。
+// 标记 + lib 半零残留；~50 条精确计数与整行字面量复刻不再逐条保留，去向见
+// CHANGELOG  的映射表。
 const BROKER_ONLY_PATHWAYS = [
   ['sharedRolePersona(', '内置人设现读走 shared（两侧各抄一份 = prompts/ 档案与派发人设分叉）', 'scheduler'],
   ['sharedResolveRoleToolFilter(', '角色工具过滤现算走 shared（漏一处 = 派发时不再按活目录降级）', 'scheduler'],
   ['resolveEffectiveBinding(', '备选覆盖合并走 shared（手抄合并规则是备选泄漏给常规派发的温床）', 'broker'],
   ['spawnChild(', '派发组合子唯一出口（另起 spawn 路径 = 绕开 restrict 与台账登记）', 'scheduler'],
   ['attemptFallbackRedeploy(', '备选重派入口（终局落账与重派共用同一决策点）', 'ending'],
-  ['abortExpected.delete(', 'N6 护航消费（只加不删 = 从此吞掉该 child 的一切真失败）', 'ending'],
+  ['abortExpected.delete(', '护航消费（只加不删 = 从此吞掉该 child 的一切真失败）', 'ending'],
   ['fallbackDecided.add(', '备选 once-guard 登记（不登记则同一 child 双发 end 各重派一次）', 'ending'],
-  ['pendingFallbackByLabel.set(', '棒2-Z2 spawn 解析前的 pending 备选登记', 'ending'],
+  ['pendingFallbackByLabel.set(', 'spawn 解析前的 pending 备选登记', 'ending'],
   // 5.2 拆分波：投递链三件的本体随簇迁入 ./broker-delivery.mjs，通路在册断言
   // 随波改钉到簇模块（语义不降级——「这条通路存在且只有一份」原样成立，只是
   // 唯一出处换了文件；lib 半零残留一律照旧逐条核）。
   ['findRecordWithLedgerFallback(', '台账兜底查找通路（属主不在内存表时就无路可寻）', 'delivery'],
-  ['abortExpected.add(', 'N6 预期掐断护航登记（不登记则主动中断被误判真失败）', 'delivery'],
+  ['abortExpected.add(', '预期掐断护航登记（不登记则主动中断被误判真失败）', 'delivery'],
   ['belongs to another live orchestration session', '跨会话抢属主闸（continue / forward 任一侧失守都是串台）', 'delivery'],
 ]
 
@@ -242,13 +241,13 @@ test('host/broker 接线分界：共享通路降级为存在性在册，两半�
   assert.ok(countOf(schedulerSrc, 'sharedRosterKeys(') >= 1, '调度簇名册键集接线在册')
 })
 
-// ── 0.3.0-tisitan.8 lib/client 修复批的在册 pin ─────────────────────────────────
-// 同 0.3.0-tisitan.7 的纪律：只锁「修复在册」这一事实。本批六条都属静默失效型
+// ── lib/client 修复项的在册 pin ─────────────────────────────────
+// 同  的纪律：只锁「修复在册」这一事实。六条都属静默失效型
 // （少一行日志、少一枚闸，运行期什么都不报错），回潮时没有任何东西会来提醒。
 
-test('lib 半本批修复在册（源码断言）：留痕/失败隔离/参数化安装/裁剪/信封合规', async () => {
+test('lib 半修复在册（源码断言）：留痕/失败隔离/参数化安装/裁剪/信封合规', async () => {
   const hostSrc = await readFile(new URL('../lib/index.js', import.meta.url), 'utf-8')
-  // E1/B-02（0.1.7 改判）：读面失败留痕单点仍在；注册失败那条随注册面整体退役
+  // E1（0.1.7 口径）：读面失败留痕单点仍在；注册失败那条随注册面整体退役
   assert.equal(countOf(hostSrc, 'console.error(`[dsh-my-go] settings readout failed'), 1, 'E1 读面失败独立留痕单点')
   assert.equal(countOf(hostSrc, 'settings namespace registration failed'), 0, '注册面退役后该留痕点一并退役')
   assert.ok(countOf(hostSrc, 'sectionOf(') >= 1, '行 config 的 volatile 访问器即读面（宿主挂 base，本半不再自算）')
@@ -256,52 +255,52 @@ test('lib 半本批修复在册（源码断言）：留痕/失败隔离/参数�
   for (const retired of ['installPreset', 'ensurePresetInstalled', 'presetInstallRoot', 'BROKER_CLUSTER_ROSTER', 'syncTreeFilewise', 'presetTreeDigest', 'const marker = ']) {
     assert.equal(countOf(hostSrc, retired), 0, `安装面退役后不得复活：${retired}`)
   }
-  assert.equal(countOf(hostSrc, 'await cp('), 0, 'B-09 无差别整拷不得复活（机制整体退役）')
-  // E5/A-02：快照出口裁剪在册（定义 + 出口消费，只钉「在不在」）
+  assert.equal(countOf(hostSrc, 'await cp('), 0, '无差别整拷不得复活（机制整体退役）')
+  // E5/：快照出口裁剪在册（定义 + 出口消费，只钉「在不在」）
   assert.equal(countOf(hostSrc, 'const PANEL_HISTORY_TAIL = 8'), 1, 'E5 面板 history 末 8 裁剪')
   assert.ok(countOf(hostSrc, 'trimSnapshotForPanel(') >= 1, 'E5 裁剪通路在册')
-  // B-10（0.1.7 改判）：getBuiltinPersona 单一来源 = 包内 prompts/（安装副本候选退役）
-  assert.equal(countOf(hostSrc, "join(PACKAGE_ROOT, 'prompts'"), 1, 'B-10 人设读盘单点：包内 prompts/')
+  // 0.1.7 口径：getBuiltinPersona 单一来源 = 包内 prompts/（安装副本候选退役）
+  assert.equal(countOf(hostSrc, "join(PACKAGE_ROOT, 'prompts'"), 1, '人设读盘单点：包内 prompts/')
   assert.equal(countOf(hostSrc, 'installedPresetRoot('), 0, '安装副本候选路径退役')
-  // E9/B-07 → F1 换壳：rpc.handle 的 arity 探测随宿主缺陷面一起退役（现在连
+  // E9 → F1 换壳：rpc.handle 的 arity 探测随宿主缺陷面一起退役（现在连
   // rpc.handle 都不再调），注册点的唯一性由上方 P2 钉，此处只钉新壳在册。
   assert.ok(countOf(hostSrc, 'createPanelRpcHandler(') >= 1, 'F1 通道壳（鉴权直出 + 信封封装）在册')
   assert.equal(countOf(hostSrc, 'rpcHandleExtras'), 0, 'rpc.handle arity 探测随缺陷面退役')
-  // B-06 半面：错误信封合规——每个 error 分支都带 details。
-  // needle 自 0.3.0-tisitan.9 起从 `details: {}` 放宽为 `details:`：E6 的 conflict 分支
+  // 错误信封合规——每个 error 分支都带 details。
+  // needle 自  起从 `details: {}` 放宽为 `details:`：E6 的 conflict 分支
   // details 要携带 {expected, actual}，只认空对象会把「写了有效 details」误判成
   // 缺项——契约要求的是字段在场，不是内容为空。空 details 的下限只作弱兜底，
-  // 分支数随功能增减本属正常（C-10：精确相等会因合理新增而假红）。
+  // 分支数随功能增减本属正常（精确相等会因合理新增而假红）。
   assert.ok(countOf(hostSrc, "code: '") >= 6, 'lib 半错误分支计数（信封合规的分母）')
-  assert.equal(countOf(hostSrc, "code: '"), countOf(hostSrc, 'details:'), 'B-06 每个 error 分支都带 details（ConnectionRpcFailure 契约，1:1 配对而非计数）')
-  assert.ok(countOf(hostSrc, 'details: {}') >= 6, 'B-06 无附加信息的分支仍统一写空 details（弱下限）')
+  assert.equal(countOf(hostSrc, "code: '"), countOf(hostSrc, 'details:'), '每个 error 分支都带 details（ConnectionRpcFailure 契约，1:1 配对而非计数）')
+  assert.ok(countOf(hostSrc, 'details: {}') >= 6, '无附加信息的分支仍统一写空 details（弱下限）')
 })
 
-test('客户端半本批修复在册（源码断言）：降级定时器 / 轮询退避 / legacy 过滤 / key 身份', async () => {
+test('客户端半修复在册（源码断言）：降级定时器 / 轮询退避 / legacy 过滤 / key 身份', async () => {
   const [clientSrc, panelSrc] = await Promise.all([
     readFile(new URL('../src/client.js', import.meta.url), 'utf-8'),
     readFile(new URL('../src/panel-tree.js', import.meta.url), 'utf-8'),
   ])
-  // E2/A-01：timer 缺席有真回落（且不留孤儿），sessions 缺席有留痕
+  // E2/：timer 缺席有真回落（且不留孤儿），sessions 缺席有留痕
   assert.equal(countOf(clientSrc, 'function createSelfManagedTimer('), 1, 'E2 自管回落定时器单点')
   assert.equal(countOf(clientSrc, 'globalThis.setInterval('), 1, 'E2 回落到 window.setInterval')
   assert.ok(countOf(clientSrc, 'falls back to window.setInterval') >= 1, 'E2 回落一次性留痕在册')
   assert.ok(countOf(clientSrc, 'sessions service unavailable') >= 1, 'E2 sessions 缺席留痕在册')
-  // E5/A-02：轮询 in-flight 门 + 退避档 + 状态迁移留痕
+  // E5/：轮询 in-flight 门 + 退避档 + 状态迁移留痕
   assert.equal(countOf(panelSrc, 'if (pollInFlight) return'), 1, 'E5 in-flight 不重入')
   assert.equal(countOf(panelSrc, 'const POLL_BACKOFF_MS = [600, 1500, 3000]'), 1, 'E5 退避档位表')
   assert.equal(countOf(panelSrc, 'function setBridgeProblem('), 1, 'E5 迁移留痕只在翻转点')
-  // E10/B-03 前端面：桥抛错与桥未注册两型文案分流
+  // E10 前端面：桥抛错与桥未注册两型文案分流
   assert.ok(countOf(panelSrc, "bridgeProblem === 'internal'") >= 1, 'E10 internal 型独立提示分支')
-  // A-04/A-08/A-09：幽灵父区过滤、求助行身份、关面板不空转
-  // （批次 4+6 'legacy' 串收口后，needle 换成常量引用形态，语义不变）
-  assert.equal(countOf(panelSrc, 'p.parentSessionId !== LEGACY_PARENT_ID'), 1, 'A-04 legacy 幽灵父区被过滤')
-  assert.equal(countOf(panelSrc, 'hlp-${h.parentSessionId}-${h.id ?? i}'), 1, 'A-08 求助行 key 用求助单 id')
-  assert.equal(countOf(panelSrc, 'if (panelOpen) force((c) => c + 1)'), 1, 'A-09 30s 相对时间刷新受面板开关约束')
+  // 幽灵父区过滤、求助行身份、关面板不空转
+  // （'legacy' 串收口后，needle 换成常量引用形态，语义不变）
+  assert.equal(countOf(panelSrc, 'p.parentSessionId !== LEGACY_PARENT_ID'), 1, 'legacy 幽灵父区被过滤')
+  assert.equal(countOf(panelSrc, 'hlp-${h.parentSessionId}-${h.id ?? i}'), 1, '求助行 key 用求助单 id')
+  assert.equal(countOf(panelSrc, 'if (panelOpen) force((c) => c + 1)'), 1, '30s 相对时间刷新受面板开关约束')
 })
 
-test('0.3.0-tisitan.9 设置页加固在册（源码断言）：dirty 汇聚 / revision 围栏 / 可手填 / 结构化名册', async () => {
-  const [coreSrc, guardSrc, panelSrc, hostSrc, brokerSrc, paneSrc] = await Promise.all([
+test(' 设置页加固在册（源码断言）：dirty 汇聚 / revision 围栏 / 可手填 / 结构化名册', async () => {
+  const [coreSrc, _guardSrc, panelSrc, hostSrc, brokerSrc, paneSrc] = await Promise.all([
     readFile(new URL('../src/settings-core.js', import.meta.url), 'utf-8'),
     readFile(new URL('../src/settings-guard.js', import.meta.url), 'utf-8'),
     readFile(new URL('../src/panel-tree.js', import.meta.url), 'utf-8'),
@@ -309,7 +308,7 @@ test('0.3.0-tisitan.9 设置页加固在册（源码断言）：dirty 汇聚 / r
     readFile(new URL('../preset/tools/broker.mjs', import.meta.url), 'utf-8'),
     readFile(new URL('../src/roles-editor.js', import.meta.url), 'utf-8'),
   ])
-  // ── dirty 汇聚：一处置位，两个编辑区也不例外（E6/A-03 语义原样搬进草稿层）
+  // ── dirty 汇聚：一处置位，两个编辑区也不例外
   assert.equal(countOf(coreSrc, 'const stage ='), 1, 'dirty 只有唯一汇聚口（定义唯一归属）')
   assert.equal(countOf(coreSrc, 'setDraft:'), 0, 'pane 不得再吃裸 setDraft（漏一处就是偏心 dirty，比没有更坏）')
   assert.ok(countOf(coreSrc, 'setDraft(null)') >= 1, '复位通路在册（保存成功 / 丢弃草稿各一处）')
@@ -331,17 +330,17 @@ test('0.3.0-tisitan.9 设置页加固在册（源码断言）：dirty 汇聚 / r
   // ── 目录与名单：非设置数据仍走插件自有端点
   assert.ok(countOf(coreSrc, 'getBuiltinPersona') >= 1, '人设文件读取仍是插件自有端点')
   assert.ok(countOf(coreSrc, 'listTools') >= 1, '工具花名册仍是插件自有端点')
-  // ── A-06 可手填 + 渠道失败区分（编辑器已迁到 roles-editor.js 的详情面板）
+  // ── 可手填 + 渠道失败区分（编辑器已迁到 roles-editor.js 的详情面板）
   assert.equal(countOf(paneSrc, 'function combobox('), 1, 'input+datalist 组合框定义唯一')
   assert.ok(countOf(paneSrc, "el('datalist'") >= 1, '清单在场时仍可点选')
   assert.equal(countOf(paneSrc, "'select', { value: row.provider"), 0, 'provider 裸 select 不得复活（否则手填承诺再次落空）')
   assert.equal(countOf(paneSrc, "'select', { value: row.model"), 0, 'model 裸 select 不得复活')
   assert.ok(countOf(paneSrc, 'listErrorFor') >= 1, '渠道级失败提示通路在册（目录缺席与空清单可分）')
-  // ── A-05 结构化名册：host 的字符串格式不再是面板的 API
+  // ── 结构化名册：host 的字符串格式不再是面板的 API
   assert.ok(countOf(panelSrc, 'Array.isArray(s.roster)') >= 1, '面板直读结构化 roster')
   assert.equal(countOf(panelSrc, 's.rosterLines.length - 1'), 0, '「行数减一当计数」的位置约定退役')
   assert.ok(countOf(panelSrc, 'entry?.toolFilterText') >= 1 || countOf(panelSrc, 'entry?.personaSource') >= 1, '行渲染吃结构化字段而非切字符串')
-  // ── A-05 单一源：两半都不再自抄名册格式（lib 与 broker 各删一份 18 行副本）
+  // ── 单一源：两半都不再自抄名册格式（lib 与 broker 各删一份 18 行副本）
   assert.equal(countOf(hostSrc, '备选${chain}'), 0, 'lib 半自抄的行格式已退役')
   assert.equal(countOf(brokerSrc, '备选${chain}'), 0, 'broker 半自抄的行格式已退役')
   assert.ok(countOf(hostSrc, 'roster: renderRosterEntries()') >= 1, 'snapshot 结构化 roster 在册')
@@ -356,7 +355,7 @@ test('名册简报段为 broker 独有注册 + 渲染单一源在 shared（源�
   ])
   // 渲染器单一源：shared 定义 1 处（唯一归属，留）；消费侧只钉「import 别名在册 +
   // 真的在调用它」——旧版钉 `sharedRenderRosterBriefing` 出现 2 次（import + 消费），
-  // 那是把「调用点数量」当不变量，多一处合法复用就假红（C-10 P3）。调用点用带括号的
+  // 那是把「调用点数量」当不变量，多一处合法复用就假红。调用点用带括号的
   // 形态区分（import 行是 `sharedRenderRosterBriefing,`，调用是 `sharedRenderRosterBriefing(`），
   // 于是「只 import 不用」这种真回归仍然红。5.3 拆分波：roster 段注册随 persona 三段
   // 迁入 ./broker-bootstrap.mjs（agent 半组成部分，「broker 独有」语义不变），
@@ -366,7 +365,7 @@ test('名册简报段为 broker 独有注册 + 渲染单一源在 shared（源�
   assert.ok(/sharedRenderRosterBriefing\s*\(/.test(bootstrapSrc), 'bootstrap 簇真的调用它（不是 import 完就搁置）')
   assert.equal(hostSrc.split('renderRosterBriefing').length - 1, 0, 'lib 半不注册系统提示段（与 persona/orchestration 同为 broker 独有）')
   // 注册形态：同名重注册会抛错，故 name 出现次数即注册数（唯一归属，保留）；
-  // order 的具体数值是排版选择不是不变量（C-10 P4：计数退役，行为档 failure-notice
+  // order 的具体数值是排版选择不是不变量（计数退役，行为档 failure-notice
   // 已断言 def.order 存在且 persona/orchestration 三段共存）
   assert.equal(bootstrapSrc.split("name: 'dsh-my-go:roster'").length - 1, 1, 'bootstrap 簇注册 1 处')
   assert.equal(brokerSrc.split("name: 'dsh-my-go:roster'").length - 1, 0, '段注册本体已迁簇，broker 本体零回潮')
@@ -375,7 +374,7 @@ test('名册简报段为 broker 独有注册 + 渲染单一源在 shared（源�
   assert.ok(!/"dsh-my-go:roster"[^}]*complete:\s*true/s.test(brokerSrc), 'roster 段不得携带 complete:true（broker 本体回潮形态）')
 })
 
-// 安装目录模拟（C-10 P5 加强）：按 package.json files 白名单算出「装完之后包里
+// 安装目录模拟（加强）：按 package.json files 白名单算出「装完之后包里
 // 会有什么」，再逐条核对两半的 import 目标是否在其中。只在本仓 existsSync 是不够的
 // ——白名单漏一个目录，本地 299 例全绿，用户侧 `dsh plugin add` 直接 MODULE_NOT_FOUND。
 async function publishedFileSet() {
@@ -428,7 +427,7 @@ test('shared 单一源：两半 import 行指向存在的文件，且逐条落�
     // 下限统一 ≥2，两件同受「安装目录在册」保护。
     ['broker-scheduler', 'preset/tools/', 'broker-scheduler.mjs', '../shared/', 2],
     ['broker-ending', 'preset/tools/', 'broker-ending.mjs', '../shared/', 2],
-    // 0.3.0-tisitan.0 后 lib 只保留存储/面板面 shared 依赖（constants/roles/misc
+    //  后 lib 只保留存储/面板面 shared 依赖（constants/roles/misc
     // 三行 import + 两行存储面 re-export = 5 行），下限放宽到 ≥3
     ['lib', 'lib/', 'index.js', '../preset/shared/', 3],
   ]
@@ -448,7 +447,7 @@ test('shared 单一源：两半 import 行指向存在的文件，且逐条落�
   }
   // 消费通路（subagent/end 处理器内的附因归一）只在 broker 侧（5.4 波起
   // readTurnFailure 随 end 管线簇迁入 ./broker-ending.mjs，换钉簇源）；lib 已无编排面
-  const [brokerSrc, hostSrc] = await readBothHalves()
+  const [_brokerSrc, hostSrc] = await readBothHalves()
   const endingSrc = await readEndingCluster()
   assert.equal(countOf(hostSrc, 'const failure = normalizeTurnFailure(ev.data.reason.error)'), 0, 'lib 半无附因提取通路（随编排面切除）')
   assert.ok(countOf(endingSrc, 'normalizeTurnFailure(') >= 1, 'end 簇有附因归一通路（readTurnFailure 随簇）')
@@ -461,7 +460,7 @@ test('跨半工种名单 parity：client AGENT_TYPES 恒等于 sisyphus + shared
   assert.deepEqual(CLIENT_AGENT_TYPES, ['sisyphus', ...SHARED_AGENT_TYPES], '客户端半不得自会长工种或换序')
 })
 
-// 键名 pattern parity（0.5.0-tisitan.3 批次 2）：ROLE/PRICE 两枚键名正则唯一
+// 键名 pattern parity：ROLE/PRICE 两枚键名正则唯一
 // 归属 preset/shared/constants.mjs。回潮形态是客户端半再抄一份字面量——历史上
 // settings-core 的本地 PRICE_KEY_PATTERN（model 段禁 /）就与 shared（放行
 // OpenRouter 式 model 段）实际漂移：lib schema 与 settings-ops 读面按 shared
@@ -478,10 +477,10 @@ test('跨半键名 pattern parity：ROLE/PRICE_KEY_PATTERN 唯一归属 shared�
   assert.ok(countOf(coreSrc, "from '../preset/shared/constants.mjs'") >= 1, 'settings-core 直引 shared 常量在册')
 })
 
-// ── 观测面分界（0.4.0-tisitan.0 步骤 0.1）：metrics 模块为 broker 独有 ───────
+// ── 观测面分界（ 步骤 0.1）：metrics 模块为 broker 独有 ───────
 // preset/tools/metrics.mjs 刻意不进 shared（只有 broker 半消费，避免无谓扩大
 // 单源守卫面），但「broker 本地」不等于「无守卫」：回潮形态是观测面被抄进 lib
-// 半，或 broker 侧接线被整体搬走。按 C-10 口径降级为在册弱标记（>=1，计数不是
+// 半，或 broker 侧接线被整体搬走。按该口径降级为在册弱标记（>=1，计数不是
 // 不变量——埋点随观测面扩张合法增长）；接线的行为档由 test/metrics.test.mjs 兜。
 test('metrics 观测面为 broker 独有（源码断言）：模块与接线不入 lib 半', async () => {
   const [brokerSrc, hostSrc] = await readBothHalves()
@@ -531,7 +530,7 @@ test('broker 拆分 5.1：台账/通知/能力三簇本体落位 broker-ledger/n
 })
 
 // ── broker 拆分 5.2（宽限期两簇 + 投递链簇落位）：同 5.1 口径 ────────────────────
-// E2 缓冲簇 / disposed 宽限期兜底簇 / M1-M5 投递链簇的本体随 5.2 波迁入同级
+// E2 缓冲簇 / disposed 宽限期兜底簇 / 投递链簇的本体在同级
 // broker-*.mjs（工厂函数 + deps 显式注入），broker.mjs 的导出面与全部调用点逐名
 // 不变。除「唯一登记处 + 两半零残留 + 接线在册」三条同款断言外，本波另加两条：
 //   ① 簇模块零回引 broker.mjs（拆分总原则的成环防线：单向 broker → 簇）；
@@ -568,7 +567,7 @@ test('broker 拆分 5.2：E2 缓冲/dispose 兜底/投递链三簇本体落位 b
     assert.equal(countOf(hostSrc, factory), 0, `lib 半零残留: ${factory}`)
   }
   // ① 成环防线：三个新簇模块一律零回引 broker.mjs（依赖单向 broker → 簇）；
-  // 铁律「零 ctx / 零服务解析」按去注释后的代码体核（注释里讲的是原实现读法，
+  // 铁律「零 ctx / 零服务解析」按去注释后的代码体核（注释里讲的是直接读 ctx 的读法，
   // 拿注释当消费面会一改措辞就假红）。
   const stripComments = (src) => src.split('\n').filter((l) => !/^\s*(\/\/|\/?\*)/.test(l)).join('\n')
   for (const [raw, home] of [[endbufferSrc, 'broker-endbuffer.mjs'], [disposeSrc, 'broker-dispose.mjs'], [deliverySrc, 'broker-delivery.mjs']]) {
@@ -599,8 +598,8 @@ test('broker 拆分 5.2：E2 缓冲/dispose 兜底/投递链三簇本体落位 b
 })
 
 // ── broker 拆分 5.3（dispatcher / persona-bootstrap / 工具注册块落位）：同 5.1/5.2 口径 ──
-// 接力链 dispatcher（broker-relay）/ prompt 加载与三段注册与 DSV4P0813
-// （broker-bootstrap）/ 十具工具注册体与 agent/created 双侧闸（broker-tools）随
+// 接力链 dispatcher（broker-relay）/ prompt 加载与三段注册
+// （broker-bootstrap）/ 十一具工具注册体与 agent/created 双侧闸（broker-tools）随
 // 5.3 波迁入同级 broker-*.mjs（工厂 + deps 显式注入），broker.mjs 的导出面与全部
 // 调用点逐名不变。除「唯一登记处 + 两半零残留 + 接线在册」三条同款外，本波把
 // 5.2 钉成的两闸扩到三件新簇并补第三闸口径：
@@ -635,8 +634,6 @@ test('broker 拆分 5.3：dispatcher/persona-bootstrap/工具注册块三簇本�
     [bootstrapSrc, 'broker-bootstrap.mjs', 'async function loadPrompt('],
     [bootstrapSrc, 'broker-bootstrap.mjs', 'const promptCache = new Map()'],
     [bootstrapSrc, 'broker-bootstrap.mjs', 'const personaSectionText ='],
-    [bootstrapSrc, 'broker-bootstrap.mjs', 'const PROMOTED_BY_SESSION = new WeakMap()'],
-    [bootstrapSrc, 'broker-bootstrap.mjs', 'function promotionStateFor('],
     [toolsSrc, 'broker-tools.mjs', 'function denyTools('],
     [toolsSrc, 'broker-tools.mjs', 'function orchForStatus('],
     [toolsSrc, 'broker-tools.mjs', 'function renderChainLines('],
@@ -654,7 +651,7 @@ test('broker 拆分 5.3：dispatcher/persona-bootstrap/工具注册块三簇本�
     assert.equal(countOf(hostSrc, factory), 0, `lib 半零残留: ${factory}`)
   }
   // ① 成环防线 + 零 ctx：三件新簇一律不回引 broker.mjs、代码体不碰 ctx（去注释
-  // 核——注释讲的是原实现读法与 ctx 包壳背景，拿注释当消费面会一改措辞就假红）
+  // 核——注释讲的是直接读 ctx 的读法与 ctx 包壳背景，拿注释当消费面会一改措辞就假红）
   const stripComments = (s) => s.split('\n').filter((l) => !/^\s*(\/\/|\/?\*)/.test(l)).join('\n')
   for (const [raw, home] of [[relaySrc, 'broker-relay.mjs'], [bootstrapSrc, 'broker-bootstrap.mjs'], [toolsSrc, 'broker-tools.mjs']]) {
     const src = stripComments(raw)
@@ -681,10 +678,11 @@ test('broker 拆分 5.3：dispatcher/persona-bootstrap/工具注册块三簇本�
   assert.ok(countOf(brokerSrc, "getSectionOrder: (key) => ctx.systemPrompt?.getSectionOrder?.(key)") >= 1, '宿主代探针包壳在册（可选链语义原样）')
   // 注册块四件服务面回调 + agent/created 闸随簇迁移后仍由 apply 接线
   assert.ok(countOf(brokerSrc, "registerTool: (tool) => ctx.tools.register(tool)") >= 1, '工具注册包壳在册')
-  assert.ok(countOf(brokerSrc, 'getAgentTools: (agent) => agent.ctx.tools') >= 1, 'deny 闸 agent 工具面取值点留本体（N12 抛错路径进簇内同一个 try）')
-  // 条件注册联动：十具名逐具在册（注册体只此一份实现，计数语义 = 存在性弱标记）
-  for (const tool of ['go_work', 'continue', 'need_help', 'forward', 'orchestration_status', 'list_subagents', 'report_submit', 'report_fetch', 'chain_start', 'chain_resolve']) {
-    assert.ok(countOf(toolsSrc, `name: '${tool}'`) >= 1, `tools 簇十具注册体逐具在册: ${tool}`)
+  assert.ok(countOf(brokerSrc, 'getAgentTools: (agent) => agent.ctx.tools') >= 1, 'deny 闸 agent 工具面取值点留本体（抛错路径进簇内同一个 try）')
+  // 条件注册联动：十一具名逐具在册（注册体只此一份实现，计数语义 = 存在性弱标记；
+  // heartbeat 为  追加的第十一具，把名单补齐）
+  for (const tool of ['go_work', 'continue', 'need_help', 'forward', 'orchestration_status', 'list_subagents', 'heartbeat', 'report_submit', 'report_fetch', 'chain_start', 'chain_resolve']) {
+    assert.ok(countOf(toolsSrc, `name: '${tool}'`) >= 1, `tools 簇十一具注册体逐具在册: ${tool}`)
   }
 })
 
@@ -699,7 +697,7 @@ test('broker 拆分 5.3：dispatcher/persona-bootstrap/工具注册块三簇本�
 //   ② 双向注入 seam 在册：调度簇对 end/relay/endbuffer 的包壳闭包与 end 簇
 //      对调度簇的直传件都在 broker 接线段可数——相互回调注入（5.2 波 E2 同手法）
 //      的接线形状本体自证；
-//   ③ 留守裁决自证：persistReportBoard 定义唯一留本体（5.3 B2），两簇只以注入
+//   ③ 归属自证：persistReportBoard 定义唯一留本体，两簇只以注入
 //      件消费；bump 定义与快照桥发布留本体（5.4 裁决，纪律文本在 broker 文件头）。
 test('broker 拆分 5.4：调度核/end 管线两簇本体落位 broker-scheduler/ending.mjs（源码断言）', async () => {
   const [schedulerSrc, endingSrc] = await Promise.all([readSchedulerCluster(), readEndingCluster()])
@@ -751,7 +749,7 @@ test('broker 拆分 5.4：调度核/end 管线两簇本体落位 broker-schedule
   }
   assert.ok(countOf(brokerSrc, 'advanceQueue,') >= 2, 'end/relay 簇对调度簇 advanceQueue 的直传接线在册')
   // ③ 留守裁决自证：落板底座与快照枢纽定义仍在本体，两簇只以注入件消费。
-  assert.equal(countOf(brokerSrc, 'async function persistReportBoard('), 1, 'persistReportBoard 定义留守本体（5.3 B2 裁定维持）')
+  assert.equal(countOf(brokerSrc, 'async function persistReportBoard('), 1, 'persistReportBoard 定义留本体')
   assert.equal(countOf(schedulerSrc, 'async function persistReportBoard('), 0, '调度簇零副本')
   assert.equal(countOf(endingSrc, 'async function persistReportBoard('), 0, 'end 簇零副本')
   assert.ok(countOf(endingSrc, 'persistReportBoard(') >= 3, '补发链三处兜底消费在册（注入件调用）')
@@ -777,7 +775,7 @@ test('broker 拆分 5.4：调度核/end 管线两簇本体落位 broker-schedule
 })
 
 // ── S-1 导出面机器闸（5.4 裁决）：broker.mjs 导出 16 键逐名快照 ────────────────
-// 「批次 5 拆分总原则：导出面逐名不变」长期是文本承诺——本闸把它钉成机器闸：
+// 「导出面逐名不变」长期是文本承诺——本闸把它钉成机器闸：
 // 任何一波迁移误删/改名/新增本体导出（含 re-export 面）当场红。清单为 5.4 收口
 // 时实读：name / inject / apply 三枚本体件 + 13 枚 shared re-export。
 test('S-1 broker 导出面快照闸：16 键逐名 + inject 值锁定（import(broker) 对拍）', async () => {
@@ -856,7 +854,7 @@ test('报告提交制单源定义唯一归属（源码断言）：本体单点�
   assert.ok(countOf(toolsSrcForFormat, 'buildReportBoard(') >= 1, 'tools 簇消费在册: 落板拼装 buildReportBoard')
   // 3.6 兑现：RELAY_CLAUSE 消费在册（链 hop prompt 的下游验收条款注入）
   assert.ok(countOf(relaySrcForFormat, 'RELAY_CLAUSE') >= 1, 'relay 簇消费在册: RELAY_CLAUSE 注入（composeRelayPrompt）')
-  // 补发口径同源（0.5.0-tisitan.4 字段化批）：end-attribution 只许引用
+  // 补发口径同源：end-attribution 只许引用
   // REPORT_REPAIR_CLAUSE_HINT，不得自带第二份字段清单——旧「一次交齐四字段」那行
   // 就是活体第二源（条款六字段化后它让施工层补交轮被闸门二次拒收），负向钉死不许回潮。
   const endAttrSrcForFormat = await readFile(new URL('../preset/shared/end-attribution.mjs', import.meta.url), 'utf-8')
@@ -885,7 +883,7 @@ test('接力链状态机定义唯一归属（源码断言）：本体单点、�
   // 「决策在纯函数、dispatcher 只落地」的分界不降级；broker 本体对整条
   // relay-chain import 归零（回潮形态=dispatcher 逻辑回流本体，由唯一归属专条反钉）。
   const relaySrcForChain = await readRelayCluster()
-  const toolsSrcForChain = await readToolsCluster()
+  await readToolsCluster()
   assert.ok(countOf(relaySrcForChain, "from '../shared/relay-chain.mjs'") >= 1, 'relay 簇消费在册: relay-chain import')
   assert.ok(countOf(brokerSrc, "from '../shared/relay-chain.mjs'") === 0, 'relay-chain 决策件 import 已整体迁簇，broker 本体零残留')
   assert.ok(countOf(relaySrcForChain, 'advanceChain(') >= 1, 'relay 簇消费在册: advanceChain 决策调用（runChainTransition/landHopOps/落账感知）')
@@ -933,7 +931,7 @@ test('snapshot RPC：preset 未装配（无桥）回落降级空态，桥在席�
   }
 })
 
-// ── ② 存储/面板面行为批（0.3.0-tisitan.0 后 lib 半的全部行为面，原样保留）──────
+// ── ② 存储/面板面行为批（ 后 lib 半的全部行为面，原样保留）──────
 
 test('lib 半 settings schema：fallbacks 数组被接受并原样带出', async () => {
   assert.ok(host.Config !== undefined, 'schema 由顶层 Config 声明（0.1.7），宿主直接读它')
@@ -964,7 +962,7 @@ test('settings 合并单一源：mergeRoleBindings 定义于 shared，两半接�
   // 定义不再双写：两半源码里都没有函数体，只有 import + re-export（不得出现类，留）
   assert.equal(countOf(hostSrc, 'function mergeRoleBindings'), 0, 'lib 半无本地定义（已迁 shared）')
   assert.equal(countOf(brokerSrc, 'function mergeRoleBindings'), 0, 'broker 半无本地定义（原内联块退役）')
-  // C-10 P3：旧版钉「两半各 2 处调用 + 整行 `bindings = mergeRoleBindings(baseBindings, `
+  // 计数不是不变量：钉「两半各 2 处调用 + 整行 `bindings = mergeRoleBindings(baseBindings, `
   // 字面量复刻」= 出现次数 + 变量名 pin，初载/settings-updated 任一改成别的写法都假红。
   // 通路在册即可，具体几处调用不是不变量（merge 语义本身由下面的 shared 单点与行为档兜）。
   assert.ok(countOf(hostSrc, 'mergeRoleBindings(') >= 1, 'lib 半经共享 merge 通路')
@@ -999,7 +997,7 @@ test('lib 半 listTools：tools 服务缺席回落空名单（ok:true）', async
   assert.deepEqual(res.value, [], '设置页降级为纯编辑器而非报错')
 })
 
-// ── 内置卡「载入文件默认」（0.2.3-tisitan.16b）：getBuiltinPersona RPC 端点 ────
+// ── 内置卡「载入文件默认」：getBuiltinPersona RPC 端点 ────
 
 test('lib 半 getBuiltinPersona：正常读取 / 非法 type / 目录穿越 / 文件缺失全结构化', async () => {
   // 0.1.7：读盘根 = 包内 prompts/（安装副本这条候选随机制退役），故断言的是包内
@@ -1022,8 +1020,8 @@ test('lib 半 getBuiltinPersona：正常读取 / 非法 type / 目录穿越 / �
   assert.equal(missing.error.code, 'not-found')
 })
 
-// ── 界面层（0.2.3-tisitan.14）：写面的 persona/toolFilter 显式字段 + 角色删除 ──
-// （0.5.0-tisitan.3 起这套 ops 编译从 lib 半闭包搬到 src/settings-ops.js，判据不变）
+// ── 界面层：写面的 persona/toolFilter 显式字段 + 角色删除 ──
+// （ 起这套 ops 编译从 lib 半闭包搬到 src/settings-ops.js，判据不变）
 
 test('写面：draft.roles 行显式携带 persona/toolFilter 时 set/unset，空=unset', () => {
   const ops = buildSettingsOps({
@@ -1134,7 +1132,7 @@ test('readArchivedTurnFailure 结构化返回 {message, code, status}（shared �
   }
 })
 
-// ── 附因取证 cwd 无关化（0.2.3-tisitan.16b）：默认路径未命中时按 childId 兜底搜索 ──
+// ── 附因取证 cwd 无关化：默认路径未命中时按 childId 兜底搜索 ──
 // shared/archive.mjs 纯机制用例（shared 未动，broker 侧无等价覆盖，必须保留）
 
 // 造一份多帧 zstd 档案（turn/end error 文本可配），与 dsh-session-persistence-jsonl 落盘形状一致
@@ -1216,7 +1214,7 @@ test('readArchivedTurnFailure：兜底零命中 warn + undefined（原语义不�
 
 test('shared 行为面直测：失败分类 / 角色合并 / 迁移 ops / 工种识别 / 台账修剪（broker re-export 同一实例）', async () => {
   // broker 半 re-export 与 shared 模块是同一 ESM 绑定（单一实例，非复制）；
-  // lib 半不再 re-export 编排面符号（0.3.0-tisitan.0），行为一律直测 shared
+  // lib 半不再 re-export 编排面符号，行为一律直测 shared
   assert.equal(brokerHalf.normalizeTurnFailure, sharedFailure.normalizeTurnFailure, 'broker re-export === shared')
   assert.equal(brokerHalf.isFallbackable, sharedFailure.isFallbackable)
   assert.equal(brokerHalf.describeAgent, sharedMisc.describeAgent, 'broker re-export === shared')

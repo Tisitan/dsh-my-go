@@ -1,35 +1,34 @@
 /**
  * dsh-my-go — single-line-blocking orchestration state machine.
  *
- * Minimal, dependency-free core: pure in-memory state + listeners. Since
- * 0.3.0-tisitan.0 (单宿主编排批) the broker half is the ONLY
- * consumer that builds Orchestration instances; the lib half no longer holds a
- * state machine of its own — it reads broker state one-way through the snapshot
- * bridge (`globalThis[Symbol.for('dsh-my-go.snapshot')]`). The class still lives
- * in the shared layer (not inlined into broker) so it stays ctx-free and unit-
- * testable in isolation.
+ * Minimal, dependency-free core: pure in-memory state + listeners. The broker
+ * half is the ONLY consumer that builds Orchestration instances; the lib half
+ * holds no state machine of its own — it reads broker state one-way through the
+ * snapshot bridge (`globalThis[Symbol.for('dsh-my-go.snapshot')]`). The class
+ * lives in the shared layer (not inlined into broker) so it stays ctx-free and
+ * unit-testable in isolation.
  *
- * 二期 2.2 泳道化（read-pool-semantics.md §一）：写平面恒单线是地基不动，读平面
+ * 泳道化（read-pool-semantics.md §一）：写平面恒单线是地基不动，读平面
  * （explore/librarian）扩为 N 并发（readCapacity，默认 1 = 关闭 = 逐字节现状）。
  * 关键口径：
- *  - **占槽 = 在 currentMap 即占槽**（spawning/waiting/running 同权），与单线时代
- *    waiting 占唯一槽的口径一致——laneCount 按记录数统计，不看 status。
+ *  - **占槽 = 在 currentMap 即占槽**（spawning/waiting/running 同权，与单线口径
+ *    一致）——laneCount 按记录数统计，不看 status。
  *  - record.lane 由 beginSpawning 从 laneOf(agentType) 派生写死，落在 ...extra
  *    **之后**（D8：泳道归属不可配，调用方无法越权覆盖）；revive 从旧台账回槽时
  *    按 laneOf 归一化补写——防旧格式台账记录回槽后 laneCount 漏统计。
  *  - laneCount 对无 lane 记录按 laneOf(agentType) 兜底归类。双保险的理由：漏一条
  *    无 lane 的 write 记录进 currentMap，isBusy 复合判定就漏计它 → 放行第二个写
  *    平面子代 = 单线锁被架空，这类「静默变松」比「报错」危险得多。
- *  - isBusy() 从「size>0」改为复合判定「任何 lane 满」。readCapacity=1 时与旧语义
- *    逐点等价（每条记录恰属一个 lane）；容量 ≥2 后 size>0 不再是正确的忙判定
- *    （read 在飞 1 条是设计内并行，不是忙），broker 三个旧调用点的迁移在 2.3。
+ *  - isBusy() 是复合判定「任一 lane 满」：readCapacity=1 时与「size>0」逐点等价
+ *    （每条记录恰属一个 lane）；容量 ≥2 后 size>0 不再是正确的忙判定（read 在飞
+ *    1 条是设计内并行，不是忙）。
  *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx.
  */
 
 import { CURRENT_MAP_CAP, HISTORY_CAP } from './constants.mjs'
 
-// 泳道判定表（read-pool-semantics.md §1.1，D7/D8 已裁决）：explore/librarian 入
+// 泳道判定表（read-pool-semantics.md §1.1，D7/D8）：explore/librarian 入
 // 读 lane；looker 归写 lane（多模态成本异质，默认保守）；自定义角色与一切未知名
 // 恒写 lane 且不可配（D8）——laneOf 是 agentType → lane 的纯函数，挂载期不变。
 const READ_LANE_TYPES = new Set(['explore', 'librarian'])
@@ -64,7 +63,7 @@ export class Orchestration {
     this.queue = []
     this.helpRequests = new Map()
     this.history = []
-    // 声明式接力链桶（三期 3.3，docs/plans/relay-chain-semantics.md §2.4）：
+    // 声明式接力链桶（docs/plans/relay-chain-semantics.md §2.4）：
     // 记录形状与迁移语义全部在 shared/relay-chain.mjs（决策纯函数 + dispatcher
     // 协议），本类只持桶——链是账本不是槽位持有者（不参与 laneCount/isBusy），
     // 存量上限 RELAY_CHAINS_CAP 由 broker 的 chain_start 入口执行。
@@ -79,14 +78,14 @@ export class Orchestration {
 
   snapshot() {
     return {
-      // D20（二期 2.5，read-pool-semantics.md §1.3）：current 单条（取 Map 首条，
+      // D20（read-pool-semantics.md §1.3）：current 单条（取 Map 首条，
       // 多条在飞时语义即错）→ currentRecords 全量数组，一步到位无过渡双字段。
       // 消费面三处（orchestration_status / list_subagents / 快照桥面板半）同批复闭环。
       currentRecords: [...this.currentMap.values()],
       queue: [...this.queue],
       helpRequests: [...this.helpRequests.values()],
       history: [...this.history],
-      // 三期 3.3：链桶追加字段（非形状变更——D13 快照注入兜底与面板渲染的
+      // 链桶追加字段（非形状变更——D13 快照注入兜底与面板渲染的
       // 数据源；渲染归 3.5，此处只保证链对快照消费者可见）。
       chains: [...this.chains],
     }
@@ -229,7 +228,7 @@ export class Orchestration {
       conclusionId,
       updatedAt: Date.now(),
     }
-    // stallNotified 不随记录入史/入档（本批选定的持久化取舍：episode 标记只活在
+    // stallNotified 不随记录入史/入档（持久化取舍：episode 标记只活在
     // currentMap 的占槽记录上）——入史即 episode 终结，留着只会让台账里的死记录
     // 带一个永不复位的标记，复活后反而哑掉下一次通报。
     delete done.stallNotified
@@ -238,7 +237,7 @@ export class Orchestration {
     this.history = [...this.history, done]
     if (this.history.length > HISTORY_CAP) this.history = this.history.slice(-HISTORY_CAP)
     this.emit()
-    // 返回值附带连带清理计数（0.3.0-tisitan.3）：仅内存返回副本，不落 history/
+    // 返回值附带连带清理计数：仅内存返回副本，不落 history/
     // 台账，供 broker 调用点对「清理 ≥1 张求助单」做可见通知
     return clearedHelp > 0 ? { ...done, clearedHelp } : done
   }
@@ -264,7 +263,6 @@ export class Orchestration {
   /** Give up on a queued work item after retry exhaustion: remove it from the
    * queue and record a failed history entry — never strand it silently. */
   dropQueuedFailed(work, error) {
-    const before = this.queue.length
     this.queue = this.queue.filter((w) => w.id !== work.id)
     const done = {
       childId: work.id,
@@ -288,7 +286,7 @@ export class Orchestration {
     const idx = this.history.findIndex((r) => r.childId === childId)
     if (idx < 0) return undefined
     const rec = this.history[idx]
-    // lane 归一化（二期 2.2）：旧格式台账回填的 history 记录没有 lane 字段，回槽
+    // lane 归一化：旧格式台账回填的 history 记录没有 lane 字段，回槽
     // 必须补写——否则 laneCount 漏统计，isBusy 复合判定在写 lane 占用时可能为假，
     // 放行第二个写平面子代（单线锁被一条旧档案架空）。
     const next = { ...rec, lane: rec.lane ?? laneOf(rec.agentType), status: 'running', updatedAt: Date.now() }
@@ -304,7 +302,7 @@ export class Orchestration {
     this.emit()
   }
 
-  /** 兜底闸（0.2.3-tisitan.15）：超限时按 updatedAt 淘汰最旧的滞留记录，防异常路径无界增长。 */
+  /** 兜底闸：超限时按 updatedAt 淘汰最旧的滞留记录，防异常路径无界增长。 */
   enforceCurrentCap() {
     if (this.currentMap.size <= CURRENT_MAP_CAP) return
     let oldestId = null
@@ -324,9 +322,9 @@ export class Orchestration {
   }
 
   /** Record the latest prompt Sisyphus sent to one child (go_work or continue).
-   * urgency（0.3.0-tisitan.2，continue 三档声明）为可选第三参：非空字符串入账、否则
-   * 清字段——字段语义恒为「最新一条 prompt 的投递档」，不留上一条的残留值；
-   * 旧记录（从未传过 urgency）天然无此字段，零变化。 */
+   * urgency（continue 三档声明）为可选第三参：非空字符串入账、否则清字段——
+   * 字段语义恒为「最新一条 prompt 的投递档」，不留上一条的残留值；从未传过
+   * urgency 的记录天然无此字段。 */
   followupPrompt(childId, prompt, urgency) {
     const tag = (next) => {
       if (typeof urgency === 'string' && urgency !== '') next.urgency = urgency
@@ -350,4 +348,23 @@ export class Orchestration {
   }
 
   help(id) { return this.helpRequests.get(id) }
+}
+
+/**
+ * 占位 → 真 childId 的换键分流：spawn 窗口里占位可能已被回收——
+ * E2 泄漏哨兵按 `createdAt` 年龄判定（冷读慢的派发会被判成「链无进展」并 finish），
+ * disposed 兜底 abort 与 `currentMap` 容量淘汰同理。此时照旧 `bindChild` 会命中不在
+ * 册的占位：真子代 untracked、结论丢弃、台账还留一条与事实相反的 failed。三条分支收
+ * 在一处（直派与备选重派共用，杜绝第二份实现）：
+ *   ① 占位仍在册 → 原样换键（正常路径，行为零变化）；
+ *   ② 已被落账型回收（任何走 `finish` 的回收）→ 先 `revive` 把那条 failed 史记录搬回
+ *      槽（台账不留与事实相反的 failed、结论仍按真 id 归因），再换键；
+ *   ③ 被无史回收（disposed 兜底 abort / 容量淘汰）→ 按 `extra` 重建占位再换键——
+ *      `extra` 承接 `fallbackAttempt`/`fallbackEntry` 一类占位附加字段，重派路径不丢链状态。
+ * 纯状态机适配：零 ctx、零兄弟模块依赖（本文件铁律同守）。
+ */
+export function bindSpawnedChild(orch, placeholder, childId, agentType, prompt, extra = {}) {
+  if (orch.currentMap.has(placeholder.childId)) return orch.bindChild(placeholder.childId, childId)
+  if (orch.revive(placeholder.childId)) return orch.bindChild(placeholder.childId, childId)
+  return orch.bindChild(orch.beginSpawning(agentType, prompt, extra).childId, childId)
 }

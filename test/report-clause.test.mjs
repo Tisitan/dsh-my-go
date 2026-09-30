@@ -4,7 +4,7 @@
 // 备选重派路径（attemptFallbackRedeploy → spawnChild，事实 C 唯一组装点）同样
 // 含条款。continue 不经 spawnChild（adjacent 通路），首派覆盖即 D3 裁决，无接缝
 // 可测——条款存续性归子代上下文语义，不属本步断言面。
-// 1.7 起追加装机 yml 防回潮 pin：2026-09-07 基线关窗、外部化点亮，pin 站岗
+// 0.1.7 起追加 preset yml 一致性 pin：显式 reportExternalization: true 由 pin 站岗
 // 实战期口径（broker 行显式 reportExternalization: true，误关即红）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
 import * as broker from '../preset/tools/broker.mjs'
 import { REDISPATCH_RESUME_PREFIX, REPORT_CLAUSE } from '../preset/shared/report-format.mjs'
-import { createMockCtx, withRealSignalContract, execOf, snapOf, currentOf, waitFor, removeHomeWithRetry } from './helpers/mock-ctx.mjs'
+import { createMockCtx, withRealSignalContract, execOf, currentOf, waitFor, removeHomeWithRetry } from './helpers/mock-ctx.mjs'
 
 const parentOf = (id) => ({ id, session: { header: {} } })
 const captureSpawn = (specs) => withRealSignalContract(async (spec) => {
@@ -109,10 +109,10 @@ test('备选重派路径同样注入条款（attemptFallbackRedeploy → spawnCh
   }
 })
 
-// ── 装机 yml 防回潮 pin（方案 A，help-mtn8uwgr-ds1fes 裁决；0.1.7 起指向
+// ── preset yml 一致性 pin（0.1.7 起指向
 // preset/agent.patch.yml —— 预设声明的 config.plugins）────────────────────────
 // 用真 yml 解析（tool-mask.test.mjs 同款 schema 扩展），不走「正则扫行用眼睛读」
-// ——缩进一变或改成 flow 风格都要照样红。2026-09-07 基线关窗、外部化点亮，pin 换向
+// ——缩进一变或改成 flow 风格都要照样红。
 // 站岗：外部化实战期口径 broker 行显式 true，若有人误关回 false 本 pin 红。
 test('pin：agent.patch.yml 的 broker 行必须显式 reportExternalization: true（外部化实战期口径）', async () => {
   const cordisSchema = yaml.DEFAULT_SCHEMA.extend([
@@ -124,13 +124,13 @@ test('pin：agent.patch.yml 的 broker 行必须显式 reportExternalization: tr
   const brokerRow = doc.find((patch) => patch?.insert)?.insert?.[0]?.config?.plugins?.find((row) => row?.id === 'broker')
   assert.ok(brokerRow, 'broker 行在册（预设声明的 config.plugins 内）')
   assert.equal(brokerRow?.config?.reportExternalization, true,
-    'broker 行必须显式 reportExternalization: true——显式配置优先于代码默认，2026-09-07 基线关窗、外部化点亮后实战期保持显式开；若有人误关回 false（含同步 preset 覆盖回旧 false 装机）本 pin 红')
+    'broker 行必须显式 reportExternalization: true——显式配置优先于代码默认；若有人误关回 false（含同步 preset 覆盖回 false）本 pin 红')
 })
 
-// 同范式第二钉（2026-09-18 读平面扩池批）：装机 yml 显式 readPoolSize 必须为 3
+// 同范式第二钉：preset yml 显式 readPoolSize 必须为 3
 // （钳制上限顶格）。同步 preset 覆盖回保守起步的 2、删行回落代码缺省 1、或写超
-// 上限被钳制口径掩盖，本 pin 都红——显式值是唯一可审计的装机面。
-test('pin：agent.patch.yml 的 broker 行必须显式 readPoolSize: 3（读平面扩池装机口径）', async () => {
+// 上限被钳制口径掩盖，本 pin 都红——显式值是唯一可审计的配置面。
+test('pin：agent.patch.yml 的 broker 行必须显式 readPoolSize: 3（读平面扩池）', async () => {
   const cordisSchema = yaml.DEFAULT_SCHEMA.extend([
     new yaml.Type('tag:yaml.org,2002:js', { kind: 'scalar', construct: (data) => data }),
   ])
@@ -139,7 +139,7 @@ test('pin：agent.patch.yml 的 broker 行必须显式 readPoolSize: 3（读平�
   const brokerRow = doc.find((patch) => patch?.insert)?.insert?.[0]?.config?.plugins?.find((row) => row?.id === 'broker')
   assert.ok(brokerRow, 'broker 行在册（预设声明的 config.plugins 内）')
   assert.equal(brokerRow?.config?.readPoolSize, 3,
-    'broker 行必须显式 readPoolSize: 3——2026-09-18 扩池批装机口径（读平面并发上限顶格）；被同步 preset 覆盖回 2/1 或删行回落代码缺省 1，本 pin 红')
+    'broker 行必须显式 readPoolSize: 3——读平面并发上限顶格；被同步 preset 覆盖回 2/1 或删行回落代码缺省 1，本 pin 红')
 })
 
 // 方案 B：REPORT_CLAUSE 明牌压制工种手册旧交付收尾约定，防两源指令打架回潮
@@ -148,13 +148,13 @@ test('REPORT_CLAUSE 含覆盖声明：压制工种手册旧收尾/交付约定�
   assert.match(REPORT_CLAUSE, /压制 prompts\/\*\.md/, '条款必须明牌压制 playbooks 旧约定')
 })
 
-// evidence 裸锚点纪律（2026-09-07 补明的原口径，提交制下落到数组项校验）：
+// evidence 裸锚点纪律（提交制下落到数组项校验）：
 // 条款必须明文「禁止任何前后缀描述」——裸「路径:行号」锚点，描述性文字进 report 全文。
 test('REPORT_CLAUSE evidence 裸锚点明文：禁止任何前后缀描述', () => {
   assert.match(REPORT_CLAUSE, /禁止任何前后缀描述/, '条款必须显式写明 evidence 项禁前后缀描述——裸「路径:行号」锚点，描述性文字放 report 全文')
 })
 
-// 提交制核心机关（0.5.0-tisitan.1）：提交成功即交付 + 自由收尾 + 未交付兜底口径
+// 提交制核心机关：提交成功即交付 + 自由收尾 + 未交付兜底口径
 test('REPORT_CLAUSE 核心机关：提交成功即交付完成、最后一条消息自由收尾、未调用视为未交付', () => {
   assert.match(REPORT_CLAUSE, /提交成功即交付完成——主编会收到系统合成的概要回执/)
   assert.match(REPORT_CLAUSE, /最后一条消息自由收尾/)
@@ -162,7 +162,7 @@ test('REPORT_CLAUSE 核心机关：提交成功即交付完成、最后一条消
   assert.match(REPORT_CLAUSE, /字段校验不过时工具会逐条报错，原地修正重调即可/)
 })
 
-// 提示词面归零断言（0.5.0-tisitan.1 纪律）：条款 + 全部 prompts/*.md 一律零出现
+// 提示词面归零断言（ 纪律）：条款 + 全部 prompts/*.md 一律零出现
 test('提示词面旧机制字样归零：REPORT_CLAUSE 与 prompts/ 全目录零出现', async () => {
   assert.ok(!REPORT_CLAUSE.includes('mygo_report'), 'REPORT_CLAUSE 零出现')
   const promptsDir = fileURLToPath(new URL('../prompts/', import.meta.url))
@@ -174,8 +174,8 @@ test('提示词面旧机制字样归零：REPORT_CLAUSE 与 prompts/ 全目录�
   }
 })
 
-// 人设 × 条款同源钉（0.5.0-tisitan.4 字段化批）：九份人设的交付收尾协议曾留
-// 「一次交齐四字段」，与注入条款的六字段口径并立 = 原址第二源（B2 回头追出来的
+// 人设 × 条款同源钉：九份人设的交付收尾协议若留
+// 「一次交齐四字段」，与注入条款的六字段口径并立就是第二源
 // 那块 milder 碑）。本钉把「人设口径必须跟条款同步」升成机械闸——谁往人设里改回
 // 四字段、或施工层人设漏了 deviation/unverified 的必填交代，当场红。
 test('pin：prompts 全目录交付收尾口径与 REPORT_CLAUSE 同步（六字段 / 施工层两字段必填）', async () => {

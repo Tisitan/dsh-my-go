@@ -1,8 +1,9 @@
 /**
  * dsh-my-go — 编排工具注册块（go_work / continue / need_help / forward /
- * orchestration_status / list_subagents / report_submit / report_fetch /
- * chain_start / chain_resolve 十具 + agent/created 双侧 deny 闸；5.3 波自
- * broker.mjs 抽出，约千行注册体整体随迁，导出行为逐字节不变）。
+ * orchestration_status / list_subagents / heartbeat / report_submit /
+ * report_fetch / chain_start / chain_resolve 十一具 + agent/created 双侧 deny
+ * 闸；自 broker.mjs 抽出，约千行注册体整体随迁，导出行为逐字节不变；
+ * heartbeat 为 第十一具——心跳自助闸，见下方注册体）。
  *
  * 拆分动机：这一族是「工具面」——schema、description 文案、execute 到共用件
  * （dispatchWork / delivery 五件 / relay dispatcher 三件）的转调，与 broker 本体
@@ -11,13 +12,15 @@
  *   - 服务面四件经回调逐调用现取：registerTool（ctx.tools.register）、
  *     on（ctx.on，agent/created 双侧闸随本块迁移）、getSubagents（need_help 的
  *     reportToParent 门面）、getAgentTools（deny 闸取 agent.ctx.tools——闸体对
- *     agent 尚未 ready 的抛错路径必须留在下方 try 内，N12 留痕口径不变）；
+ *     agent 尚未 ready 的抛错路径必须留在下方 try 内，留痕口径不变）；
  *   - 活状态传句柄（orchestrations / sessionTypes / childRegistry / abortExpected，
  *     Map/Set 本体不复制）；闭包可变值经 getter 现读（getBindings：宿主配置桥
  *     整表重建后 roster 行投影必须看到新值，与原闭包直读 `let bindings` 时点一致）；
  *   - 兄弟簇工厂产物经注入：delivery 五件与 relay 三件（runChainTransition /
  *     chainDeclarationError 供链工具对）由 broker.mjs 一次接线后传进来——
  *     工厂产物不可 import，本模块零回引 broker.mjs、零互引兄弟簇模块，成环面为零；
+ *     心跳自助三件（pauseHeartbeat / resumeHeartbeat / heartbeatStatus，工具 heartbeat
+ *     的落点）同律：broker-heartbeat 的 timers/ticks 锁在工厂闭包里，本簇只拿转发面；
  *   - 纯函数层直引 ../shared/（constants 名单 / roles 行投影 / misc 转义与工种
  *     解析 / adjacent 上报门面 / board 读写 / report-format 校验 / orchestration
  *     的 laneOf+nextId / relay-chain 声明校验与建链），不抄第二份实现。
@@ -31,9 +34,9 @@
  * 卸载口径：本簇无定时器/登记表类状态，无 clear* 需要导出；注册的工具与事件
  * 监听随注入的 ctx 作用域回收。
  *
- * 形态：registerAllTools(deps)——无返回值，调用即完成十具工具的注册与
+ * 形态：registerAllTools(deps)——无返回值，调用即完成十一具工具的注册与
  * agent/created 闸的接线（在 broker.mjs 的 apply 序列里处于 relay 簇接线之后、
- * 生命周期 handlers 之前，注册序与原实现一致）。
+ * 生命周期 handlers 之前——注册序是契约，不可挪动）。
  */
 
 import { ADJACENT_BYPASS_TOOLS, AGENT_TEAMS_TOOLS } from '../shared/constants.mjs'
@@ -73,6 +76,10 @@ export function registerAllTools({
   interruptForAbort,
   deliverWithQueueFallback,
   rearmAfterDelivery,
+  ensureHeartbeat,
+  pauseHeartbeat,
+  resumeHeartbeat,
+  heartbeatStatus,
   runChainTransition,
   chainDeclarationError,
   REPORT_EXT,
@@ -174,7 +181,7 @@ export function registerAllTools({
       const { orch, ownerPid, record, id: targetId, isFinished, isRunning } = await resolveContinueTarget(args.id, {
         callerOrch, parent, verb: 'continue', queuedHint: true, spawningGate: true,
       })
-      // urgency 三档（0.3.0-tisitan.2；终审批 U1 起三档一律经 subagents 门面投递）：
+      // urgency 三档（三档一律经 subagents 门面投递）：
       // queued=真 FIFO，等当前轮结束后被消费；steer=走 alpha.4 的 sendMessage
       // （next-step 边界即见、不打断进行中的工具调用），非 running / 拿不到活体 /
       // 门面拒收三种情况都落回 queued；abort=先 interrupt 掐断当前 turn 再排队
@@ -187,7 +194,17 @@ export function registerAllTools({
         })
         if (steerMessageId !== undefined) {
           orch.followupPrompt(targetId, args.prompt, 'steer')
-          // 埋点（0.4.0-tisitan.0）：投递成功基线（steer 档）。urgency 为声明档。
+          // 心跳信号 + 起表：steer 档投递成功即刷新（早退支与下方 queued/
+          // 塌档支各记一次，两条出口都不漏——本工具的每次成功投递都是一次信号）。
+          // ensure 与信号同点：本工具也是**复活面**（continue 命中已完工子代让
+          // 流水线重新有在飞），派发面的 ensure 照不到它，而 end 后的对账往往
+          // 已经把拍子停掉——不缺这一条，「派A→A交报告→continue(A,下一段长活)」
+          // 整轮零心跳。ensure 幂等，在飞中重调零代价。
+          // via=ping：steer 档正是「主编照心跳摘要发进度询问」的投递档（子代在跑、
+          // 消息插在步边界上），与下方 queued 复活支的 via=revive 分开标注。
+          childRegistry.noteHeartbeatSignal(targetId, Date.now())
+          ensureHeartbeat(parent.id, 'ping')
+          // 埋点：投递成功基线（steer 档）。urgency 为声明档。
           metrics.record({ kind: 'continue', promptBytes: args.prompt.length, urgency })
           bump()
           return { accepted: true, messageId: steerMessageId, mode: 'steer' }
@@ -214,7 +231,14 @@ export function registerAllTools({
         throw error
       }
       if (delivery === 'steer' && mode === 'queued') mode = 'steer'
-      // 埋点（0.4.0-tisitan.0）：投递成功基线（queued/abort 档及塌档重试）。
+      // 心跳信号 + 起表：continue 是对该子代的一次投递（含「ping 发出」这一
+      // 档——主编照心跳摘要发的进度询问走的就是本工具），刷新 lastSignalAt 并清零
+      // 「未回应 ping 数」。投递成功之后才记：投递失败不该被当成一次信号。
+      // ensure 同点（理由见上方 steer 出口）：复活面必须自己把拍子点起来。
+      // via=revive：本条出口的典型现场是「已完工子代被 continue 捞回来接着干」。
+      childRegistry.noteHeartbeatSignal(targetId, Date.now())
+      ensureHeartbeat(parent.id, 'revive')
+      // 埋点：投递成功基线（queued/abort 档及塌档重试）。
       // urgency 取声明档（abort 掐断成功后仍如实记 'abort'）。
       metrics.record({ kind: 'continue', promptBytes: args.prompt.length, urgency })
       // 台账照记 urgency 声明档（queued 为默认不落字段，保持旧记录零变化）
@@ -266,7 +290,7 @@ export function registerAllTools({
       const help = {
         id,
         childId: child.id,
-        // 工种识别走单一入口（0.3.0-tisitan.7 N13）：竞态归随的儿童（end 先到、
+        // 工种识别走单一入口：竞态归随的儿童（end 先到、
         // dispatchWork 尚未回填 sessionTypes）与 cold-resume 后重挂载的儿童都
         // 可能没有活登记，裸查 sessionTypes 会让求助单的 agentType 落成
         // undefined——面板按工种上色直接落空。typeOfAgent 的 label 兜底正是
@@ -284,6 +308,9 @@ export function registerAllTools({
         // The caller is not a tracked sub-agent (e.g. Sisyphus itself).
         throw new Error('need_help is only available to tracked sub-agents (this session is not one)')
       }
+      // 心跳信号：子代主动上报 = 最强的「活着且在等主编」信号——刷新后
+      // 摘要不会再建议 ping 它（主编手里本来就有这张单子）。
+      childRegistry.noteHeartbeatSignal(child.id, Date.now())
       bump()
       // 上报走 reportToParent 特性探测（alpha.4 sendMessage 优先、被拒兜底
       // parent.inject；alpha.2/3 走旧 reportFrom），门面差异见 shared/adjacent.mjs。
@@ -361,7 +388,7 @@ export function registerAllTools({
         return { kind: 'go_work', targetId: String(result?.childId ?? ''), resolved: true }
       }
       // M1 定位 + 三道闸（跨会话抢属主 / 单线占用；queued 与 spawning 两道占位闸
-      // 是 continue 独有的行为，本批不顺手补齐）
+      // 是 continue 独有的行为，不互相补齐）
       const { orch, ownerPid, record, id: targetId, isFinished } = await resolveContinueTarget(target, {
         callerOrch, parent, verb: 'forward',
       })
@@ -370,7 +397,14 @@ export function registerAllTools({
       const { messageId, delivery } = await deliverWithQueueFallback({
         parent, targetId, prompt, signal: exec?.signal, label: 'forward',
       })
-      // 埋点（0.4.0-tisitan.0）：forward 投递成功基线。forward 无 urgency 概念，
+      // 心跳信号 + 起表（与 continue 同律）：回给子代的投递是一次信号；
+      // target=childId 这一支同样可能复活已完工子代（forward 的 continue 等效），
+      // 故 ensure 与信号同点补位（幂等）。target=工种那一支走 dispatchWork，
+      // 其内部已 ensure，此处不重复。via=revive：本支无 urgency 概念，语义是
+      // 「把手里这张单子交给那个子代继续办」。
+      childRegistry.noteHeartbeatSignal(targetId, Date.now())
+      ensureHeartbeat(parent.id, 'revive')
+      // 埋点：forward 投递成功基线。forward 无 urgency 概念，
       // urgency 字段如实记实际投递档（delivery：queued / 塌档 steer）。
       metrics.record({ kind: 'continue', promptBytes: prompt.length, urgency: delivery })
       // M5：forward 的台账照记在复籍**之前**（continue 在其之后），差异见
@@ -423,7 +457,7 @@ export function registerAllTools({
       const s = orch.snapshot()
       const lines = []
       if (s.currentRecords.length > 0) {
-        // 二期 2.5（D20）：current 单条 → currentRecords 全量列表化；并行下主编
+        // D20：current 单条 → currentRecords 全量列表化；并行下主编
         // 需要一眼读出各 lane 的在飞数，每行带 lane 标注，池未扩容（两 lane 均
         // 容量 1）时不加汇总行（保持旧观感）。
         for (const c of s.currentRecords) lines.push(`● running: ${c.agentType} (${c.childId}) — ${c.status} [${c.lane ?? laneOf(c.agentType)}]`)
@@ -447,16 +481,16 @@ export function registerAllTools({
     },
   })
 
-  // 活花名册区（0.2.3-tisitan.14）：名字 / 模型绑定 / 备选链 / toolFilter 摘要 /
+  // 活花名册区：名字 / 模型绑定 / 备选链 / toolFilter 摘要 /
   // 人设来源。go_work 的 agent 参数以此为权威指引（description 不再内嵌清单）。
-  // 0.3.0-tisitan.9 A-05 收口：行投影改吃 shared/rosterEntries 单一源——此前这里与
+  // 行投影改吃 shared/rosterEntries 单一源——这里与
   // lib 半各抄一份逐字相同的 18 行摘要逻辑，而 shared 的简报渲染又是第三式，
   // 「同源同格式」只是愿望。文本格式一字不动（编排状态与既有断言零变更）。
   function renderRosterLines() {
     return ['── 角色名册（roster） ──', ...sharedRosterEntries(getBindings()).map(sharedFormatRosterRow)]
   }
 
-  // 接力链行（三期 3.5，§5.1 D13 可观测兜底的主语义）：非终态链每链一行——
+  // 接力链行（§5.1 D13 可观测兜底的主语义）：非终态链每链一行——
   // 主编每次回合自查 orchestration_status/snapshot 都能看到挂起链与在跑链，
   // 永不超时放行（D13 字面），处置入口（chain_resolve）随行提示。挂起原因
   // review/sync/gate-verdict/fallback/input-missing/restart 全部原样可见。
@@ -512,7 +546,125 @@ export function registerAllTools({
     },
   })
 
-  // ── report_submit（报告提交制，0.5.0-tisitan.1）：子代完整报告落板 + 成功事实登记 ──
+  // ── heartbeat（主编缓存心跳的自助闸）：pause / resume / status ──
+  // 心跳定时器是 broker 侧的内部状态（本体 ./broker-heartbeat.mjs，per-owner 单
+  // 定时器：一个主编会话一枚拍子，见该模块头三条不变量）。自动判定覆盖不到的
+  // 只有一个窗口——**只有主编自己知道**的那种静默意愿（正等一个不可中断的外部
+  // 动作、正等维护者回话）：此时他可以把本会话的拍子停一下，忙完再恢复。反过来
+  // status 让他能看见「它此刻在不在跑、第几拍、配置长什么样」，不必靠猜。
+  //
+  // 作用域：parentId 一律取自 exec.agent.id（不经参数面）——「只动自己的拍子」是
+  // 本工具的定义，不是调用纪律；跨会话操作既无意义也无权。鉴权与 go_work /
+  // continue / forward 同款双保险：运行时 canOrchestrate 守卫 + agent/created 闸
+  // 的子代理侧 deny（见文件尾 deny 名单）。
+  //
+  // 语义冻结（逐条对应 broker-heartbeat.mjs「主编自助闸」）：
+  //   pause  幂等，= stop(parentId,'paused')。**不是闸**：真事件（子代完工 / 求助 /
+  //          信号）照常送达，且下一次真实活动（派发 / continue / forward / 备选
+  //          重派 / end 后对账）会自动把定时器复活——零新增状态、不记「为谁停过」。
+  //   resume 幂等，= ensure(parentId,'manual')：已有拍子不重排、配置关不起表。
+  //   status 纯查表快照（running / tick / 生效配置），零副作用、不出事件。
+  // 三件都只转发注入的三枚闭包（broker.mjs 接线段），本簇零回引心跳模块。
+  registerTool({
+    name: 'heartbeat',
+    description: [
+      'Control the cache keep-alive heartbeat OF THIS orchestrator session only (pause / resume / status). The timer periodically wakes YOU with one cheap maintenance round so the provider prompt cache stays warm while you wait for sub-agents.',
+      'pause: stop this session\'s timer (idempotent) — for windows where only you know you want silence. It is NOT a latch: real events (sub-agent end, help requests, signals) keep arriving untouched, and the next real activity of yours (dispatch / continue / forward), or a sub-agent finishing, revives the timer automatically. No manual resume is strictly required; use resume if you want the beat back now.',
+      'resume: restart this session\'s timer (idempotent; a no-op while keepAlive is disabled in the config — it is not a way around the config switch).',
+      'status: read this session\'s heartbeat snapshot { running, tick, config } — running=false means no beat will come until the next real event.',
+      'Scope is fixed by the caller\'s own session id — there is no id argument, and this never touches another session\'s timer.',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['status', 'pause', 'resume'],
+          description: 'status = read this session\'s heartbeat snapshot; pause = stop the timer (idempotent; real events revive it); resume = restart the timer (idempotent, no-op while disabled).',
+        },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean' },
+          action: { type: 'string' },
+          running: { type: 'boolean' },
+          tick: { type: 'number' },
+          changed: { type: 'boolean' },
+          text: { type: 'string' },
+        },
+        required: ['ok', 'text'],
+      },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const parent = exec?.agent
+      if (!canOrchestrate(parent)) throw new Error('heartbeat is reserved for orchestrator sessions (agents without parentSession)')
+      const parentId = parent.id
+      const action = args?.action
+      // config 一次快照（三档都要用；逐调用现读，与 tickOnce 同一读法）
+      const { running, tick, config } = heartbeatStatus(parentId)
+      const knob = `interval=${config.orchestratorIntervalMs}ms childPingAfter=${config.childPingAfterMs}ms escalateAfterPings=${config.escalateAfterPings}`
+      if (action === 'pause') {
+        const changed = pauseHeartbeat(parentId)
+        // 回执一律报**动作之后**的真实状态（与 status 同一口径）：pause 成功即
+        // running=false / tick=0，幂等空转时也如实是这两个值——不让主编从回执里
+        // 读到暂停前的旧拍号。
+        const after = heartbeatStatus(parentId)
+        return {
+          ok: true,
+          action,
+          running: after.running,
+          tick: after.tick,
+          changed,
+          text: [
+            `heartbeat → 本会话拍子${changed ? '已暂停（撤掉当前定时器）' : '本来就没在跑（幂等空转，无状态变化）'}`,
+            '真事件不受影响：子代完工 / 求助 / 信号照常送达；下一次真实活动（你派工 / continue / forward，或子代完工后的对账）会自动复活定时器——pause 不是闸，不需要谁去收尸。',
+            `要立刻恢复用 heartbeat(action="resume")。当前 running=${after.running} tick=${after.tick}${config.enabled ? '' : '（注意配置 keepAlive.enabled=false：复活面也被配置挡着）'}`,
+          ].join('\n'),
+        }
+      }
+      if (action === 'resume') {
+        const changed = resumeHeartbeat(parentId)
+        const after = heartbeatStatus(parentId)
+        const why = changed ? '重新起表，拍号从 #1 数' : config.enabled ? '已有拍子（幂等，不重排、不重置拍号）' : '配置 keepAlive.enabled=false，定时器起不来（热更开启后的下一次活动会自动复活）——resume 不是绕过配置开关的后门'
+        return {
+          ok: true,
+          action,
+          running: after.running,
+          tick: after.tick,
+          changed,
+          text: `heartbeat → 本会话拍子${changed ? '已恢复' : '未起表'}：${why}。running=${after.running} tick=${after.tick}${config.enabled ? '' : '（配置关闭中）'}`,
+        }
+      }
+      if (action === 'status') {
+        // 没拍子时的注脚按**配置开关**分叉：配置关着就别说「下一次活动
+        // 会自动复活」——那一句是 pause 的语义（真事件把拍子点回来），而配置关时任何
+        // ensure 都起不来表，读者照那句话就是等一个永远不会来的拍子。口径与 pause/
+        // resume 两档的注脚拉齐（那两档早在 config.enabled=false 时就明说「配置挡着」）。
+        const idleNote = config.enabled
+          ? '（当前没有拍子：真事件仍会到，下一次活动会自动复活）'
+          : '（当前没有拍子，且配置 keepAlive.enabled=false：连自动复活都被配置挡着，要先开配置）'
+        return {
+          ok: true,
+          action,
+          running,
+          tick,
+          changed: false,
+          text: `heartbeat → 本会话 ${parentId}：running=${running}${running ? '（下一拍照常来）' : idleNote} tick=${tick}｜生效配置 enabled=${config.enabled} ${knob}`,
+        }
+      }
+      throw new Error(`heartbeat: unknown action "${String(action)}" (expected status / pause / resume)`)
+    },
+  })
+
+  // ── report_submit（报告提交制）：子代完整报告落板 + 成功事实登记 ──
   // 身份只从 exec.agent 推导（childId = agent.id、sessionId = header.parentSession，
   // 两者皆由 harness 填写、不经参数面），子代不可能伪造他人板——防越权写是本
   // 工具的存在前提。子代 deny 闸不得 deny 本工具（它就是子代面向的上报通道）；
@@ -579,6 +731,9 @@ export function registerAllTools({
           throw new Error(`report_submit failed: ${String(error)}`)
         }
         childRegistry.markSubmitted(child.id, checked.value)
+        // 心跳信号：交报告是子代最明确的一次「我还活着」——刷新信号并清零
+        // 未回应 ping 数，免得一个刚交完报告的儿童在下一拍仍被建议 ping。
+        childRegistry.noteHeartbeatSignal(child.id, Date.now())
         // D14 容量观测（开放 schema 直接打新 kind，metrics 模块零改动）：
         // bytes 供容量基线，sessionId/childId 供 R1.5 无界增长观测按会话分桶溯源。
         metrics.record({ kind: 'board-write', sessionId, childId: child.id, bytes: written.bytes })
@@ -587,7 +742,7 @@ export function registerAllTools({
     })
   }
 
-  // report_fetch（第一期 1.6，主编面向读板）：切片是常态、全文取回是异常路径
+  // report_fetch（主编面向读板）：切片是常态、全文取回是异常路径
   // （D15：用法导向只写进 description 自教，不动 system prompt）。根焊死
   // board/<主编会话 id>/——sessionId 一律取 exec.agent.id（主编会话自身），
   // 不经参数面：子代即便绕过 deny 闸也读不到别家板（跨会话不可达由 1.1 的
@@ -660,7 +815,7 @@ export function registerAllTools({
     })
   }
 
-  // ── 接力链工具对（三期 3.3/3.4，D11：声明结构全部由 schema 扛，绝不塞 prompt 字符串）──
+  // ── 接力链工具对（D11：声明结构全部由 schema 扛，绝不塞 prompt 字符串）──
   // 决策与 patch/ops/notices 落地在 ./broker-relay.mjs（runChainTransition /
   // chainDeclarationError 经注入）；本处是工具面：R-a（roster 面）、R-h（配置
   // 矛盾 fail-fast）、R-f/R-j/R-i/R-k 校验与拒绝口径原样保留。
@@ -725,7 +880,7 @@ export function registerAllTools({
       async execute(args, exec) {
         const parent = exec?.agent
         if (!canOrchestrate(parent)) throw new Error('chain_start is reserved for orchestrator sessions (agents without parentSession)')
-        // R-h（D23 fail-fast）：链的数据面从 board 直投上一棒全文，REPORT_EXT 关
+        // R-h（D23 fail-fast）：链的数据面从 board 直投上一环节全文，REPORT_EXT 关
         // 则 board 无货——配置矛盾显式暴露，绝不静默降级出第二真相源。
         if (!REPORT_EXT) {
           throw new Error('relay chains depend on report externalization (each hop reads the previous report from board/): set reportExternalization=true in the broker config (preset/agent.patch.yml) first')
@@ -848,8 +1003,8 @@ export function registerAllTools({
   }
 
   // deny 应用器：tools.restrict() 对任何「本作用域不可 restrict」的名字整体
-  // 抛错（unknown global tool），旧写法一次抛错就整批连坐失效（且被外层 catch
-  // 吞掉）。现在先按批试，失败转逐名——单个名字失败只 warn 跳过，其余照常落地，
+  // 抛错（unknown global tool）——一次抛错就整批连坐失效（且可能被外层 catch
+  // 吞掉）。故先按批试，失败转逐名：单个名字失败只 warn 跳过，其余照常落地，
   // 星型闸绝不因某部署少注册了一个工具行而全军覆没。
   function denyTools(tools, names, label) {
     try {
@@ -873,24 +1028,25 @@ export function registerAllTools({
   //     守门条件（ctx.tools.get('skill', agent) === skillTool）失败，从而跳过
   //     <available_skills> 注入以节省主会话上下文（子智能体保留 skill）；
   //     外加邻接消息三件套（防旁路加固 R1/R3）。
-  // 这是工具层（tools.restrict）屏蔽，与 system-prompt assemble 的 DSV4P0813
-  // phase-1 过滤（system prompt section 层）正交，互不冲突。
+  // 这是工具层（tools.restrict）屏蔽，作用于 agent 的工具面本身。
   // agent 的工具面经 getAgentTools 取（broker 侧包 `agent.ctx.tools` 一层）：
-  // agent.ctx 尚未 ready 的抛错路径落进下方同一个 try，N12 留痕口径不变。
+  // agent.ctx 尚未 ready 的抛错路径落进下方同一个 try，留痕口径不变。
   on('agent/created', ({ agent }) => {
     if (!agent) return
     try {
       if (isSubAgent(agent)) {
         // 星型拓扑闸（子智能体）：在工具目录层摘除原生派生工具
         // （subagent/subagent_fork/workflow/ralph），防止绕过 Sisyphus 私自
-        // 派生孙代；同时摘除编排工具 go_work/continue/forward（它们本有
-        // canOrchestrate 运行时守卫，此处为目录层双保险）。
+        // 派生孙代；同时摘除编排工具 go_work/continue/forward/heartbeat（它们
+        // 本有 canOrchestrate 运行时守卫，此处为目录层双保险；heartbeat 是
+        // 主编自助闸，harness 「加工具三点耦合」的第②点——注册点与
+        // deny 名单同屏同批，开关面无条件注册，故无条件 deny）。
         // 防旁路加固（R2）：上游邻接消息三件套（send_message 直插父代回合、
         // list_agents 自窥、interrupt_agent 裸掐）一并摘除——子代经它们绕过
         // need_help 挂账体系；副作用良性：continuation manager 见子 scope 解析
         // 不到 send_message，不再给子代注入「完工前 send_message 回报父代」指引。
         // need_help / orchestration_status / list_subagents 保留。
-        // report_fetch（1.6）随六件套同待遇：读板是主编的复核动作，子代自读
+        // report_fetch（1.6）随主编工具同待遇：读板是主编的复核动作，子代自读
         // 自己的板没有意义（写读同源），读了只会把全文拉回子代上下文。
         // chain_start / chain_resolve（3.3）随主编工具同待遇：链声明与裁决是
         // 编排面的主编职权（canOrchestrate 运行时守卫之外的目录层双保险）。
@@ -909,7 +1065,7 @@ export function registerAllTools({
         // 换来 restrict 批级拒绝 + 逐名兜底的「查无此具」噪音。
         const teamsLive = liveToolNames()
         denyTools(getAgentTools(agent), [
-          'subagent', 'subagent_fork', 'workflow', 'ralph', 'go_work', 'continue', 'forward',
+          'subagent', 'subagent_fork', 'workflow', 'ralph', 'go_work', 'continue', 'forward', 'heartbeat',
           ...(REPORT_EXT ? ['report_fetch'] : []),
           ...(RELAY_CHAINS ? ['chain_start', 'chain_resolve'] : []),
           ...ADJACENT_BYPASS_TOOLS,
@@ -918,7 +1074,7 @@ export function registerAllTools({
         return
       }
       // Sisyphus 主会话：隐藏 skill 工具（catalog 注入守门）+ 上游邻接消息
-      // 三件套（防旁路加固 R1/R3）。编排面只认 broker 自己的六件套：直调上游
+      // 三件套（防旁路加固 R1/R3）。编排面只认 broker 自己的七件套：直调上游
       // send_message 会绕过台账/单线锁，并对已结束 child 触发 coldResume 后
       // 把结论丢进 broker 的「late/duplicate ignored」分支（双流并发）；
       // 直调 interrupt_agent 没有 abortExpected 护航（预期掐断被误判真失败）。
@@ -928,8 +1084,8 @@ export function registerAllTools({
       // 之外的继承名可 restrict），本闸走 agent.ctx 子作用域，不依赖那个前提。
       denyTools(getAgentTools(agent), ['skill', ...ADJACENT_BYPASS_TOOLS], 'orchestrator scope')
     } catch (e) {
-      // agent.ctx 尚未 ready 等意外：不阻断挂载流程，但必须留痕（0.3.0-tisitan.7
-      // N12）。此前这是一个纯粹的静默黑洞——本闸是星型拓扑与邻接三件套的
+      // agent.ctx 尚未 ready 等意外：不阻断挂载流程，但必须留痕。不接本闸就是
+      // 一个纯粹的静默黑洞——本闸是星型拓扑与邻接三件套的
       // agent 作用域防线（tool-mask 那条 standing 层的兜底前提在 web 部署下
       // 并不成立），它抛错而被吞掉 = 防旁路面整体失守且无人知晓。agent/created
       // 每个 agent 只触发一次，一行 warn 不构成刷屏。

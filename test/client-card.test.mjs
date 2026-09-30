@@ -1,5 +1,5 @@
 /**
- * 配置卡的浏览器侧行为档（0.5.0-tisitan.3）。
+ * 配置卡的浏览器侧行为档。
  *
  * 不起浏览器、不装 jsdom：假的 __ModuleLoader__ + 假 React（含一级错误边界语义）
  * + 假 configForms（照宿主 compose：value = base ⊕ user，且**写被拒时不抛**，
@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { SETTINGS_CSS, STYLE_TAG, mountSettingsStyles } from '../src/client-styles.js'
+import { KEEP_ALIVE_DEFAULTS } from '../preset/shared/constants.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const bundleSource = readFileSync(join(ROOT, 'dist', 'client.js'), 'utf-8')
@@ -377,13 +378,6 @@ async function settle(booted, times = 3) {
   }
 }
 
-async function press(booted, node) {
-  assert.ok(node, '目标节点不存在')
-  await node.props.onKeyDown?.({ key: 'Enter', target: node, preventDefault() {}, stopPropagation() {} })
-  booted.reload()
-  await tick()
-}
-
 /* ── 装配一次页面 ────────────────────────────────────────────────────────── */
 
 function openCard({ user = {}, base = {}, revision = 0, view = 'page', served = [NS], mode = 'host', writable = true, catalog = {}, handlers = {} } = {}) {
@@ -521,21 +515,74 @@ test('双视图：summary 是一句话，page 是编辑器', async () => {
   assert.ok(rowsOf(page.tree, 'roles').length === 10, '9 内置 + 1 自定义')
 })
 
-test('页面骨架：两块主从网格、通栏注释区、图例与保存条都在', () => {
+test('页面骨架：两块主从网格 + 一块心跳表单、通栏注释区、图例与保存条都在', () => {
   const booted = openCard()
   const blocks = all(booted.tree, (node) => typeof node.props?.['data-block'] === 'string')
-  assert.deepEqual(blocks.map((node) => node.props['data-block']), ['roles', 'prices'])
-  for (const block of blocks) {
+  // 第三块 keepAlive（主编缓存心跳，追加）：扁平四字段表单、无左列清单，
+  // 故只对前两块要求主从网格；三块共同要求「字段/网格区 + 一条通栏注释」。
+  assert.deepEqual(blocks.map((node) => node.props['data-block']), ['roles', 'prices', 'keepAlive'])
+  for (const block of blocks.filter((node) => node.props['data-block'] !== 'keepAlive')) {
     const grid = byClass(block, 'mygo-grid')
     assert.equal(grid.length, 1, `${block.props['data-block']} 有一张两列网格`)
     const detail = byClass(block, 'mygo-detail')
     assert.equal(detail.length, 1)
     assert.equal(block.children.filter((child) => hasClass(child, 'mygo-detail') || hasClass(child, 'mygo-grid')).length, 2, '注释区是网格的兄弟（通栏）')
   }
+  const heartbeat = blocks.find((node) => node.props['data-block'] === 'keepAlive')
+  assert.equal(byClass(heartbeat, 'mygo-fields').length, 1, '心跳块是一张字段区')
+  assert.equal(byClass(heartbeat, 'mygo-field').length, 4, '开关 + 三个数字旋钮')
+  assert.equal(byClass(heartbeat, 'mygo-detail').length, 1, '心跳块有通栏注释区')
   assert.equal(byClass(booted.tree, 'mygo-legend').length, 1)
 })
 
-test('读面四态：未就绪撤走编辑器并给重试；内存档不给重试', () => {
+test('心跳块读面：宿主没声明这一段就转只读并点明「重启宿主」，声明了才给编辑', () => {
+  //  补测（真事故）：宿主半进程持有旧 schema 时，现值里没有 keepAlive
+  // ——那一刻本块若照常给编辑，用户勾一下再保存就是一次注定被拒的原子写入。
+  const unserved = openCard({ user: { roles: {} } })
+  const dead = all(unserved.tree, (node) => node.props?.['data-block'] === 'keepAlive')[0]
+  assert.equal(textOf(byClass(dead, 'mygo-count')[0]), '宿主未声明')
+  assert.match(textOf(byClass(dead, 'mygo-blockHint')[0]), /宿主未声明这一段/)
+  assert.match(textOf(byClass(dead, 'mygo-blockHint')[0]), /重启宿主/)
+  const locked = all(dead, (node) => node.tag === 'input')
+  // 7 = 开关 + 三个正式旋钮 + 速算区三个输入（步2 追加）。速算区是纯计算器，但它
+  // 的「填入拍距」写的是正式字段的草稿——宿主都没声明这一段时同样无从落盘，故
+  // 与四个旋钮同闸只读（不是「反正不落库就放着能填」）。
+  assert.equal(locked.length, 7, '四个旋钮 + 速算区三个输入都还在（只读不是撤块）')
+  for (const input of locked) assert.equal(input.props.disabled, true, `未声明段必须只读：[${input.props['aria-label']}]`)
+  assert.equal(all(unserved.tree, (node) => node.props?.['data-role'] === 'status').length, 1)
+
+  // 声明了（现值里有这一段：schema 默认也解析进去）→ 声明的段照常可编辑
+  const live = openCard({ user: { keepAlive: { ...KEEP_ALIVE_DEFAULTS, enabled: true } } })
+  const beat = all(live.tree, (node) => node.props?.['data-block'] === 'keepAlive')[0]
+  assert.equal(textOf(byClass(beat, 'mygo-count')[0]), '已开启')
+  assert.doesNotMatch(textOf(byClass(beat, 'mygo-blockHint')[0]), /重启宿主/)
+  for (const input of all(beat, (node) => node.tag === 'input')) assert.equal(input.props.disabled, false)
+})
+
+test('静默被拒且本段宿主未声明：回执点名该段与出路，不给两义文案', async () => {
+  // 走的是 src/settings-core.js save() 里的 unservedSections 接线：假宿主「照官方信道
+  // 静默被拒」（调完不落盘、不抛），页面按读回判没落盘，并把「宿主根本没声明这一段」
+  // 写成能照做的一句话。单价币种当靶子只为避开心跳块新加的只读闸——真事故里被点名的
+  // 那一段是 keepAlive，判据同款。
+  // 宿主现值只有 sisyphus/roles/usagePrices 三段（= 币种那段没被声明）
+  const booted = openCard({ base: { sisyphus: {}, roles: {}, usagePrices: {} } })
+  const currency = all(booted.tree, (node) => node.tag === 'select')
+    .find((node) => node.children.some((option) => option.props?.value === 'CNY'))
+  assert.ok(currency, '币种旋钮在')
+  await typeValue(booted, currency, 'CNY')
+  booted.scope.state.rejects = true
+  await click(booted, buttonExact(booted.tree, '立即保存'))
+  assert.equal(booted.scope.state.writes.length, 1, '写入照发（宿主有没有受理是它的事）')
+  assert.deepEqual(booted.scope.state.writes[0].ops.filter((op) => op.op === 'set'), [{ op: 'set', path: ['usageCurrency'], value: 'CNY' }], '点数到的段只有币种这一段')
+  const receipt = textOf(all(booted.tree, (node) => node.props?.['data-role'] === 'receipt')[0])
+  assert.match(receipt, /没落盘/)
+  assert.match(receipt, /宿主未声明 usageCurrency 段/)
+  assert.match(receipt, /重启宿主后重试/)
+  assert.match(receipt, /· r0/)
+  assert.doesNotMatch(receipt, /或他处刚改过这一命名空间/, '点名得起就不给两义文案')
+})
+
+test('读面四态：未就绪撤走编辑器并给重试；进程内只读态不给重试', () => {
   const loading = openCard()
   loading.scope.state.status = 'loading'
   const booted = openCard({ writable: true })
@@ -559,13 +606,12 @@ test('标量编辑：置草稿 → 待保存计数 → 保存带栅栏 → 读�
 })
 
 test('嵌套表：新建角色 → 填模型 → 加备选 → 一次原子写整册落地', async () => {
-  const booted = openCard({ user: { roles: { hermes: { provider: 'p', model: 'm', reasoningEffort: '', dsv4p0813: false, fallbacks: [] } } }, revision: 0 })
+  const booted = openCard({ user: { roles: { hermes: { provider: 'p', model: 'm', reasoningEffort: '', fallbacks: [] } } }, revision: 0 })
   const keyInput = all(booted.tree, (node) => node.tag === 'input' && node.props?.placeholder?.includes('新角色键名'))[0]
   await typeValue(booted, keyInput, 'review-bot')
   await click(booted, buttonExact(booted.tree, '+ 新建角色'))
   assert.equal(rowsOf(booted.tree, 'roles').length, 10, '9 内置 + 新建的 1 个自定义，立刻可见')
   assert.match(textOf(all(booted.tree, (node) => node.props?.['data-role'] === 'status')[0]), /待保存：角色名册/)
-  const paneModelInput = all(booted.tree, (node) => node.tag === 'input' && node.props?.placeholder === '（渠道：点选或手填）')
   const chain = all(booted.tree, (node) => hasClass(node, 'mygo-chainRow'))
   assert.equal(chain.length, 1, '新角色初始只有主选一位')
   await click(booted, buttonExact(booted.tree, '+ 添加条目'))
@@ -644,7 +690,7 @@ test('模型目录：datalist 来自宿主 modelCatalog，渠道清单在下拉�
 })
 
 test('工具花名册：listTools 喂 allow/deny 的 datalist，刷新按钮重拉一次', async () => {
-  const booted = openCard({ user: { roles: { 'custom-x': { provider: '', model: '', reasoningEffort: '', dsv4p0813: false, fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } } } } })
+  const booted = openCard({ user: { roles: { 'custom-x': { provider: '', model: '', reasoningEffort: '', fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } } } } })
   await settle(booted)
   assert.equal(booted.connection.calls.filter((call) => call.endpoint === 'listTools').length, 1, '挂载即拉一次花名册')
   await click(booted, rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('custom-x')))
@@ -656,7 +702,7 @@ test('工具花名册：listTools 喂 allow/deny 的 datalist，刷新按钮重�
 })
 
 test('工具名单编辑：加一条 → 草稿可见 → 删除 → 保存发数组', async () => {
-  const booted = openCard({ user: { roles: { 'custom-x': { provider: '', model: '', reasoningEffort: '', dsv4p0813: false, fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } } } } })
+  const booted = openCard({ user: { roles: { 'custom-x': { provider: '', model: '', reasoningEffort: '', fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } } } } })
   await settle(booted)
   await click(booted, rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('custom-x')))
   const toolInput = all(booted.tree, (node) => node.tag === 'input' && node.props?.placeholder?.includes('工具名'))[0]
@@ -673,7 +719,7 @@ test('工具名单编辑：加一条 → 草稿可见 → 删除 → 保存发�
 })
 
 test('人设覆盖：载入文件默认走自有端点，留空保存发 unset', async () => {
-  const booted = openCard({ user: { roles: { oracle: { provider: 'p', model: 'm', reasoningEffort: '', dsv4p0813: false, fallbacks: [] } } } })
+  const booted = openCard({ user: { roles: { oracle: { provider: 'p', model: 'm', reasoningEffort: '', fallbacks: [] } } } })
   await settle(booted)
   const oracleRow = rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('Oracle'))
   await click(booted, oracleRow)
@@ -690,7 +736,7 @@ test('人设覆盖：载入文件默认走自有端点，留空保存发 unset',
 })
 
 test('只读文档：编辑区照常渲染，但每次写都被拒之门外', async () => {
-  const booted = openCard({ writable: false, user: { roles: { hermes: { provider: 'p', model: 'm', reasoningEffort: '', dsv4p0813: false, fallbacks: [] } } } })
+  const booted = openCard({ writable: false, user: { roles: { hermes: { provider: 'p', model: 'm', reasoningEffort: '', fallbacks: [] } } } })
   assert.match(textOf(booted.tree), /当前只读/)
   const save = button(booted.tree, '立即保存')
   assert.equal(save.props.disabled, true)
@@ -707,6 +753,10 @@ test('布局契约：两列等宽、行高与省略号、通栏注释区、主�
   }
   assert.match(rule('.mygo-grid'), /grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/)
   assert.match(rule('.mygo-fields'), /grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/)
+  // 速算区（步2）：三个输入一行、两个输出一行——布局契约与元素数一起钉住，
+  // 免得日后有人「顺手」把一个输出挪进说明条而没人发现。
+  assert.match(rule('.mygo-calcGrid'), /grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(0, 1fr\)/)
+  assert.match(rule('.mygo-calcOuts'), /grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/)
   assert.match(rule('.mygo-listRow'), /height: 24px/)
   assert.match(rule('.mygo-rowName'), /text-overflow: ellipsis/)
   assert.match(rule('.mygo-rowName'), /white-space: nowrap/)
@@ -786,4 +836,152 @@ test('错误边界：卡内抛错只糊这一块，不白整页', () => {
   const tree = react.tree
   assert.match(textOf(tree), /渲染异常/, '兜底文案在场')
   assert.ok(byClass(tree, 'mygo-noticeError').length >= 1)
+})
+
+// ── 心跳速算区（ 步2）：只算数、只填数 ────────────────────────
+
+test('速算区：三输入两输出在屏、换档即重算、一键填入走的仍是草稿通路', async () => {
+  const booted = openCard({ user: { keepAlive: { ...KEEP_ALIVE_DEFAULTS, enabled: true } }, revision: 0 })
+  const calcRoot = () => byClass(booted.tree, 'mygo-calc')[0]
+  const calcInput = (label) => all(booted.tree, (node) => node.tag === 'input' && node.props?.['aria-label'] === label)[0]
+  const outText = (role) => textOf(byClass(all(booted.tree, (node) => node.props?.['data-role'] === role)[0], 'mygo-calcValue')[0])
+  const intervalField = () => all(booted.tree, (node) => node.tag === 'input' && node.props?.['aria-label'] === '主编拍距（秒）')[0]
+
+  assert.ok(calcRoot(), '心跳块里有速算区')
+  assert.equal(byClass(booted.tree, 'mygo-calcField').length, 3, '三个输入：TTL / 输入价 / 缓存命中价')
+  assert.equal(byClass(booted.tree, 'mygo-calcOut').length, 2, '两个输出：建议拍距 / 前瞻窗口 H')
+  assert.equal(calcInput('速算-缓存TTL（秒）').props.value, '300', 'TTL 默认档 = 5 分钟')
+  assert.equal(calcInput('速算-输入价（$/M）').props.placeholder, '3.00', '示例价格走 placeholder（不是值：不预填、不落库）')
+  assert.equal(calcInput('速算-缓存命中价（$/M）').props.placeholder, '0.30')
+  assert.equal(calcInput('速算-输入价（$/M）').props.value, '', '价格框初始为空')
+  // 两个输出都在屏上：拍距就算得出来，H 要等两个价格
+  assert.equal(outText('calc-interval'), '4.2 分钟（250 秒）', 'TTL 300 × 5/6 = 250 秒')
+  assert.equal(outText('calc-lookahead'), '—', '价格没填 → 降级展示（元素照在）')
+  assert.match(textOf(calcRoot()), /pep|ping|剩余/, 'H 那一行带着用途说明')
+  assert.ok(buttonExact(booted.tree, '填入拍距'), '一键填入按钮在')
+
+  // 换 1 小时档：一条规则覆盖两档，输出立即重算
+  await typeValue(booted, calcInput('速算-缓存TTL（秒）'), '3600')
+  assert.equal(outText('calc-interval'), '50 分钟（3000 秒）')
+  // 填价格：倍率 10 → H = 9 × 拍距 = 37.5 分钟 → 7.5 小时
+  await typeValue(booted, calcInput('速算-输入价（$/M）'), '3.30')
+  assert.equal(outText('calc-lookahead'), '—', '只填一个价格仍不可算')
+  await typeValue(booted, calcInput('速算-缓存命中价（$/M）'), '0.33')
+  assert.equal(outText('calc-lookahead'), '7.5 小时')
+
+  // 一键填入：写的是**正式字段的草稿**（毫秒进草稿、界面按秒示人）
+  await click(booted, buttonExact(booted.tree, '填入拍距'))
+  assert.equal(intervalField().props.value, '3000', '填入 3000000ms → 界面 3000 秒')
+  assert.equal(buttonExact(booted.tree, '立即保存').props.disabled, false, '填入立刻让页面变脏（仍是草稿，未写盘）')
+  assert.equal(booted.scope.state.writes.length, 0, '填入不碰保存逻辑，一个字节都没写')
+
+  // 保存：速算区的三个输入一个都不许落库（零新增持久化字段）
+  await click(booted, buttonExact(booted.tree, '立即保存'))
+  const ops = booted.scope.state.writes[0].ops
+  assert.ok(ops.some((op) => op.op === 'set' && op.path.join('.') === 'keepAlive.orchestratorIntervalMs' && op.value === 3000000))
+  assert.equal(ops.filter((op) => op.path[0] === 'keepAlive').length, 1, '这次保存只动一个正式字段（速算区不夹带）')
+  assert.deepEqual(Object.keys(booted.scope.state.user.keepAlive).sort(),
+    ['childPingAfterMs', 'enabled', 'escalateAfterPings', 'orchestratorIntervalMs'],
+    '落库的只有那四个正式字段（速算区的三个输入一个都不进来）')
+  const persisted = JSON.stringify(booted.scope.state.user)
+  for (const leak of ['3600', '3.30', '0.33']) {
+    assert.equal(persisted.includes(leak), false, `速算区输入不得落库：${leak}`)
+  }
+  // 组件态仍在（没被清掉），但它与落库面无关——刷新即回默认
+  assert.equal(calcInput('速算-缓存TTL（秒）').props.value, '3600', '速算区输入是组件态：保存不动它')
+})
+
+test('速算区降级：缓存价空/0 都给「为什么」而不给假数；只读档连填数口一起关', async () => {
+  const booted = openCard({ user: { keepAlive: { ...KEEP_ALIVE_DEFAULTS, enabled: true } } })
+  const calcInput = (label) => all(booted.tree, (node) => node.tag === 'input' && node.props?.['aria-label'] === label)[0]
+  const lookahead = () => textOf(byClass(all(booted.tree, (node) => node.props?.['data-role'] === 'calc-lookahead')[0], 'mygo-calcValue')[0])
+  const note = () => textOf(all(booted.tree, (node) => node.props?.['data-role'] === 'calc-lookaheadNote')[0])
+
+  // 初始：第一个价格都没填 —— 降级文案点名缺哪一项
+  assert.equal(lookahead(), '—')
+  assert.match(note(), /缓存命中价/)
+  // 缓存价填 0：除零档，仍然是降级而不是 Infinity
+  await typeValue(booted, calcInput('速算-缓存命中价（$/M）'), '0')
+  assert.equal(lookahead(), '—')
+  assert.match(note(), /缓存命中价/)
+  // 补上输入价 → 仍不可算（缓存价还不对）
+  await typeValue(booted, calcInput('速算-输入价（$/M）'), '3')
+  assert.equal(lookahead(), '—')
+  // 缓存价改成 0.3 → 算出来
+  await typeValue(booted, calcInput('速算-缓存命中价（$/M）'), '0.3')
+  assert.equal(lookahead(), '37.5 分钟')
+  assert.equal(all(booted.tree, (node) => node.props?.['data-role'] === 'calc-lookaheadNote').length, 0, '算得出来就不出小字')
+  // 比价 ≤ 1：H=0 且必须解释（否则「0 秒」像 bug）
+  await typeValue(booted, calcInput('速算-输入价（$/M）'), '0.2')
+  assert.equal(lookahead(), '0 秒')
+  assert.match(note(), /没有省头/)
+  // TTL 清空：拍距降级 → 填入按钮跟着关（不许把 null 填进正式字段）
+  await typeValue(booted, calcInput('速算-缓存TTL（秒）'), '')
+  assert.equal(textOf(byClass(all(booted.tree, (node) => node.props?.['data-role'] === 'calc-interval')[0], 'mygo-calcValue')[0]), '待填 TTL')
+  assert.equal(buttonExact(booted.tree, '填入拍距').props.disabled, true, '拍距不可算 → 填入按钮禁用')
+  // TTL 是组件态：动它不算配置改动（保存键仍是灰的、一个字节都没写）
+  assert.equal(buttonExact(booted.tree, '立即保存').props.disabled, true, '清空 TTL 不产生草稿改动')
+  assert.equal(booted.scope.state.writes.length, 0, '速算区自己的输入不写盘')
+
+  // 只读档（宿主未声明这一段）：速算区三个输入与填入口一并只读
+  const dead = openCard({ user: { roles: {} } })
+  assert.equal(byClass(dead.tree, 'mygo-calc').length, 1, '只读档速算区仍在屏上（只读不是撤块）')
+  for (const input of all(byClass(dead.tree, 'mygo-calc')[0], (node) => node.tag === 'input')) {
+    assert.equal(input.props.disabled, true, `只读档速算输入必须禁用：[${input.props['aria-label']}]`)
+  }
+  assert.equal(buttonExact(dead.tree, '填入拍距').props.disabled, true, '只读档填不进去（写了也会被宿主 volatile 闸拒）')
+})
+
+// ── 心跳半输入：页面与写面同一口径───────────────
+
+test('半输入：清空拍距框不报脏、敲 0 落成 1 秒——页面脏比对与写面 op 不再打架', async () => {
+  const booted = openCard({
+    user: { keepAlive: { ...KEEP_ALIVE_DEFAULTS, enabled: true, orchestratorIntervalMs: 60000 } },
+    revision: 0,
+  })
+  const intervalField = () => all(booted.tree, (node) => node.tag === 'input' && node.props?.['aria-label'] === '主编拍距（秒）')[0]
+  const save = () => buttonExact(booted.tree, '立即保存')
+  assert.equal(intervalField().props.value, '60', '现值 60000ms → 界面 60 秒')
+  assert.equal(save().props.disabled, true, '未改动时保存键是灰的')
+
+  // 口子一：把框清空 = 未触碰。旧口径下这里会凭空报脏、却一条 op 也发不出，
+  // 保存再被读回判成「没落盘」——一次纯属虚构的红字。
+  await typeValue(booted, intervalField(), '')
+  assert.equal(save().props.disabled, true, '清空框不许凭空报脏（保存键保持灰）')
+  assert.equal(booted.scope.state.writes.length, 0, '一个字节都没写')
+  // 清空之后回到原值，仍不是改动
+  await typeValue(booted, intervalField(), '60')
+  assert.equal(save().props.disabled, true, '回到原值也不是改动')
+
+  // 口子二：敲 0（越界但可解析）= 真改动，按 min(1) 回落成 1 秒，而不是 unset
+  await typeValue(booted, intervalField(), '0')
+  assert.equal(save().props.disabled, false, '敲 0 是一次真改动（不是「回到默认」）')
+  await click(booted, save())
+  const beatOps = booted.scope.state.writes[0].ops.filter((op) => op.path.join('.') === 'keepAlive.orchestratorIntervalMs')
+  assert.deepEqual(beatOps, [{ op: 'set', path: ['keepAlive', 'orchestratorIntervalMs'], value: 1000 }],
+    '夹到下限 1 秒并 set（旧口径会误发 unset 把用户层那条覆盖删掉）')
+  assert.equal(booted.scope.state.user.keepAlive.orchestratorIntervalMs, 1000, '落盘值就是 1 秒')
+})
+
+test('半输入：清空拍距框后再保存也不产生红字（读回判定与脏比对同口径）', async () => {
+  const booted = openCard({
+    user: { keepAlive: { ...KEEP_ALIVE_DEFAULTS, enabled: true, orchestratorIntervalMs: 60000 } },
+    revision: 0,
+  })
+  const intervalField = () => all(booted.tree, (node) => node.tag === 'input' && node.props?.['aria-label'] === '主编拍距（秒）')[0]
+  // 先制造一次真改动（逼出脏状态与草稿），再把这一格清空——草稿仍是脏的（另一个字段），
+  // 于是保存键可点：这一笔的读回判定里若把「清空」算成差异，就会误报「没落盘」。
+  await typeValue(booted, all(booted.tree, (node) => node.tag === 'input' && node.props?.['aria-label'] === '升级梯连拍数')[0], '5')
+  await typeValue(booted, intervalField(), '')
+  const saveBtn = buttonExact(booted.tree, '立即保存')
+  assert.equal(saveBtn.props.disabled, false, '升级梯那一笔是真改动，保存键可点')
+  await click(booted, saveBtn)
+  // 读的是**保存回执**（data-role='receipt'，成功/失败两态就在它的 class 上），不是页脚
+  // 那句状态行（data-role='status' 只说草稿干不干净）——认错节点会让这条断言永远绿。
+  const receiptNode = all(booted.tree, (node) => node.props?.['data-role'] === 'receipt')[0]
+  const receipt = textOf(receiptNode)
+  assert.equal(receiptNode.props.className, 'mygo-statusOk', '回执是成功态样式')
+  assert.match(receipt, /已保存/, `写成功就该报成功：[${receipt}]`)
+  assert.doesNotMatch(receipt, /没落盘|未落盘/, '清空那一格不该引发「没落盘」红字')
+  assert.equal(booted.scope.state.user.keepAlive.orchestratorIntervalMs, 60000, '用户层那条覆盖原封不动')
 })

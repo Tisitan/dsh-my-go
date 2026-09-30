@@ -6,7 +6,7 @@
  * module free of react and @deepseek-ai/* imports (preset/shared/constants
  * is plain ESM constants, safe for both consumers).
  *
- * Scope note (0.5.0-tisitan.3 批次 3): this module is the persisted-roles
+ * Scope note: this module is the persisted-roles
  * projection layer — key validation, stored-dict → editor-row normalization,
  * persona overrides and the getBuiltinPersona RPC result interpreter. The
  * row-level editing transitions (add/remove/update rows, tool entries,
@@ -14,7 +14,7 @@
  * page in src/settings-core.js / src/roles-editor.js; the retired copies
  * that used to sit here were deleted as orphaned exports.
  *
- * A role row is `{ key, provider, model, reasoningEffort, dsv4p0813,
+ * A role row is `{ key, provider, model, reasoningEffort,
  * fallbacks, persona, allow, deny }` (the toolFilter object is flattened to
  * two name lists for the editors). Role keys must match ROLE_KEY_PATTERN —
  * the same constraint the host settings schema enforces fail-closed — so an
@@ -59,7 +59,6 @@ export function normalizeRoleRows(value, builtinKeys = []) {
       provider: typeof row.provider === 'string' ? row.provider : '',
       model: typeof row.model === 'string' ? row.model : '',
       reasoningEffort: typeof row.reasoningEffort === 'string' ? row.reasoningEffort : '',
-      dsv4p0813: row.dsv4p0813 === true,
       fallbacks: Array.isArray(row.fallbacks) ? row.fallbacks : [],
       persona: typeof row.persona === 'string' ? row.persona : '',
       allow: normalizeNameList(row.toolFilter?.allow),
@@ -68,7 +67,7 @@ export function normalizeRoleRows(value, builtinKeys = []) {
 }
 
 /**
- * Persona override row for a built-in specialist (tisitan.15): keep any
+ * Persona override row for a built-in specialist: keep any
  * existing fields of the stored roles row and touch ONLY `persona` — the
  * host save loop treats absent fields as "don't touch", so a partial row
  * never clears a configured binding. Empty text = cleared override (the
@@ -87,7 +86,7 @@ export function personaOverrideSource(existingRow) {
 }
 
 /**
- * Normalize the host `getBuiltinPersona` RPC result (tisitan.16b) into an
+ * Normalize the host `getBuiltinPersona` RPC result into an
  * editor action: `{ ok: true, persona }` fills the override textarea as an
  * unsaved draft; anything else becomes a red inline message. The host
  * endpoint never throws across the RPC, but the transport still can — the

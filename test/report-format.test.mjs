@@ -260,7 +260,7 @@ test('REPORT_CLAUSE：两尾字段的强制语义写全（单源消灭「条款�
   assert.match(REPORT_CLAUSE, /没有写「无」/, '写「无」合法的口径在册（deviation 侧）')
   assert.match(REPORT_CLAUSE, /确实没有写「无」/, '写「无」合法的口径在册（unverified 侧）')
   assert.match(REPORT_CLAUSE, /不要在 report 正文里补/, '反向指引：节标不再是交付面')
-  assert.match(REPORT_CLAUSE, /自动渲成两节/, '落板渲节机制告知')
+  assert.match(REPORT_CLAUSE, /自动渲成「## 偏差记录」「## 未验项」两节/, '落板渲节机制告知（含两节标名）')
 })
 
 test('新条款与 RELAY_CLAUSE：旧机制字样零出现（提示词面归零）', () => {

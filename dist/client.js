@@ -59,6 +59,29 @@ var PRICE_OPTIONAL_BUCKETS = ["cacheRead", "cacheWrite"];
 var PRICE_BUCKETS = [...PRICE_REQUIRED_BUCKETS, ...PRICE_OPTIONAL_BUCKETS];
 var PRICE_BUCKET_LABELS = Object.freeze({ input: "\u8F93\u5165", output: "\u8F93\u51FA", cacheRead: "\u7F13\u5B58\u8BFB\u53D6", cacheWrite: "\u7F13\u5B58\u5199\u5165" });
 var LEGACY_PARENT_ID = "legacy";
+var KEEP_ALIVE_DEFAULTS = Object.freeze({
+  enabled: false,
+  // 主编拍距：空闲主编多久被唤醒一次跑维护回合。
+  // **250 秒 = 5 分钟档 TTL × 5/6**（与配置卡速算区同一个安全余量口径，见
+  // KEEP_ALIVE_CALC）：续命的拍子必须早于缓存过期，留 1/6 给投递与回合本身耗时。
+  // 对 300 秒 TTL 而言，正好 5 分钟的拍距是**零余量**——拍子与过期同时到即白醒，
+  // 与卡上那句「比 prompt 缓存 TTL 长的一拍等于白醒」是同一条口径。
+  orchestratorIntervalMs: 25e4,
+  // 子代静默多久算「需要进度询问」（30 分钟：长任务正常节奏之上，误报成本低）。
+  childPingAfterMs: 18e5,
+  // 连续多少轮心跳建议 ping 而无任何信号 → 摘要标红请主编当场裁决。
+  escalateAfterPings: 3
+});
+var KEEP_ALIVE_CALC = Object.freeze({
+  // 拍距 = TTL × 5/6：续命的唤醒必须**早于** TTL 过期（留 1/6 余量给投递与回合
+  // 本身的耗时）。一条规则覆盖两档常见 TTL——300 秒 → 250 秒，3600 秒 → 3000 秒。
+  intervalRatio: 5 / 6,
+  // 速算区「缓存 TTL」的默认档：5 分钟，与 KEEP_ALIVE_DEFAULTS 的默认拍距同源。
+  defaultTtlSeconds: 300,
+  // 两个价格框的 placeholder（示例值，不是值）：输入价 / 缓存命中价（$/M tokens）。
+  // 示例比价刻意取 10 倍——那正是「命中缓存值不值」的典型量级（3.00 / 0.30）。
+  pricePlaceholder: { input: "3.00", cacheRead: "0.30" }
+});
 
 // src/panel-tree.js
 var React3 = __toESM(require("react"), 1);
@@ -283,6 +306,13 @@ function childRowCount(report) {
   const children = Array.isArray(report?.children) ? report.children : [];
   return children.filter((c) => c && c.isSelf !== true).length;
 }
+function childRowTitle(child, running, rowPartial) {
+  return [
+    running ? "\u8FD0\u884C\u4E2D\uFF08\u6570\u5B57\u968F\u8F6E\u8BE2\u5B9E\u65F6\u589E\u957F\uFF09" : null,
+    rowPartial ? "\u542B\u672A\u4E0A\u62A5\u5206\u6876\uFF0C\u6570\u5B57\u4E3A\u4E0B\u754C" : null,
+    `${child?.messageCount ?? 0} \u6761\u6D88\u606F`
+  ].filter(Boolean).join("\n");
+}
 
 // src/usage-panel.js
 var GRID_WITH_COST = "minmax(0,1fr) 40px 40px 40px 40px 54px";
@@ -381,6 +411,7 @@ function UsageSection({ usage, open, onToggle }) {
   const gridRow = (columns, key, opts = {}, ...children) => React.createElement("div", {
     key,
     onClick: opts.onClick,
+    title: opts.title,
     style: {
       display: "grid",
       gridTemplateColumns: columns,
@@ -444,14 +475,6 @@ ${extras}` : ""}`),
         const costShown = cost ? { ...cost, partial: cost.partial || rowPartial } : null;
         const segments = Array.isArray(child.segments) ? child.segments : [];
         const isOpen = expanded[child.childId] === true;
-        const title = [
-          child.isSelf ? "\u4E3B\u7F16\u6392\uFF08\u672C\u4F1A\u8BDD\uFF09\uFF1A\u4F1A\u8BDD\u81EA\u8EAB\u7684\u6A21\u578B\u7528\u91CF\uFF0C\u4E0D\u542B\u5B50\u4EE3" : typeLabel(child.agentType),
-          child.childId,
-          running ? "\u8FD0\u884C\u4E2D\uFF08\u6570\u5B57\u968F\u8F6E\u8BE2\u5B9E\u65F6\u589E\u957F\uFF09" : null,
-          child.frozen ? "\u7EC8\u6001\u5DF2\u51BB\u7ED3\uFF08\u4E0D\u518D\u626B\u63CF\uFF09" : null,
-          rowPartial ? "\u542B\u672A\u4E0A\u62A5\u5206\u6876\uFF0C\u6570\u5B57\u4E3A\u4E0B\u754C" : null,
-          `${child.messageCount ?? 0} \u6761\u6D88\u606F`
-        ].filter(Boolean).join("\n");
         return React.createElement(
           "div",
           { key: child.childId, style: { marginBottom: 2 } },
@@ -461,7 +484,8 @@ ${extras}` : ""}`),
             `c1-${child.childId}`,
             {
               onClick: segments.length > 0 ? () => toggleChild(child.childId) : void 0,
-              accent: running ? ACCENT_RUNNING : void 0
+              accent: running ? ACCENT_RUNNING : void 0,
+              title: childRowTitle(child, running, rowPartial)
             },
             React.createElement(
               "span",
@@ -516,7 +540,6 @@ ${extras}` : ""}`),
     );
   };
   const renderTotals = () => {
-    const children = Array.isArray(report.children) ? report.children : [];
     const byModel = Array.isArray(report.byModel) ? report.byModel : [];
     const totalCost = computeTotalCost(report);
     const totalCostShown = totalCost ? { ...totalCost, partial: totalCost.partial || partial } : null;
@@ -1307,9 +1330,9 @@ function GraphSection({ records, queue, histories, sessions }) {
       {
         style: { cursor: "pointer", display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 4 },
         onClick: () => setOpen((v) => !v),
-        title: open ? "\u6536\u8D77\u661F\u56FE" : "\u5C55\u5F00\u6CF3\u9053\u661F\u56FE\uFF08Sisyphus \u5B50\u4EE3\u5B9E\u65F6\u52A8\u753B\uFF1B\u5C55\u5F00\u65F6\u6309\u5F53\u524D\u5B50\u4EE3\u91CD\u653E\u4E00\u6B21\u6D3E\u5DE5\u8109\u51B2\uFF09"
+        title: open ? "\u6536\u8D77\u6CF3\u9053\u56FE" : "\u5C55\u5F00\u6CF3\u9053\u56FE\uFF08Sisyphus \u7684\u5B50\u4EE3\u7406\u5B9E\u65F6\u52A8\u753B\uFF1B\u5C55\u5F00\u65F6\u6309\u5F53\u524D\u5B50\u4EE3\u7406\u91CD\u653E\u4E00\u6B21\u6D3E\u5DE5\u52A8\u753B\uFF09"
       },
-      React2.createElement("span", { style: { fontWeight: 600, fontSize: 12 } }, `${open ? "\u25BE" : "\u25B8"} \u661F\u56FE`),
+      React2.createElement("span", { style: { fontWeight: 600, fontSize: 12 } }, `${open ? "\u25BE" : "\u25B8"} \u6CF3\u9053\u56FE`),
       React2.createElement("span", {
         style: { fontSize: 11, lineHeight: "15px", padding: "0 6px", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#999" }
       }, String(scope.records.length)),
@@ -1576,9 +1599,9 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
       ),
       bridgeProblem === "internal" ? React3.createElement("div", {
         style: { marginBottom: 10, padding: "6px 8px", borderRadius: 6, background: "rgba(255,152,0,0.12)", border: "1px solid rgba(255,152,0,0.35)", fontSize: 12 }
-      }, `\u26A0 host \u7AEF\u7F16\u6392\u5FEB\u7167\u8BFB\u53D6\u5F02\u5E38\uFF08\u88C5\u914D\u5DF2\u5B8C\u6210\uFF0C\u6865\u51FD\u6570\u629B\u9519\uFF09\uFF1A${bridgeDetail || "\u672A\u63D0\u4F9B\u539F\u56E0"}\uFF1B\u9762\u677F\u505C\u5728\u6700\u540E\u4E00\u6B21\u5B9E\u51B5\uFF0C\u6309\u9000\u907F\u8282\u594F\u81EA\u52A8\u91CD\u8BD5\u3002`) : bridgeProblem === "absent" ? React3.createElement("div", {
+      }, `\u26A0 \u5BBF\u4E3B\u7AEF\u7F16\u6392\u5FEB\u7167\u8BFB\u53D6\u5F02\u5E38\uFF08\u88C5\u914D\u5DF2\u5B8C\u6210\uFF0C\u4F46\u6865\u63A5\u51FD\u6570\u629B\u9519\uFF09\uFF1A${bridgeDetail || "\u672A\u63D0\u4F9B\u539F\u56E0"}\uFF1B\u9762\u677F\u505C\u5728\u6700\u540E\u4E00\u6B21\u5B9E\u51B5\uFF0C\u6309\u9000\u907F\u8282\u594F\u81EA\u52A8\u91CD\u8BD5\u3002`) : bridgeProblem === "absent" ? React3.createElement("div", {
         style: { marginBottom: 10, padding: "6px 8px", borderRadius: 6, background: "rgba(244,67,54,0.1)", border: "1px solid rgba(244,67,54,0.3)", fontSize: 12 }
-      }, "\u26A0 \u7F16\u6392\u6865\u672A\u5C31\u7EEA\uFF1Ahost \u7AEF /dsh-my-go RPC \u65E0\u54CD\u5E94\uFF08\u63D2\u4EF6\u672A\u6FC0\u6D3B\u6216\u4ECD\u5728\u542F\u52A8\uFF09\uFF0C\u9762\u677F\u5C06\u6301\u7EED\u81EA\u52A8\u91CD\u8BD5\u3002") : null,
+      }, "\u26A0 \u7F16\u6392\u670D\u52A1\u672A\u5C31\u7EEA\uFF1A\u5BBF\u4E3B\u7AEF /dsh-my-go \u65E0\u54CD\u5E94\uFF08\u63D2\u4EF6\u672A\u6FC0\u6D3B\u6216\u4ECD\u5728\u542F\u52A8\uFF09\uFF0C\u9762\u677F\u5C06\u6301\u7EED\u81EA\u52A8\u91CD\u8BD5\u3002") : null,
       React3.createElement(GraphSection, { records: currents, queue: queues, histories, sessions }),
       // 运行中：保留区块（空时显示「空闲」，用户习惯看它），等待求助的条目用红色
       React3.createElement(
@@ -1626,7 +1649,7 @@ ${c.childId}` : typeLabel(c.agentType)
         sectionHeader("\u6C42\u52A9", helps.length),
         helps.map((h, i) => row(
           {
-            // 求助单 id 才是这一行的身份（tisitan.8 A-08）：同一儿童可以
+            // 求助单 id 才是这一行的身份：同一儿童可以
             // 先后挂着两张不同 intent 的求助单，按 childId 做 key 会让 React
             // 把第二张就地复用成第一张（intent 文案串台）
             key: `hlp-${h.parentSessionId}-${h.id ?? i}`,
@@ -1667,7 +1690,7 @@ ${h.childId}` : intentLabel(h.intent)
           );
         })
       ) : null,
-      // 用量统计区（契约步骤 6/7）：纯展示组件，自身不发 RPC——数据来自上方
+      // 用量统计区：纯展示组件，自身不发 RPC——数据来自上方
       // 共享轮询的 usage 快照；从折叠展开时立即补一发，省掉最多 600ms 空窗。
       React3.createElement(UsageSection, {
         usage,
@@ -1681,8 +1704,8 @@ ${h.childId}` : intentLabel(h.intent)
           }
         }
       }),
-      // 花名册常驻区（tisitan.15；tisitan.9 A-05 起吃结构化 roster）：渲染依据
-      // 是 snapshot.roster 数组——表头文案、计数、行排版全部客户端自持。旧写法
+      // 花名册常驻区：渲染依据
+      // 是 snapshot.roster 数组——表头文案、计数、行排版全部客户端自持。
       // 靠「rosterLines[0] 必为表头」的位置约定 slice(1) 取数、用 length-1 当
       // 计数，等于把 host 的字符串格式当 API：host 一改措辞（或哪天想加个脚注）
       // 这里就静默少一行或多渲染一行标题。rosterLines 只作旧 host 的兼容回落。
@@ -1716,12 +1739,12 @@ ${h.childId}` : intentLabel(h.intent)
             React3.createElement("span", null, `${entry?.role ?? "?"}`),
             React3.createElement("span", { style: { color: "#c8c8c8" } }, `\xB7 ${entry?.modelText ?? "\u8DDF\u968F\u73AF\u5883"}`),
             Array.isArray(entry?.chain) && entry.chain.length > 0 ? chip(`+${entry.chain.length}`, `\u5907\u9009\u94FE ${entry.chain.length} \u6761`, ACCENT_QUEUE) : null,
-            entry?.builtin === false ? chip("\u81EA\u5B9A\u4E49", "\u81EA\u5B9A\u4E49\u89D2\u8272\uFF08\u4E0D\u5728\u5185\u7F6E\u516B\u5DE5\u79CD\u5185\uFF09") : null
+            entry?.builtin === false ? chip("\u81EA\u5B9A\u4E49", "\u81EA\u5B9A\u4E49\u89D2\u8272\uFF08\u4E0D\u5728\u5185\u7F6E\u5DE5\u79CD\u5185\uFF09") : null
           )) : legacyLines ? legacyLines.map((line, i) => React3.createElement("div", {
             key: `ros-${i}`,
             title: line,
             style: { fontFamily: MONO_FONT, fontSize: 11, color: "#a0a0a0", padding: "2px 8px", overflowWrap: "anywhere" }
-          }, line)) : React3.createElement("div", { style: { color: "#888", fontSize: 12, padding: "2px 8px" } }, "\u82B1\u540D\u518C\u4E0D\u53EF\u7528\uFF08host \u672A\u5C31\u7EEA\uFF09")
+          }, line)) : React3.createElement("div", { style: { color: "#888", fontSize: 12, padding: "2px 8px" } }, "\u82B1\u540D\u518C\u4E0D\u53EF\u7528\uFF08\u5BBF\u4E3B\u672A\u5C31\u7EEA\uFF09")
         );
       })()
     );
@@ -2128,6 +2151,72 @@ var SETTINGS_CSS = `
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.mygo-calc {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, #444);
+  background: var(--dsw-alias-bg-layer-2, #161616);
+}
+.mygo-calcHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mygo-calcTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #ddd);
+}
+.mygo-calcNote {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, #777);
+  overflow-wrap: anywhere;
+}
+.mygo-calcGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.mygo-calcField {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mygo-calcOuts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.mygo-calcOut {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.04));
+}
+.mygo-calcValue {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary, #ddd);
+}
+.mygo-calcValue[data-tone='idle'] {
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, #777);
+}
+.mygo-calcActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
 .mygo-legend {
   display: flex;
   flex-wrap: wrap;
@@ -2208,6 +2297,37 @@ function mountSettingsStyles() {
   };
 }
 
+// src/keepalive-calc.js
+function parseCalcNumber(raw) {
+  if (typeof raw === "number") return Number.isFinite(raw) && raw >= 0 ? raw : null;
+  if (typeof raw !== "string") return null;
+  const text2 = raw.trim();
+  if (text2 === "") return null;
+  const value = Number(text2);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+function intervalMsFromTtl(ttlSeconds) {
+  const ttl = parseCalcNumber(ttlSeconds);
+  if (ttl === null || ttl <= 0) return null;
+  return Math.round(ttl * 1e3 * KEEP_ALIVE_CALC.intervalRatio);
+}
+function lookaheadMs(inputPrice, cachePrice, intervalMs) {
+  const input = parseCalcNumber(inputPrice);
+  const cache = parseCalcNumber(cachePrice);
+  const interval = parseCalcNumber(intervalMs);
+  if (input === null || cache === null || interval === null) return null;
+  if (cache <= 0) return null;
+  return Math.max(0, Math.round((input / cache - 1) * interval));
+}
+function formatDurationHuman(ms) {
+  const total = Number.isFinite(Number(ms)) ? Math.max(0, Number(ms)) : 0;
+  const seconds = Math.round(total / 1e3);
+  if (seconds < 60) return `${seconds} \u79D2`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} \u5206\u949F`;
+  return `${(minutes / 60).toFixed(1)} \u5C0F\u65F6`;
+}
+
 // src/roster-rows.js
 function isValidRoleKey(key) {
   return typeof key === "string" && ROLE_KEY_PATTERN.test(key);
@@ -2231,7 +2351,6 @@ function normalizeRoleRows(value, builtinKeys = []) {
     provider: typeof row.provider === "string" ? row.provider : "",
     model: typeof row.model === "string" ? row.model : "",
     reasoningEffort: typeof row.reasoningEffort === "string" ? row.reasoningEffort : "",
-    dsv4p0813: row.dsv4p0813 === true,
     fallbacks: Array.isArray(row.fallbacks) ? row.fallbacks : [],
     persona: typeof row.persona === "string" ? row.persona : "",
     allow: normalizeNameList(row.toolFilter?.allow),
@@ -2256,7 +2375,8 @@ function resolveBuiltinPersonaResult(res) {
 // src/settings-guard.js
 var LOADING_HINT = "\u6B63\u5728\u8BFB\u53D6\u5BBF\u4E3B\u91CC\u7684 dsh-my-go \u914D\u7F6E\u2026";
 var UNAVAILABLE_HINT = "dsh-my-go \u8BBE\u7F6E\u547D\u540D\u7A7A\u95F4\u4E0D\u53EF\u7528\uFF08\u63D2\u4EF6\u672A\u542F\u7528\u3001\u5BBF\u4E3B\u672A\u63D0\u4F9B\u8BBE\u7F6E\u670D\u52A1\uFF0C\u6216\u8BFB\u53D6\u5931\u8D25\uFF09\u3002";
-var MEMORY_HINT = "\u5F53\u524D\u9875\u9762\u6309\u8FDB\u7A0B\u5185\u5185\u5B58\u6863\u6253\u5F00\uFF08\u975E\u672C\u673A\u56DE\u73AF\u8BBF\u95EE\uFF09\uFF0C\u8BBE\u7F6E\u53EA\u8BFB\uFF1A\u8BF7\u6539\u7528 http://127.0.0.1 \u6253\u5F00\u5BBF\u4E3B\uFF0C\u6216\u76F4\u63A5\u7F16\u8F91 settings.yaml\u3002";
+var MEMORY_HINT = "\u5F53\u524D\u4EE5\u53EA\u8BFB\u65B9\u5F0F\u6253\u5F00\uFF08\u9875\u9762\u672A\u7ECF\u56DE\u73AF\u5730\u5740\u8BBF\u95EE\uFF09\uFF0C\u8BBE\u7F6E\u4E0D\u53EF\u4FEE\u6539\uFF1A\u8BF7\u6539\u7528 http://127.0.0.1 \u6253\u5F00\uFF0C\u6216\u76F4\u63A5\u7F16\u8F91 settings.yaml\u3002";
+var UNSERVED_SECTION_HINT = "\u5BBF\u4E3B\u672A\u58F0\u660E\u8FD9\u4E00\u6BB5\uFF08\u5BBF\u4E3B\u8FDB\u7A0B\u65E9\u4E8E\u672C\u7248\u672C\u63D2\u4EF6\uFF0C\u6539\u8FC7\u7684\u914D\u7F6E\u9762 schema \u672A\u968F\u8FDB\u7A0B\u66F4\u65B0\uFF09\uFF1A\u672C\u5757\u53EA\u8BFB\uFF0C\u91CD\u542F\u5BBF\u4E3B\u540E\u53EF\u4FDD\u5B58\u3002";
 function resolveCardView(snapshot) {
   if (snapshot === null || snapshot === void 0 || snapshot.status === "loading") {
     return { kind: "loading", hint: LOADING_HINT, retryable: false };
@@ -2265,9 +2385,25 @@ function resolveCardView(snapshot) {
   if (snapshot.status !== "ready") return { kind: "unavailable", hint: UNAVAILABLE_HINT, retryable: true };
   return { kind: "ready", hint: "", retryable: false };
 }
-function describeSaveOutcome(landed, revision) {
+function hostServesSection(section, key) {
+  if (section === null || typeof section !== "object" || Array.isArray(section)) return false;
+  return section[key] !== void 0;
+}
+function unservedSections(ops, values) {
+  const pools = (Array.isArray(values) ? values : [values]).filter((value) => value !== void 0);
+  const roots = [...new Set((Array.isArray(ops) ? ops : []).map((op) => Array.isArray(op?.path) ? op.path[0] : void 0))];
+  return roots.filter((key) => typeof key === "string" && !pools.some((value) => hostServesSection(value, key)));
+}
+function describeSaveOutcome(landed, revision, unserved = []) {
   const at = typeof revision === "number" ? ` \xB7 r${revision}` : "";
   if (landed) return { ok: true, text: `\u5DF2\u4FDD\u5B58\uFF0C\u914D\u7F6E\u5373\u65F6\u751F\u6548${at}` };
+  const named = Array.isArray(unserved) ? unserved.filter((key) => typeof key === "string" && key !== "") : [];
+  if (named.length > 0) {
+    return {
+      ok: false,
+      text: `\u6CA1\u843D\u76D8\uFF1A\u5BBF\u4E3B\u672A\u58F0\u660E ${named.join("\u3001")} \u6BB5\uFF08\u5BBF\u4E3B\u8FDB\u7A0B\u65E9\u4E8E\u672C\u7248\u672C\u63D2\u4EF6\uFF0C\u914D\u7F6E\u9762 schema \u672A\u968F\u8FDB\u7A0B\u66F4\u65B0\uFF09\u2014\u2014\u8BF7\u91CD\u542F\u5BBF\u4E3B\u540E\u91CD\u8BD5${at}`
+    };
+  }
   return {
     ok: false,
     text: `\u6CA1\u843D\u76D8\uFF1A\u5BBF\u4E3B\u62D2\u7EDD\u4E86\u8FD9\u6B21\u5199\u5165\uFF08\u6821\u9A8C\u4E0D\u8FC7\uFF0C\u6216\u4ED6\u5904\u521A\u6539\u8FC7\u8FD9\u4E00\u547D\u540D\u7A7A\u95F4\uFF09\uFF0C\u8BF7\u4E22\u5F03\u8349\u7A3F\u5E76\u91CD\u8BFB${at}`
@@ -2332,7 +2468,35 @@ function priceKeyHint(key) {
 }
 
 // src/settings-ops.js
-var BINDING_FIELDS = ["provider", "model", "reasoningEffort", "dsv4p0813", "fallbacks"];
+var BINDING_FIELDS = ["provider", "model", "reasoningEffort", "fallbacks"];
+var KEEP_ALIVE_FIELDS = ["enabled", "orchestratorIntervalMs", "childPingAfterMs", "escalateAfterPings"];
+var KEEP_ALIVE_MIN_MS = 1e3;
+var KEEP_ALIVE_MIN_PINGS = 1;
+function keepAliveIntent(field, raw) {
+  if (field === "enabled") return raw === true;
+  const min = field === "escalateAfterPings" ? KEEP_ALIVE_MIN_PINGS : KEEP_ALIVE_MIN_MS;
+  const clamp = (n2) => Math.max(min, Math.trunc(n2));
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw >= 1 ? Math.trunc(raw) : clamp(raw) : null;
+  if (typeof raw !== "string") return null;
+  const typed = raw.trim();
+  if (typed === "") return null;
+  const n = Number(typed);
+  if (!Number.isFinite(n)) return null;
+  return n >= 1 ? Math.trunc(n) : clamp(n * 1e3);
+}
+function keepAliveFrom(section) {
+  const source = record(record(section).keepAlive);
+  const positive = (value, fallback) => {
+    const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+    return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : fallback;
+  };
+  return {
+    enabled: source.enabled === true,
+    orchestratorIntervalMs: positive(source.orchestratorIntervalMs, KEEP_ALIVE_DEFAULTS.orchestratorIntervalMs),
+    childPingAfterMs: positive(source.childPingAfterMs, KEEP_ALIVE_DEFAULTS.childPingAfterMs),
+    escalateAfterPings: positive(source.escalateAfterPings, KEEP_ALIVE_DEFAULTS.escalateAfterPings)
+  };
+}
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -2366,7 +2530,6 @@ function draftFromSection(value) {
       provider: text(row.provider),
       model: text(row.model),
       reasoningEffort: text(row.reasoningEffort),
-      dsv4p0813: row.dsv4p0813 === true,
       fallbacks: normalizeChainRows(row.fallbacks)
     };
     if (typeof row.persona === "string") draft[type].persona = row.persona;
@@ -2377,9 +2540,10 @@ function draftFromSection(value) {
   }
   draft.usagePrices = prices;
   draft.usageCurrency = section.usageCurrency === "CNY" ? "CNY" : "USD";
+  draft.keepAlive = keepAliveFrom(section);
   return draft;
 }
-function normalizeForCompare(draft) {
+function normalizeForCompare(draft, baseline) {
   const source = record(draft);
   const roles = { ...record(source.roles) };
   for (const type of AGENT_TYPES) {
@@ -2393,7 +2557,6 @@ function normalizeForCompare(draft) {
       provider: text(row.provider).trim(),
       model: text(row.model).trim(),
       reasoningEffort: text(row.reasoningEffort),
-      dsv4p0813: row.dsv4p0813 === true,
       fallbacks: normalizeChainRows(stripEmptyFallbackRows({ fallbacks: normalizeChainRows(row.fallbacks) }).fallbacks)
     };
   }
@@ -2402,7 +2565,7 @@ function normalizeForCompare(draft) {
     const entry = record(roles[key]);
     const normalized = {};
     for (const field of BINDING_FIELDS) {
-      normalized[field] = field === "fallbacks" ? normalizeChainRows(stripEmptyFallbackRows({ fallbacks: normalizeChainRows(entry.fallbacks) }).fallbacks) : field === "dsv4p0813" ? entry[field] === true : text(entry[field]).trim();
+      normalized[field] = field === "fallbacks" ? normalizeChainRows(stripEmptyFallbackRows({ fallbacks: normalizeChainRows(entry.fallbacks) }).fallbacks) : text(entry[field]).trim();
     }
     normalized.persona = text(entry.persona);
     normalized.toolFilter = {
@@ -2420,14 +2583,27 @@ function normalizeForCompare(draft) {
   }
   out.usagePrices = prices;
   out.usageCurrency = source.usageCurrency === "CNY" ? "CNY" : "USD";
+  out.keepAlive = keepAliveProjection(source, baseline);
   return out;
 }
-function compareKey(draft) {
-  return JSON.stringify(normalizeForCompare(draft));
+function keepAliveProjection(section, baseline) {
+  const raw = record(record(section).keepAlive);
+  const fallback = baseline === void 0 ? null : keepAliveFrom(baseline);
+  const normalized = keepAliveFrom(section);
+  const out = {};
+  for (const field of KEEP_ALIVE_FIELDS) {
+    const intent = keepAliveIntent(field, raw[field]);
+    out[field] = intent !== null ? intent : fallback === null ? normalized[field] : fallback[field];
+  }
+  return out;
+}
+function compareKey(draft, baseline) {
+  return JSON.stringify(normalizeForCompare(draft, baseline));
 }
 function dirtyLabels(draft, section) {
-  const next = normalizeForCompare(draft);
-  const stored = normalizeForCompare(draftFromSection(section));
+  const storedDraft = draftFromSection(section);
+  const next = normalizeForCompare(draft, storedDraft);
+  const stored = normalizeForCompare(storedDraft);
   const labels = [];
   if (JSON.stringify(next.sisyphus) !== JSON.stringify(stored.sisyphus)) labels.push("\u603B\u8C03\u5EA6\u7ED1\u5B9A");
   const changedRoles = [];
@@ -2439,6 +2615,7 @@ function dirtyLabels(draft, section) {
   if (JSON.stringify(next.roles) !== JSON.stringify(stored.roles)) labels.push("\u89D2\u8272\u540D\u518C");
   if (JSON.stringify(next.usagePrices) !== JSON.stringify(stored.usagePrices)) labels.push("\u5355\u4EF7\u8868");
   if (next.usageCurrency !== stored.usageCurrency) labels.push("\u5E01\u79CD");
+  if (KEEP_ALIVE_FIELDS.some((field) => next.keepAlive[field] !== stored.keepAlive[field])) labels.push("\u7F13\u5B58\u5FC3\u8DF3");
   return labels;
 }
 function buildSettingsOps(draft, stored = {}) {
@@ -2516,6 +2693,21 @@ function buildSettingsOps(draft, stored = {}) {
   if ((source.usageCurrency === "USD" || source.usageCurrency === "CNY") && source.usageCurrency !== storedCurrency) {
     ops.push({ op: "set", path: ["usageCurrency"], value: source.usageCurrency });
   }
+  if (source.keepAlive !== void 0 && source.keepAlive !== null && typeof source.keepAlive === "object" && section.keepAlive !== void 0) {
+    const rawKeepAlive = record(source.keepAlive);
+    const storedKeepAlive = keepAliveFrom(section);
+    const userKeepAlive = record(userLayer.keepAlive);
+    for (const field of KEEP_ALIVE_FIELDS) {
+      const intent = keepAliveIntent(field, rawKeepAlive[field]);
+      if (intent === null) continue;
+      if (intent === storedKeepAlive[field]) continue;
+      if (intent === KEEP_ALIVE_DEFAULTS[field] && field in userKeepAlive) {
+        ops.push({ op: "unset", path: ["keepAlive", field] });
+        continue;
+      }
+      ops.push({ op: "set", path: ["keepAlive", field], value: intent });
+    }
+  }
   return ops;
 }
 function canonicalRole(src, carried) {
@@ -2524,7 +2716,7 @@ function canonicalRole(src, carried) {
   for (const field of BINDING_FIELDS) {
     const value = field in row ? cleanValue(field, row[field]) : void 0;
     if (value === void 0 || value === "" || value === false || Array.isArray(value) && value.length === 0) {
-      out[field] = field === "dsv4p0813" ? false : field === "fallbacks" ? [] : "";
+      out[field] = field === "fallbacks" ? [] : "";
       continue;
     }
     out[field] = clone(value);
@@ -2540,7 +2732,6 @@ function canonicalRole(src, carried) {
 }
 function cleanValue(field, value) {
   if (field === "fallbacks") return normalizeChainRows(value);
-  if (field === "dsv4p0813") return value === true;
   if (typeof value === "string") return value.trim();
   return value;
 }
@@ -2569,7 +2760,8 @@ function sectionAfterWrite(layers, ops) {
   return next;
 }
 function writeLanded(draft, layers, ops) {
-  return compareKey(draft) === compareKey(draftFromSection(sectionAfterWrite(layers, ops)));
+  const after = draftFromSection(sectionAfterWrite(layers, ops));
+  return compareKey(draft, after) === compareKey(after);
 }
 function summaryLine(section) {
   const draft = draftFromSection(section);
@@ -2580,6 +2772,7 @@ function summaryLine(section) {
   if (custom > 0) parts.push(`\u81EA\u5B9A\u4E49 ${custom}`);
   if (prices > 0) parts.push(`\u5355\u4EF7 ${prices} \u6761\uFF08${draft.usageCurrency}\uFF09`);
   else parts.push("\u672A\u914D\u5355\u4EF7\uFF08\u53EA\u7EDF\u8BA1 token\uFF09");
+  if (keepAliveFrom(section).enabled) parts.push("\u7F13\u5B58\u5FC3\u8DF3\u5F00");
   return parts.join(" \xB7 ");
 }
 
@@ -2707,23 +2900,6 @@ function renderRolesPane(deps) {
           onChange: (event) => setBinding(key, "reasoningEffort", event.target.value)
         }, EFFORTS.map((option) => el("option", { key: option, value: option }, effortLabel(option)))),
         el("div", { className: "mygo-hint" }, "\u63A8\u7406\u5F3A\u5EA6\uFF1A\u8D8A\u9AD8\u8D8A\u806A\u660E\uFF0C\u4E5F\u8D8A\u8D35\u3002")
-      ),
-      el(
-        "div",
-        { className: "mygo-field" },
-        el("label", { className: "mygo-label" }, "DSV4P0813 \u8865\u4E01"),
-        el(
-          "label",
-          { className: "mygo-check" },
-          el("input", {
-            type: "checkbox",
-            checked: row.dsv4p0813 === true,
-            disabled: disabled || key === "sisyphus",
-            onChange: (event) => setBinding(key, "dsv4p0813", event.target.checked)
-          }),
-          "\u542F\u7528"
-        ),
-        el("div", { className: "mygo-hint" }, key === "sisyphus" ? "Sisyphus \u4F1A\u8BDD\u4E0D\u7ECF\u8FC7 DSV4P0813 \u6CE8\u5165\u8BC6\u522B\u9762\uFF0C\u52FE\u9009\u5BF9\u5176\u4E0D\u751F\u6548\uFF0C\u5DF2\u7F6E\u7070\u9501\u5B9A\u3002" : "\u4E24\u9636\u6BB5\u951A\u5B9A\u4E0A\u4E0B\u6587\u6CE8\u5165\uFF0C\u4E13\u4E3A DeepSeek V4 Pro 0813 \u8C03\u6821\uFF0C\u5176\u4ED6\u6A21\u578B\u52FF\u5F00\uFF1B\u53EA\u5BF9 MyGO preset \u6D3E\u53D1\u7684\u5B50\u4EE3\u7406\u4F1A\u8BDD\u751F\u6548\u3002")
       ),
       key === "sisyphus" ? el(
         "div",
@@ -2987,12 +3163,15 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const [importError, setImportError] = React6.useState("");
   const [newPriceKey, setNewPriceKey] = React6.useState("");
   const [personaFileErr, setPersonaFileErr] = React6.useState({});
+  const [calcTtl, setCalcTtl] = React6.useState(String(KEEP_ALIVE_CALC.defaultTtlSeconds));
+  const [calcInputPrice, setCalcInputPrice] = React6.useState("");
+  const [calcCachePrice, setCalcCachePrice] = React6.useState("");
   const card = resolveCardView(snapshot);
   const ready = card.kind === "ready";
   const layers = ready ? { value: snapshot.value, base: snapshot.base, user: snapshot.user } : { value: {}, base: {}, user: {} };
   const stored = ready ? draftFromSection(snapshot.value) : null;
   const current = draft ?? stored ?? emptyDraft();
-  const dirty = draft !== null && compareKey(draft) !== compareKey(stored ?? emptyDraft());
+  const dirty = draft !== null && compareKey(draft, stored ?? emptyDraft()) !== compareKey(stored ?? emptyDraft());
   const pending = draft === null ? [] : dirtyLabels(draft, snapshot?.value ?? {});
   const drifted = draft !== null && typeof fence === "number" && typeof snapshot?.revision === "number" && fence !== snapshot.revision;
   const writable = ready && snapshot.writable !== false && snapshot.mode !== "memory";
@@ -3027,8 +3206,9 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       const before = { value: snapshot.value, base: snapshot.base };
       await scope.mutate(ops, typeof fence === "number" ? fence : void 0);
       const after = scope.getSnapshot();
-      const landed = ready && after?.status === "ready" && writeLanded(draft, before, ops) && compareKey(draftFromSection(after.value)) === compareKey(draft);
-      setMessage(describeSaveOutcome(landed, after?.revision));
+      const landed = ready && after?.status === "ready" && writeLanded(draft, before, ops) && compareKey(draft, draftFromSection(after.value)) === compareKey(draftFromSection(after.value));
+      const unserved = landed ? [] : unservedSections(ops, [before.value, after?.value]);
+      setMessage(describeSaveOutcome(landed, after?.revision, unserved));
       if (landed) {
         setDraft(null);
         setFence(null);
@@ -3046,8 +3226,26 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   ];
   const selectedKey = roleList.some((row) => row.key === picked) ? picked : AGENT_TYPES[0];
   const selectedRole = roleList.find((row) => row.key === selectedKey);
-  const selectedBuiltin = AGENT_TYPES.includes(selectedKey);
   const rowOf = (key) => AGENT_TYPES.includes(key) ? { ...current[key], ...partialOf(key) } : { ...current.roles?.[key] };
+  const keepAliveServed = ready && hostServesSection(snapshot.value, "keepAlive");
+  const keepAliveStored = keepAliveFrom(current);
+  const toSeconds = (raw) => typeof raw === "number" ? String(Math.round(raw / 1e3)) : String(raw ?? "");
+  const toMillis = (raw) => {
+    const n = Number(raw);
+    return raw !== "" && Number.isFinite(n) && n >= 1 ? Math.trunc(n * 1e3) : raw;
+  };
+  const keepAliveFieldValue = (field) => {
+    const raw = current.keepAlive?.[field];
+    if (field === "enabled") return String(raw === true);
+    if (field === "escalateAfterPings") return raw === void 0 || raw === null ? "" : String(raw);
+    return toSeconds(raw);
+  };
+  const calcReadonly = !writable || !keepAliveServed;
+  const calc = keepAliveCalcText({ ttlSeconds: calcTtl, inputPrice: calcInputPrice, cachePrice: calcCachePrice });
+  const fillCalcInterval = () => {
+    if (calc.intervalMs === null) return;
+    setKeepAlive("orchestratorIntervalMs", calc.intervalMs);
+  };
   function partialOf(key) {
     const carried = current.roles?.[key];
     return carried && typeof carried === "object" && Object.prototype.hasOwnProperty.call(carried, "persona") ? { persona: carried.persona } : {};
@@ -3155,6 +3353,10 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
     ...prev,
     usagePrices: { ...prev.usagePrices, [key]: { ...prev.usagePrices?.[key], [bucket]: value } }
   }));
+  const setKeepAlive = (field, value) => stage((prev) => ({
+    ...prev,
+    keepAlive: { ...keepAliveFrom(prev), ...prev.keepAlive, [field]: value }
+  }));
   const createPrice = () => {
     const key = newPriceKey.trim();
     if (!writable || !isValidPriceKey(key, current)) return;
@@ -3174,7 +3376,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
     "section",
     { className: "mygo-config", "data-plugin": "dsh-my-go" },
     el3("p", { className: "mygo-intro" }, "\u7ED9\u6BCF\u4E2A\u5DE5\u79CD\u5355\u72EC\u6307\u5B9A\u6A21\u578B\u4F18\u5148\u7EA7\u4E0E\u601D\u8003\u6863\u4F4D\uFF1B\u7559\u7A7A = \u8DDF\u968F Sisyphus\uFF08\u5373\u5BF9\u8BDD\u6846\u91CC\u9009\u7684\u6A21\u578B\uFF09\u3002\u6539\u5B8C\u70B9\u300C\u7ACB\u5373\u4FDD\u5B58\u300D\uFF0C\u4E0B\u6B21\u6D3E\u53D1\u751F\u6548\u3002"),
-    el3("p", { className: "mygo-intro" }, "\u672C\u9875\u53EA\u662F\u5BBF\u4E3B\u91CC dsh-my-go \u547D\u540D\u7A7A\u95F4\u7684\u89C6\u56FE\uFF1A\u4E0D\u70B9\u4FDD\u5B58\u4E0D\u5199\u4EFB\u4F55\u5B57\u8282\uFF1B\u6E05\u7A7A\u4E00\u4E2A\u53EF\u7A7A\u5B57\u6BB5\u7B49\u4E8E\u53D1 unset\uFF08\u56DE\u843D\u5230 cordis \u884C config \u6216 schema \u9ED8\u8BA4\uFF09\uFF1B\u624B\u6539 settings.yaml \u7684 dsh-my-go \u6BB5\u4E0E\u672C\u9762\u662F\u540C\u4E00\u5C42\u3002"),
+    el3("p", { className: "mygo-intro" }, "\u672C\u9875\u53EA\u662F\u5BBF\u4E3B\u91CC dsh-my-go \u547D\u540D\u7A7A\u95F4\u7684\u89C6\u56FE\uFF1A\u4E0D\u70B9\u4FDD\u5B58\u4E0D\u5199\u4EFB\u4F55\u5B57\u8282\uFF1B\u6E05\u7A7A\u4E00\u4E2A\u53EF\u7A7A\u5B57\u6BB5 = \u6E05\u9664\u8BE5\u9879\uFF08\u56DE\u843D\u5230\u4E0A\u7EA7\u914D\u7F6E\u6216\u9ED8\u8BA4\u503C\uFF09\uFF1B\u624B\u6539 settings.yaml \u7684 dsh-my-go \u6BB5\u4E0E\u672C\u9762\u662F\u540C\u4E00\u5C42\u3002"),
     ready ? null : el3(BlockedNotice, { card, scope }),
     ready && !writable ? el3("div", { className: "mygo-notice mygo-noticeWarn" }, "\u8FD9\u4EFD\u6587\u6863\u5F53\u524D\u53EA\u8BFB\uFF08\u5BBF\u4E3B\u62D2\u7EDD\u5199\u5165\uFF09\uFF1A\u7F16\u8F91\u533A\u7167\u5E38\u53EF\u770B\uFF0C\u4FDD\u5B58\u5DF2\u7981\u7528\u3002") : null,
     drifted ? el3(
@@ -3324,10 +3526,189 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
     ),
     el3(
       "div",
+      { className: "mygo-block", "data-block": "keepAlive" },
+      el3(
+        "div",
+        { className: "mygo-blockHead" },
+        el3("span", { className: "mygo-blockTitle" }, "\u4E3B\u7F16\u7F13\u5B58\u5FC3\u8DF3"),
+        el3("span", { className: "mygo-count" }, !keepAliveServed ? "\u5BBF\u4E3B\u672A\u58F0\u660E" : keepAliveStored.enabled ? "\u5DF2\u5F00\u542F" : "\u9ED8\u8BA4\u5173\u95ED"),
+        el3("span", { className: "mygo-blockHint" }, !keepAliveServed ? UNSERVED_SECTION_HINT : `\u7F16\u6392\u4F1A\u8BDD\u7A7A\u95F2\u65F6\u6309\u62CD\u8DDD\u81EA\u52A8\u5524\u9192\u4E00\u6B21\u4F4E\u6210\u672C\u7EF4\u62A4\uFF1A\u4FDD\u6301\u6A21\u578B\u7F13\u5B58\u65B0\u9C9C\uFF0C\u5E76\u63D0\u793A\u957F\u65F6\u95F4\u65E0\u54CD\u5E94\u7684\u5B50\u4EE3\u7406\u3002\u6BCF\u62CD\u7EA6\u5360 130 token\uFF08\u9ED8\u8BA4\u62CD\u8DDD\u4E0B\u7EA6 ${Math.round(3600 / (KEEP_ALIVE_DEFAULTS.orchestratorIntervalMs / 1e3))} \u62CD/\u5C0F\u65F6\uFF09\u2014\u2014\u6309\u7F13\u5B58 TTL \xD7 \u4F1A\u8BDD\u65F6\u957F\u53D6\u820D\u3002`)
+      ),
+      el3(
+        "div",
+        { className: "mygo-fields" },
+        el3(
+          "div",
+          { className: "mygo-field" },
+          el3("label", { className: "mygo-label" }, "\u5F00\u5173"),
+          el3(
+            "label",
+            { className: "mygo-check" },
+            el3("input", {
+              type: "checkbox",
+              checked: current.keepAlive?.enabled === true,
+              disabled: !writable || !keepAliveServed,
+              "aria-label": "\u7F13\u5B58\u5FC3\u8DF3\u5F00\u5173",
+              onChange: (event) => setKeepAlive("enabled", event.target.checked)
+            }),
+            keepAliveStored.enabled ? "\u542F\u7528" : "\u5173\u95ED"
+          ),
+          el3("div", { className: "mygo-hint" }, "\u5173\u95ED = \u4E0D\u5524\u9192\uFF1A\u6D3E\u53D1\u540E\u4E3B\u7F16\u9759\u9ED8\u7B49\u5F85\uFF0C\u8DE8 turn \u671F\u95F4\u4E0D\u505A\u4EFB\u4F55\u5524\u9192\u3002\u5F00\u542F\u4F1A\u771F\u5B9E\u5524\u9192\u4E3B\u7F16\uFF0C\u8BF7\u6309\u7F13\u5B58 TTL \u6743\u8861\u3002")
+        ),
+        el3(
+          "div",
+          { className: "mygo-field" },
+          el3("label", { className: "mygo-label" }, "\u4E3B\u7F16\u62CD\u8DDD\uFF08\u79D2\uFF09"),
+          el3("input", {
+            className: "mygo-input mygo-inputMono",
+            type: "number",
+            min: "1",
+            value: keepAliveFieldValue("orchestratorIntervalMs"),
+            disabled: !writable || !keepAliveServed || !keepAliveStored.enabled,
+            "aria-label": "\u4E3B\u7F16\u62CD\u8DDD\uFF08\u79D2\uFF09",
+            onChange: (event) => setKeepAlive("orchestratorIntervalMs", toMillis(event.target.value))
+          }),
+          el3("div", { className: "mygo-hint" }, `\u7A7A\u95F2\u4E3B\u7F16\u591A\u4E45\u88AB\u5524\u9192\u4E00\u6B21\uFF1B\u9ED8\u8BA4 ${KEEP_ALIVE_DEFAULTS.orchestratorIntervalMs / 1e3} \u79D2\uFF085 \u5206\u949F\u6863 TTL \u7684 5/6\uFF0C\u7559 1/6 \u4F59\u91CF\u2014\u2014\u6BD4 prompt \u7F13\u5B58 TTL \u8FD8\u957F\u7684\u4E00\u62CD\u7B49\u4E8E\u767D\u9192\uFF09\u3002`)
+        ),
+        el3(
+          "div",
+          { className: "mygo-field" },
+          el3("label", { className: "mygo-label" }, "\u5B50\u4EE3\u9759\u9ED8\u9608\u503C\uFF08\u79D2\uFF09"),
+          el3("input", {
+            className: "mygo-input mygo-inputMono",
+            type: "number",
+            min: "1",
+            value: keepAliveFieldValue("childPingAfterMs"),
+            disabled: !writable || !keepAliveServed || !keepAliveStored.enabled,
+            "aria-label": "\u5B50\u4EE3\u9759\u9ED8\u9608\u503C\uFF08\u79D2\uFF09",
+            onChange: (event) => setKeepAlive("childPingAfterMs", toMillis(event.target.value))
+          }),
+          el3("div", { className: "mygo-hint" }, `\u591A\u4E45\u6CA1\u4FE1\u53F7\u5C31\u5728\u6458\u8981\u91CC\u6807\u300C\u5EFA\u8BAEping\u300D\uFF1B\u9ED8\u8BA4 ${KEEP_ALIVE_DEFAULTS.childPingAfterMs / 6e4} \u5206\u949F\u3002`)
+        ),
+        el3(
+          "div",
+          { className: "mygo-field" },
+          el3("label", { className: "mygo-label" }, "\u5347\u7EA7\u68AF\uFF08\u8FDE\u62CD\u6570\uFF09"),
+          el3("input", {
+            className: "mygo-input mygo-inputMono",
+            type: "number",
+            min: "1",
+            value: keepAliveFieldValue("escalateAfterPings"),
+            disabled: !writable || !keepAliveServed || !keepAliveStored.enabled,
+            "aria-label": "\u5347\u7EA7\u68AF\u8FDE\u62CD\u6570",
+            onChange: (event) => setKeepAlive("escalateAfterPings", event.target.value)
+          }),
+          el3("div", { className: "mygo-hint" }, `\u8FDE\u7740\u591A\u5C11\u62CD\u5EFA\u8BAE ping \u800C\u65E0\u4EFB\u4F55\u4FE1\u53F7\u5373\u6807\u7EA2\uFF08\u9ED8\u8BA4 ${KEEP_ALIVE_DEFAULTS.escalateAfterPings}\uFF09\u2014\u2014\u6807\u7EA2\u7684\u5B50\u4EE3\u8981\u6C42\u4E3B\u7F16\u5F53\u573A\u88C1\u51B3\u3002`)
+        )
+      ),
+      // ── 速算区：只算数、只填数 ────────────────────────────────
+      // 位置：三字段表单之下、通栏说明条之上——它在视觉上是从属于「主编拍距」
+      // 那一行的填数助手（有边框 + 底色，与正式字段区分开）。
+      // 硬约束：本节零持久化字段（不进 schema、不进 lib/config.js），三个输入是
+      // 组件态；唯一的出口是「填入拍距」那一笔，走 setKeepAlive 写正式字段的草稿。
+      el3(
+        "div",
+        { className: "mygo-calc", "data-role": "keepalive-calc" },
+        el3(
+          "div",
+          { className: "mygo-calcHead" },
+          el3("span", { className: "mygo-calcTitle" }, "\u901F\u7B97\u533A"),
+          el3("span", { className: "mygo-calcNote" }, "\u53EA\u7B97\u6570\u4E0D\u843D\u5E93\uFF1A\u672C\u8282\u4E09\u4E2A\u8F93\u5165\u4E0D\u5199\u76D8\u3001\u5237\u65B0\u5373\u56DE\u9ED8\u8BA4\uFF08\u586B\u5165\u62CD\u8DDD\u540E\u624D\u8FDB\u8349\u7A3F\uFF0C\u4ECD\u662F\u8349\u7A3F\uFF0C\u53EF\u7EE7\u7EED\u624B\u6539\uFF09\u3002")
+        ),
+        el3(
+          "div",
+          { className: "mygo-calcGrid" },
+          el3(
+            "div",
+            { className: "mygo-calcField" },
+            el3("label", { className: "mygo-label" }, "\u7F13\u5B58 TTL\uFF08\u79D2\uFF09"),
+            el3("input", {
+              className: "mygo-input mygo-inputMono",
+              type: "number",
+              min: "1",
+              value: calcTtl,
+              disabled: calcReadonly,
+              "aria-label": "\u901F\u7B97-\u7F13\u5B58TTL\uFF08\u79D2\uFF09",
+              onChange: (event) => setCalcTtl(event.target.value)
+            }),
+            el3("div", { className: "mygo-hint" }, `provider \u7684 prompt \u7F13\u5B58\u5B58\u6D3B\u591A\u4E45\uFF08\u9ED8\u8BA4\u586B ${KEEP_ALIVE_CALC.defaultTtlSeconds} \u79D2\uFF1B1 \u5C0F\u65F6\u6863\u586B 3600\uFF09\u3002`)
+          ),
+          el3(
+            "div",
+            { className: "mygo-calcField" },
+            el3("label", { className: "mygo-label" }, "\u8F93\u5165\u4EF7\uFF08$/M\uFF09"),
+            el3("input", {
+              className: "mygo-input mygo-inputMono",
+              type: "text",
+              inputMode: "decimal",
+              value: calcInputPrice,
+              placeholder: KEEP_ALIVE_CALC.pricePlaceholder.input,
+              disabled: calcReadonly,
+              "aria-label": "\u901F\u7B97-\u8F93\u5165\u4EF7\uFF08$/M\uFF09",
+              onChange: (event) => setCalcInputPrice(event.target.value)
+            }),
+            el3("div", { className: "mygo-hint" }, "\u672A\u547D\u4E2D\u7F13\u5B58\u65F6\u6BCF\u767E\u4E07\u8F93\u5165 token \u7684\u4EF7\u683C\uFF08\u4F60\u7684\u6E20\u9053\u5B9E\u4EF7\uFF09\u3002")
+          ),
+          el3(
+            "div",
+            { className: "mygo-calcField" },
+            el3("label", { className: "mygo-label" }, "\u7F13\u5B58\u547D\u4E2D\u4EF7\uFF08$/M\uFF09"),
+            el3("input", {
+              className: "mygo-input mygo-inputMono",
+              type: "text",
+              inputMode: "decimal",
+              value: calcCachePrice,
+              placeholder: KEEP_ALIVE_CALC.pricePlaceholder.cacheRead,
+              disabled: calcReadonly,
+              "aria-label": "\u901F\u7B97-\u7F13\u5B58\u547D\u4E2D\u4EF7\uFF08$/M\uFF09",
+              onChange: (event) => setCalcCachePrice(event.target.value)
+            }),
+            el3("div", { className: "mygo-hint" }, "\u547D\u4E2D\u7F13\u5B58\u65F6\u6BCF\u767E\u4E07\u8F93\u5165 token \u7684\u4EF7\u683C\uFF08\u901A\u5E38\u4FBF\u5B9C\u4E00\u4E2A\u91CF\u7EA7\uFF09\u3002")
+          )
+        ),
+        el3(
+          "div",
+          { className: "mygo-calcOuts" },
+          el3(
+            "div",
+            { className: "mygo-calcOut", "data-role": "calc-interval" },
+            el3("label", { className: "mygo-label" }, "\u5EFA\u8BAE\u62CD\u8DDD = TTL \xD7 5/6"),
+            el3("span", {
+              className: "mygo-calcValue",
+              "data-tone": calc.intervalMs === null ? "idle" : "ready"
+            }, calc.intervalText),
+            el3(
+              "div",
+              { className: "mygo-calcActions" },
+              el3("button", {
+                className: "mygo-btn",
+                "data-role": "calc-fill",
+                disabled: calcReadonly || !calc.fillable,
+                onClick: fillCalcInterval,
+                title: "\u628A\u5EFA\u8BAE\u62CD\u8DDD\u5199\u8FDB\u4E0A\u9762\u7684\u300C\u4E3B\u7F16\u62CD\u8DDD\u300D\u8349\u7A3F\uFF1B\u4E0D\u70B9\u4FDD\u5B58\u5C31\u4E0D\u5199\u76D8"
+              }, "\u586B\u5165\u62CD\u8DDD")
+            )
+          ),
+          el3(
+            "div",
+            { className: "mygo-calcOut", "data-role": "calc-lookahead" },
+            el3("label", { className: "mygo-label" }, "\u524D\u77BB\u7A97\u53E3 H =\uFF08\u8F93\u5165\u4EF7 \xF7 \u7F13\u5B58\u547D\u4E2D\u4EF7 \u2212 1\uFF09\xD7 \u62CD\u8DDD"),
+            el3("span", {
+              className: "mygo-calcValue",
+              "data-tone": calc.lookaheadMs === null ? "idle" : "ready"
+            }, calc.lookaheadText),
+            el3("div", { className: "mygo-hint" }, "\u7528\u9014\uFF1A\u63A2\u8FC7\u5B50\u4EE3\u7406\u7684\u5269\u4F59\u7B49\u5F85\u65F6\u957F\u540E\u2014\u2014\u5269\u4F59\u8D85\u8FC7\u524D\u77BB\u7A97\u53E3 H \u5C31\u6682\u505C\u5FC3\u8DF3\uFF0C\u4F4E\u4E8E H \u5219\u7EE7\u7EED\uFF08\u7F13\u5B58\u8FD8\u70ED\u7740\uFF0C\u518D\u7B49\u51E0\u62CD\u4E0D\u4E8F\uFF09\u3002"),
+            calc.lookaheadNote === null ? null : el3("div", { className: "mygo-hint", "data-role": "calc-lookaheadNote" }, calc.lookaheadNote)
+          )
+        )
+      ),
+      el3("div", { className: "mygo-detail", "data-role": "keepalive-detail" }, keepAliveDetailText(current, layers, keepAliveStored, keepAliveServed))
+    ),
+    el3(
+      "div",
       { className: "mygo-legend" },
       el3("span", null, "\u94FE\uFF1A#1 \u4E3B\u9009\uFF0C#2..N \u5907\u9009\uFF0C\u5931\u8D25\u6309\u5E8F\u964D\u7EA7"),
       el3("span", null, "\u8986\u76D6\uFF1Apersona \u8986\u76D6\u4E86 prompts \u6587\u4EF6\u9ED8\u8BA4"),
-      el3("span", null, "DSV\uFF1A\u4E24\u9636\u6BB5\u951A\u5B9A\u6CE8\u5165\uFF0C\u4EC5 DeepSeek V4 Pro 0813"),
       el3("span", null, "\u672A\u8FDE\u63A5\uFF1A\u5DE5\u5177\u540D\u4E0D\u5728\u5BBF\u4E3B\u82B1\u540D\u518C\uFF08MCP \u672A\u8FDE\u6216\u624B\u586B\uFF09")
     ),
     el3(
@@ -3401,7 +3782,6 @@ function statusText({ ready, dirty, pending, revision }) {
 function roleEntry(key, label, row, carried, builtin) {
   const badges = [];
   if (typeof carried?.persona === "string" && carried.persona !== "") badges.push({ text: "\u8986\u76D6", tone: "warn" });
-  if (row?.dsv4p0813 === true) badges.push({ text: "DSV", tone: "on" });
   if (!builtin) badges.push({ text: "\u81EA\u5B9A\u4E49" });
   return { key, label, meta: chainText(row), badges, builtin };
 }
@@ -3420,7 +3800,7 @@ function roleDetailText(key, current) {
   const lines = [
     `${AGENT_LABELS[key] ?? key}\uFF08${key}\uFF09\xB7 ${builtin ? "\u5185\u7F6E\u5DE5\u79CD" : "\u81EA\u5B9A\u4E49\u89D2\u8272"}`,
     `\u6A21\u578B\u4F18\u5148\u7EA7\uFF1A${chain.map((entry, index) => `#${index + 1} ${entry.provider || "\u2014"}/${entry.model || "\u2014"}`).join("  ")}`,
-    `\u601D\u8003\u6863\u4F4D\uFF1A${row.reasoningEffort || "\u8DDF\u968F\u6A21\u578B\u9ED8\u8BA4"}\uFF1BDSV4P0813\uFF1A${row.dsv4p0813 === true ? "\u5F00" : "\u5173"}`
+    `\u601D\u8003\u6863\u4F4D\uFF1A${row.reasoningEffort || "\u8DDF\u968F\u6A21\u578B\u9ED8\u8BA4"}`
   ];
   if (key !== "sisyphus") lines.push(`\u4EBA\u8BBE\u6765\u6E90\uFF1A${personaOverrideSource(current.roles?.[key])}`);
   if (!builtin) {
@@ -3453,6 +3833,41 @@ function priceSuggestions(catalog) {
   const map = catalog.models && typeof catalog.models === "object" ? catalog.models : {};
   return [...new Set(Object.entries(map).flatMap(([provider, ids]) => (Array.isArray(ids) ? ids : []).map((id) => `${provider}/${id}`)))];
 }
+function keepAliveCalcText({ ttlSeconds, inputPrice, cachePrice } = {}) {
+  const intervalMs = intervalMsFromTtl(ttlSeconds);
+  const lookahead = lookaheadMs(inputPrice, cachePrice, intervalMs);
+  const input = parseCalcNumber(inputPrice);
+  const cache = parseCalcNumber(cachePrice);
+  let lookaheadNote = null;
+  if (lookahead === null) {
+    if (cache === null || cache === 0) lookaheadNote = "\u7F13\u5B58\u547D\u4E2D\u4EF7\u7559\u7A7A\u6216\u4E3A 0\uFF1A\u6BD4\u4EF7\u7B97\u4E0D\u51FA\u6765\uFF08\u8FD9\u91CC\u4E0D\u505A\u300C\u9ED8\u8BA4 0.3\u300D\u4E4B\u7C7B\u7684\u515C\u5E95\u731C\u6D4B\uFF09\u3002";
+    else if (input === null) lookaheadNote = "\u8F93\u5165\u4EF7\u7559\u7A7A\u6216\u4E0D\u662F\u975E\u8D1F\u6570\uFF1A\u6BD4\u4EF7\u7B97\u4E0D\u51FA\u6765\u3002";
+    else lookaheadNote = "\u5148\u628A\u4E0A\u9762\u7684\u7F13\u5B58 TTL \u586B\u6210\u4E00\u4E2A\u5927\u4E8E 0 \u7684\u6570\u3002";
+  } else if (input !== null && cache !== null && input <= cache) {
+    lookaheadNote = "\u7F13\u5B58\u547D\u4E2D\u4EF7 \u2265 \u8F93\u5165\u4EF7\uFF1A\u547D\u4E2D\u6CA1\u6709\u7701\u5934\uFF0C\u524D\u77BB\u7A97\u53E3 H \u8BB0 0\uFF08\u5269\u4F59\u53EA\u8981\u5927\u4E8E 0 \u5C31\u8BE5\u6682\u505C\u5FC3\u8DF3\uFF09\u3002";
+  }
+  return {
+    intervalMs,
+    intervalText: intervalMs === null ? "\u5F85\u586B TTL" : `${formatDurationHuman(intervalMs)}\uFF08${Math.round(intervalMs / 1e3)} \u79D2\uFF09`,
+    fillable: intervalMs !== null,
+    lookaheadMs: lookahead,
+    lookaheadText: lookahead === null ? "\u2014" : formatDurationHuman(lookahead),
+    lookaheadNote
+  };
+}
+function keepAliveDetailText(current, layers, stored = keepAliveFrom(current), served = true) {
+  const user = layers?.user?.keepAlive;
+  const fmt = formatDurationHuman;
+  const lines = [
+    stored.enabled ? `\u5FC3\u8DF3\u5F00\u542F\uFF1A\u4E3B\u7F16\u6BCF ${fmt(stored.orchestratorIntervalMs)} \u88AB\u5524\u9192\u4E00\u62CD\uFF1B\u5B50\u4EE3\u9759\u9ED8\u8D85 ${fmt(stored.childPingAfterMs)} \u6807\u300C\u5EFA\u8BAEping\u300D\uFF0C\u8FDE ${stored.escalateAfterPings} \u62CD\u65E0\u4FE1\u53F7\u6807\u7EA2\u3002` : "\u5FC3\u8DF3\u5173\u95ED\uFF1A\u4E3B\u7F16\u6D3E\u53D1\u540E\u9759\u9ED8\u7B49\u5F85\uFF0C\u4E0D\u505A\u4EFB\u4F55\u5468\u671F\u6027\u5524\u9192\u3002",
+    "\u6458\u8981\u662F\u8FDB\u4E3B\u7F16\u4E0A\u4E0B\u6587\u7684\u4E00\u6761\u77ED\u6587\u672C\uFF08\u76EE\u6807 \u2264500 \u5B57\u8282\uFF09\uFF1A\u6BCF\u4E2A\u5728\u98DE\u5B50\u4EE3\u4E00\u884C\uFF08childId / \u5DE5\u79CD / \u672C\u8F6E\u5DF2\u8FD0\u884C / \u8DDD\u4E0A\u6B21\u4FE1\u53F7 / \u672A\u56DE\u5E94 ping \u6570\uFF09\uFF0C\u53E6\u9644\u6392\u961F\u6570\u4E0E\u5F85\u51B3\u6C42\u52A9\u6570\u3002",
+    `\u672A\u56DE\u5E94 ping \u6570 = \u8FDE\u7740\u51E0\u62CD\u5EFA\u8BAE\u4E86 ping \u800C\u8BE5\u5B50\u4EE3\u4ECD\u65E0\u4EFB\u4F55\u4FE1\u53F7\uFF1B\u4E3B\u7F16\u7167\u6458\u8981\u53D1\u4E00\u6B21 continue(steer) \u8BE2\u95EE\u5373\u6E05\u96F6\u3002\u6807\u7EA2\u7684\u5B50\u4EE3\u8981\u6C42\u5F53\u573A\u88C1\u51B3\uFF08\u7EE7\u7EED / \u6390\u65AD / \u6D3E explore \u9A8C\u6D3B\uFF09\u3002`
+  ];
+  if (!served) lines.push("\u5BBF\u4E3B\u73B0\u503C\u91CC\u6839\u672C\u6CA1\u6709\u8FD9\u4E00\u6BB5\uFF08\u5BBF\u4E3B\u8FDB\u7A0B\u65E9\u4E8E\u672C\u7248\u672C\u63D2\u4EF6\uFF09\uFF1A\u8FD9\u4E00\u5757\u53EA\u8BFB\uFF0C\u91CD\u542F\u5BBF\u4E3B\u540E\u624D\u4F1A\u51FA\u73B0\u8FD9\u4E00\u6BB5\u4E0E\u5B83\u7684\u4FDD\u5B58\u9762\u3002");
+  else if (user === void 0) lines.push("\u672C\u6BB5\u5728\u5BBF\u4E3B\u73B0\u503C\u91CC\u8FD8\u6CA1\u6709\u7528\u6237\u5C42\u8986\u76D6\uFF1A\u4FDD\u5B58\u540E\u6309\u9ED8\u8BA4\uFF08\u5173\u95ED\uFF09\u8D77\u7B97\uFF0C\u6539\u54EA\u4E2A\u5B57\u6BB5\u624D\u5199\u54EA\u4E2A\u5B57\u6BB5\u3002");
+  else lines.push(`\u7528\u6237\u5C42\u5DF2\u8986\u76D6 ${Object.keys(user).length} \u4E2A\u5B57\u6BB5\uFF1B\u628A\u67D0\u9879\u6539\u56DE\u9ED8\u8BA4\u503C\u4FDD\u5B58 = \u64A4\u9500\u8BE5\u9879\u8986\u76D6\u3002`);
+  return lines.join("\n");
+}
 function isValidRoleKey2(key, customRows) {
   return typeof key === "string" && ROLE_KEY_PATTERN.test(key) && !AGENT_TYPES.includes(key) && !customRows.some((row) => row.key === key);
 }
@@ -3474,7 +3889,6 @@ function parseRoleText(text2) {
     provider: typeof parsed.provider === "string" ? parsed.provider : "",
     model: typeof parsed.model === "string" ? parsed.model : "",
     reasoningEffort: typeof parsed.reasoningEffort === "string" ? parsed.reasoningEffort : "",
-    dsv4p0813: parsed.dsv4p0813 === true,
     fallbacks: Array.isArray(parsed.fallbacks) ? parsed.fallbacks : [],
     persona: typeof parsed.persona === "string" ? parsed.persona : "",
     toolFilter: {
@@ -3485,14 +3899,14 @@ function parseRoleText(text2) {
   return { ok: true, key, row };
 }
 function blankRole() {
-  return { provider: "", model: "", reasoningEffort: "", dsv4p0813: false, fallbacks: [], persona: "", toolFilter: { allow: [], deny: [] } };
+  return { provider: "", model: "", reasoningEffort: "", fallbacks: [], persona: "", toolFilter: { allow: [], deny: [] } };
 }
 function blankPriceRow() {
   return { input: "", output: "", cacheRead: "", cacheWrite: "" };
 }
 function emptyDraft() {
-  const draft = { roles: {}, usagePrices: {}, usageCurrency: "USD" };
-  for (const type of AGENT_TYPES) draft[type] = { provider: "", model: "", reasoningEffort: "", dsv4p0813: false, fallbacks: [] };
+  const draft = { roles: {}, usagePrices: {}, usageCurrency: "USD", keepAlive: keepAliveFrom({}) };
+  for (const type of AGENT_TYPES) draft[type] = { provider: "", model: "", reasoningEffort: "", fallbacks: [] };
   return draft;
 }
 

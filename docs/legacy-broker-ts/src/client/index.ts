@@ -5,7 +5,7 @@
  *  - `shell.overlay` "dsh-my-go-panel": tree panel showing sub-agent status
  *    (current / queue / help / history), with click-to-jump via
  *    `sessions.openSubagent`.
- *  - `settings.section` "dsh-my-go": per-agent model/effort/DSV4P0813 config.
+ *  - `settings.section` "dsh-my-go": per-agent model/effort config.
  *  - Auto-jump: while a sub-agent is running, follow it; on settle, jump back
  *    to the Sisyphus parent session.
  */
@@ -196,7 +196,7 @@ export function apply(ctx: unknown): (() => void) | void {
   function SettingsPage(_props: unknown) {
     return React.createElement('div', { style: { padding: 16 } },
       React.createElement('h2', null, 'dsh-my-go 编排配置'),
-      React.createElement('p', null, '每个子智能体的模型 / 思考程度 / DSV4P0813 补丁开关。修改后通过 Settings 服务持久化。'),
+      React.createElement('p', null, '每个子智能体的模型 / 思考程度。修改后通过 Settings 服务持久化。'),
       React.createElement('div', { style: { color: '#888', marginTop: 12 } }, '配置项由 host 侧 settings 命名空间 dsh-my-go.agents 提供；此处为占位渲染，完整表单见 broker 设置页。'),
     )
   }

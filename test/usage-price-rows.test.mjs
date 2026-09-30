@@ -1,7 +1,7 @@
 // usage-price-rows（0.4.0 用量统计契约 D1，步骤 3/7）：单价表编辑器纯函数——
 // 桶值净化、行级校验、键格式提示。src/usage-price-rows.js 零依赖，node --test
 // 直接 import（与 esbuild bundle 内联同源，无 DOM、无 React）。
-// 0.5.0-tisitan.3 批次 3：行操作迁移（add/remove/update 行、model-picker 选项
+//  行操作迁移（add/remove/update 行、model-picker 选项
 // 投影）已随 0.5.0 设置页重写成为孤儿导出并删除——本文件只守净化/校验活面，
 // 行编辑行为由 test/settings-core-projections.test.mjs 与 client-card 行为档持有。
 import { test } from 'node:test'
@@ -54,7 +54,7 @@ test('validatePriceRow：合法 null、报错中文含桶名，持久脏行可�
 test('priceKeyHint：空输入无提示、合法键无提示、坏键给格式提示', () => {
   assert.equal(priceKeyHint(''), null)
   assert.equal(priceKeyHint('  '), null)
-  assert.equal(priceKeyHint('newapi/k3-256k'), null)
+  assert.equal(priceKeyHint('my-provider/model-a'), null)
   assert.equal(priceKeyHint('openrouter/deepseek/deepseek-chat'), null, 'model 含 / 合法')
   assert.ok(priceKeyHint('noslash'), '无 / 拒')
   assert.ok(priceKeyHint('/lead'), 'provider 空拒')
@@ -64,5 +64,5 @@ test('priceKeyHint：空输入无提示、合法键无提示、坏键给格式�
 test('PRICE_BUCKETS 组成与 PRICE_KEY_PATTERN 与 preset/shared 单源一致', () => {
   assert.deepEqual(REQUIRED_BUCKETS, ['input', 'output'])
   assert.deepEqual(PRICE_BUCKETS, ['input', 'output', 'cacheRead', 'cacheWrite'])
-  assert.equal(PRICE_KEY_PATTERN, SHARED_PATTERN, '客户端不再抄第二份 pattern（双处定义是历史教训）')
+  assert.equal(PRICE_KEY_PATTERN, SHARED_PATTERN, '客户端不再抄第二份 pattern（双处定义会产生第二源）')
 })

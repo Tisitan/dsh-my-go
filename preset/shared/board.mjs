@@ -1,10 +1,9 @@
 /**
- * dsh-my-go — board 存储层（第一期报告外部化的读写唯一出处，步骤 1.1）。
+ * dsh-my-go — board 存储层（报告外部化的读写唯一出处）。
  *
- * 规划出处：docs/plans/next-gen-architecture-0.4.0.md §第一期 步骤 1.1。
- * 子代报告全文经 report_submit（1.3）与收尾自动落板（1.5）双通道写入这里，
- * 主编经 report_fetch（1.6）按行切片取回——本模块是 board 读写的唯一出处：
- * 原子写、行切片读、路径焊死三件事只在这里做一遍。
+ * 子代报告全文经 report_submit 与收尾自动落板双通道写入这里，主编经
+ * report_fetch 按行切片取回——本模块是 board 读写的唯一出处：原子写、行切片读、
+ * 路径焊死三件事只在这里做一遍（契约出处：docs/plans/next-gen-architecture-0.4.0.md）。
  *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx。
  * 依赖只有 node:fs/promises、node:path、node:os 与 shared/archive.mjs 的
@@ -32,17 +31,16 @@
  *     空文件 0 行；内容字节保真（不归一 CRLF——写进去什么字节、切片取回
  *     就是什么字节，round-trip 无损）。
  *   - offset 为 0-based 跳过行数（分页 API 公共语义：SQL OFFSET /
- *     Array.slice 同构；1.6 的 report_fetch description 将显式声明），limit
+ *     Array.slice 同构；report_fetch 的 description 显式声明），limit
  *     为取回行数上限；两者越界一律钳制，返回体回显钳制后实际生效的
  *     offset/limit（offset ∈ [0, totalLines]，limit = min(limit, totalLines
  *     - offset)，text 行数恒等于回显 limit），调用方无需自己再猜边界。
  *   - 非有限 offset/limit（undefined/NaN）：offset 按 0、limit 按「不限」
  *     处理（读到底）。
  *
- * 容量观测（D14 已裁决：本期不做 GC）：本模块不依赖 metrics（1.1 无消费
- * 点）；writeBoard 返回的 bytes（content 的 UTF-8 真实字节数——容量量纲，
- * 与 metrics 事件字段的 .length 量纲不同、语义各自正确）就是观测原料，
- * 第一期 broker 接线点（1.3/1.5）持 metrics 实例处直接打新 kind 事件，
+ * 容量观测（D14：不做 GC）：本模块不依赖 metrics；writeBoard 返回的 bytes
+ * （content 的 UTF-8 真实字节数——容量量纲，与 metrics 事件字段的 .length 量纲
+ * 不同、语义各自正确）就是观测原料，broker 侧持 metrics 实例的接线点直接打事件，
  * metrics 模块零改动。
  */
 
@@ -102,7 +100,7 @@ export async function writeBoard(sessionId, childId, content) {
   return { path, bytes: Buffer.byteLength(content, 'utf-8') }
 }
 
-// 板上是否已有该儿童的报告（报告闸门兜底判定，复活轮误判修复批改点2）。
+// 板上是否已有该儿童的报告（报告闸门的兜底判定——「含历史轮」口径的落点）。
 // 同步 fs：本函数被 end 归因的同步段消费（协议第 1 条「同步段零 await」），
 // 一枚 existsSync 的代价即一次 stat——archive.mjs 的附因兜底读档早有同步先例。
 // 拼路径恒过 boardPath（穿越面与读侧同一道闸）；段名畸形（空段）时按「无货」

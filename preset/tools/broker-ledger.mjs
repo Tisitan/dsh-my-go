@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — 编排台账持久化（0.2.3-tisitan.8 起本体；5.1 波自 broker.mjs 抽出）。
+ * dsh-my-go — 编排台账持久化。
  *
  * history 记录（done/failed，每桶上限 HISTORY_CAP）落盘为 JSON，
  * 插件加载时读回：进程重启后 continue 一个已完工 childId 仍能命中台账
@@ -20,12 +20,12 @@
  *     无档/坏档空台账起步，绝不阻断插件加载。
  *   - scheduleLedgerSave：任何台账变化都经它防抖落盘（合并同窗口内的连续
  *     突变），写盘走 Promise 链串行化，绝不在热路径同步阻塞。
- *   - closeLedger：卸载收尾（0.3.0-tisitan.7 N8），见函数头注释。
+ *   - closeLedger：卸载收尾，见函数头注释。
  *   - 防抖窗/串行链/关闭位三个可变位收进一个小 state 对象持有（saveState）。
  */
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-// 卸载路径的台账同步落盘（0.3.0-tisitan.7 N8）：清理函数里不等异步链，直接用
+// 卸载路径的台账同步落盘：清理函数里不等异步链，直接用
 // node:fs 同步三件套（mkdir/writeFile/rename 的 sync 形态），原子语义与热路径一致。
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -44,9 +44,9 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
           if (!Array.isArray(list)) continue
           orchFor(pid).history = list.filter(isLedgerRow).slice(-HISTORY_CAP)
         }
-        // v3（三期 3.3，D12）：chains 桶——恢复经 normalizeRestoredChain 归一
+        // v3（D12）：chains 桶——恢复经 normalizeRestoredChain 归一
         // （running→suspended('restart')、pending-fallback→failed、fallback 挂起
-        // 的 hopChildId 按 T8 自查谓词保留/归 restart，D28 裁决 + §5.3 精化）。
+        // 的 hopChildId 按 T8 自查谓词保留/归 restart，D28 + §5.3 精化）。
         // 谓词查本实例 history（先于本循环恢复完毕，顺序即正确性）；坏行整行
         // 丢弃留痕，绝不猜式修补。v2 档无 chains 桶 → 空起步。
         if (raw.version === 3 && raw.chains && typeof raw.chains === 'object') {
@@ -94,7 +94,7 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
     const chains = {}
     for (const [pid, orch] of orchestrations) {
       if (orch.history.length > 0) parents[pid] = orch.history.slice(-HISTORY_CAP)
-      // v3 chains 桶（三期 3.3，D12）：终态含全量持久化（存量由 RELAY_CHAINS_CAP
+      // v3 chains 桶（D12）：终态含全量持久化（存量由 RELAY_CHAINS_CAP
       // 在 chain_start 入口钳制），主销毁路径的桶删（D27）随 orchestrations
       // 摘除自然生效。
       if (orch.chains.length > 0) chains[pid] = orch.chains
@@ -121,7 +121,7 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
       const payload = ledgerPayload()
       saveState.chain = saveState.chain.then(async () => {
         if (saveState.closed) return
-        // 原子写（0.3.0-tisitan.3）：先写同目录 .tmp 再 rename 覆盖——进程崩溃写
+        // 原子写：先写同目录 .tmp 再 rename 覆盖——进程崩溃写
         // 到一半时撕裂的是 tmp，台账本体非旧即新恒完整，不再全量丢账。
         const tmpPath = `${ledgerPath}.tmp`
         try {
@@ -137,9 +137,9 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
     }, 250)
     saveState.timer.unref?.()
   }
-  // 插件卸载收尾（0.3.0-tisitan.7 N8）：只 clearTimeout 等于把整个防抖窗（250ms）
+  // 插件卸载收尾：只 clearTimeout 等于把整个防抖窗（250ms）
   // 内的台账变更丢弃——最后一次完工/复活根本不入档，重启后 continue 报
-  // unknown-id（现场-Z3 的文件兜底也救不了：文件里压根没有那条记录）。
+  // unknown-id（文件兜底也救不了：文件里压根没有那条记录）。
   // 有 pending timer 就同点做完这次写：撤定时器 → 作废在飞的异步链 →
   // 同步落最新 payload（tmp+rename 原子语义不变；卸载路径接受同步 I/O）。
   function closeLedger() {
@@ -150,10 +150,10 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
     writeLedgerSync(ledgerPayload())
   }
 
-  // 台账文件兜底查找（现场-Z3）：continue/forward 内存全实例未命中时，回读
-  // 台账文件再找一次。双半并行记账 + 各自的启动代际差（重启时点、防抖窗口）
-  // 会让某一半的内存缺一条台账已有的记录（真机实锤：文件与面板均有该记录，
-  // continue 却报 unknown-id，同桶邻记录命中）。文件是两半落盘的并集，命中即
+  // 台账文件兜底查找：continue/forward 内存全实例未命中时，回读台账文件再找一次。
+  // 双半并行记账 + 各自的启动代际差（重启时点、防抖窗口）会让某一半的内存缺一条
+  // 台账已有的记录——文件与面板都有它，continue 却报 unknown-id（同桶邻记录命中）。
+  // 文件是两半落盘的并集，命中即
   // 按 loadLedger 同款规则（isLedgerRow + 200 条上限）并入内存实例后再走一次
   // 常规查找；同 id 已在册则不重复追加。仅在未命中的冷路径多一次文件读，
   // 热路径零开销。

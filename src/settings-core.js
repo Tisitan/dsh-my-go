@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — configuration card (0.5.0-tisitan.3).
+ * dsh-my-go — configuration card.
  *
  * The plugin's single configuration entry, rendered inside the official plugin
  * page through the `plugins.bundle.config` slot. It reads and writes the
@@ -13,8 +13,8 @@
  * Information architecture: two blocks, each a two-column master/detail grid
  * with its own full-width annotation strip, plus a save bar.
  *   1. 模型与角色 — one row per role (8 built-ins + the custom roster), the
- *      selected role edited on the right (model priority chain, effort, DSV
- *      patch, persona override, tool allow/deny, card JSON).
+ *      selected role edited on the right (model priority chain, effort,
+ *      persona override, tool allow/deny, card JSON).
  *   2. 用量单价表 — one row per "{provider}/{model}" key, four buckets on the
  *      right, one currency knob for the whole table.
  *
@@ -32,13 +32,14 @@
 
 import * as React from 'react'
 
-import { PRICE_KEY_PATTERN, ROLE_KEY_PATTERN, PANEL_RPC_CHANNEL, PANEL_ENDPOINTS, PRICE_BUCKETS, PRICE_BUCKET_LABELS } from '../preset/shared/constants.mjs'
+import { PRICE_KEY_PATTERN, ROLE_KEY_PATTERN, KEEP_ALIVE_DEFAULTS, KEEP_ALIVE_CALC, PANEL_RPC_CHANNEL, PANEL_ENDPOINTS, PRICE_BUCKETS, PRICE_BUCKET_LABELS } from '../preset/shared/constants.mjs'
 import { composeChain, decomposeChain } from './chain-rows.js'
 import { AGENT_LABELS, AGENT_TYPES } from './client-constants.js'
 import { mountSettingsStyles } from './client-styles.js'
+import { formatDurationHuman, intervalMsFromTtl, lookaheadMs, parseCalcNumber } from './keepalive-calc.js'
 import { normalizeRoleRows, personaOverrideSource, resolveBuiltinPersonaResult, withPersonaOverride } from './roster-rows.js'
-import { attachBeforeUnloadGuard, describeSaveOutcome, resolveCardView } from './settings-guard.js'
-import { buildSettingsOps, compareKey, draftFromSection, dirtyLabels, summaryLine, writeLanded } from './settings-ops.js'
+import { attachBeforeUnloadGuard, describeSaveOutcome, hostServesSection, resolveCardView, UNSERVED_SECTION_HINT, unservedSections } from './settings-guard.js'
+import { buildSettingsOps, compareKey, draftFromSection, dirtyLabels, keepAliveFrom, summaryLine, writeLanded } from './settings-ops.js'
 import { renderRolesPane } from './roles-editor.js'
 import { renderPricesPane } from './usage-prices-editor.js'
 
@@ -90,13 +91,22 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const [importError, setImportError] = React.useState('')
   const [newPriceKey, setNewPriceKey] = React.useState('')
   const [personaFileErr, setPersonaFileErr] = React.useState({})
+  // 心跳速算区的三个输入：**纯组件态**——既不进草稿也不落库，
+  // 刷新即回到默认档。零持久化字段是本节的硬约束（schema 与 lib/config.js
+  // 一行都不动）；它能写出的唯一值，是用户点「填入拍距」那一笔（走 setKeepAlive
+  // 写进正式字段的草稿，仍是草稿，用户可继续手改）。
+  const [calcTtl, setCalcTtl] = React.useState(String(KEEP_ALIVE_CALC.defaultTtlSeconds))
+  const [calcInputPrice, setCalcInputPrice] = React.useState('')
+  const [calcCachePrice, setCalcCachePrice] = React.useState('')
 
   const card = resolveCardView(snapshot)
   const ready = card.kind === 'ready'
   const layers = ready ? { value: snapshot.value, base: snapshot.base, user: snapshot.user } : { value: {}, base: {}, user: {} }
   const stored = ready ? draftFromSection(snapshot.value) : null
   const current = draft ?? stored ?? emptyDraft()
-  const dirty = draft !== null && compareKey(draft) !== compareKey(stored ?? emptyDraft())
+  // 脏比对：草稿侧带上现值当基线——半输入（清空 / 残字）的格子由基线值回填，
+  // 不会凭空报脏。
+  const dirty = draft !== null && compareKey(draft, stored ?? emptyDraft()) !== compareKey(stored ?? emptyDraft())
   const pending = draft === null ? [] : dirtyLabels(draft, snapshot?.value ?? {})
   const drifted = draft !== null && typeof fence === 'number' && typeof snapshot?.revision === 'number' && fence !== snapshot.revision
   const writable = ready && snapshot.writable !== false && snapshot.mode !== 'memory'
@@ -142,8 +152,14 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       const landed = ready
         && after?.status === 'ready'
         && writeLanded(draft, before, ops)
-        && compareKey(draftFromSection(after.value)) === compareKey(draft)
-      setMessage(describeSaveOutcome(landed, after?.revision))
+        // 第二道读回判据同样以「写入后的现值」为基线：半输入格子两侧同形，不再制造
+        // 假红字（writeLanded 内部已经是同一口径，这里保持页面侧的判据与之一致）。
+        && compareKey(draft, draftFromSection(after.value)) === compareKey(draftFromSection(after.value))
+      // 被拒时尽量点名真凶：本次 ops 触及、而宿主现值里根本不存在的段 ⇒ 宿主 schema
+      // 比本版本插件旧（宿主侧 volatile 闸拿旧 schema 判新段），不是「校验不过」也不是
+      // 并发漂移。两义红字换成一句能照做的话（重启宿主）。
+      const unserved = landed ? [] : unservedSections(ops, [before.value, after?.value])
+      setMessage(describeSaveOutcome(landed, after?.revision, unserved))
       if (landed) {
         setDraft(null)
         setFence(null)
@@ -163,9 +179,45 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   ]
   const selectedKey = roleList.some((row) => row.key === picked) ? picked : AGENT_TYPES[0]
   const selectedRole = roleList.find((row) => row.key === selectedKey)
-  const selectedBuiltin = AGENT_TYPES.includes(selectedKey)
 
   const rowOf = (key) => (AGENT_TYPES.includes(key) ? { ...current[key], ...partialOf(key) } : { ...current.roles?.[key] })
+
+  // 心跳块的两个读面：keepAliveStored 是归一后的值（开关状态与提示文案
+  // 用它），keepAliveFieldValue 交**草稿原值**给输入框——归一值回填会让用户打不出
+  // 「30」（刚敲一个 3 就被读成默认 300000）；与单价行「输入框原值进草稿」同款。
+  // 两个时长旋钮在界面上以**秒**示人（列头写明单位），存量与 schema 仍是毫秒：
+  // 显示时除 1000、写回时乘 1000，草稿里始终只有毫秒一种量纲。
+  // 第三个读面：这一段**宿主声明了吗**。声明的段恒有值（schema 默认也
+  // 解析进现值），故现值里没有 keepAlive 只可能是「宿主进程早于本版本插件」——
+  // 此时写入必被宿主侧 volatile 闸拒（且会连累同一次点击里的其它改动），本块转只读
+  // 并把出路写在块头，不再让用户走到那次注定失败的保存。
+  const keepAliveServed = ready && hostServesSection(snapshot.value, 'keepAlive')
+  const keepAliveStored = keepAliveFrom(current)
+  const toSeconds = (raw) => (typeof raw === 'number' ? String(Math.round(raw / 1000)) : String(raw ?? ''))
+  const toMillis = (raw) => {
+    const n = Number(raw)
+    return raw !== '' && Number.isFinite(n) && n >= 1 ? Math.trunc(n * 1000) : raw
+  }
+  const keepAliveFieldValue = (field) => {
+    const raw = current.keepAlive?.[field]
+    if (field === 'enabled') return String(raw === true)
+    if (field === 'escalateAfterPings') return raw === undefined || raw === null ? '' : String(raw)
+    return toSeconds(raw)
+  }
+
+  // 速算区：三个输入是组件态，两个结果是渲染期纯计算（无副作用、
+  // 不写草稿）。可写性只认「宿主声明的段 + 可写」，**刻意不看心跳开关**：先把
+  // 拍距算好、再打开开关是正常流，且「填入拍距」写的是草稿——草稿本来就允许
+  // 在任意时刻编辑（拍距输入框在关闭态只是灰显，值照常显示与更新）。
+  const calcReadonly = !writable || !keepAliveServed
+  const calc = keepAliveCalcText({ ttlSeconds: calcTtl, inputPrice: calcInputPrice, cachePrice: calcCachePrice })
+  const fillCalcInterval = () => {
+    if (calc.intervalMs === null) return
+    // 一键填入 = 走既有 setKeepAlive 通路，写的是**毫秒**（与手填框同量纲）；
+    // 它只改草稿，保存与否仍归用户（速算区绝不碰 save 逻辑）。
+    setKeepAlive('orchestratorIntervalMs', calc.intervalMs)
+  }
+
   function partialOf(key) {
     const carried = current.roles?.[key]
     return carried && typeof carried === 'object' && Object.prototype.hasOwnProperty.call(carried, 'persona') ? { persona: carried.persona } : {}
@@ -291,6 +343,14 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
     usagePrices: { ...prev.usagePrices, [key]: { ...prev.usagePrices?.[key], [bucket]: value } },
   }))
 
+  // 心跳四字段：与单价行同款「输入框原值进草稿、写面收口归一」（keepAliveFrom
+  // 认数字串），故这里不做 Number() 转换——半输入不该被吃掉，也不该读成一个
+  // 归一后的默认值回填进输入框（那会让用户打不出「30」）。
+  const setKeepAlive = (field, value) => stage((prev) => ({
+    ...prev,
+    keepAlive: { ...keepAliveFrom(prev), ...prev.keepAlive, [field]: value },
+  }))
+
   const createPrice = () => {
     const key = newPriceKey.trim()
     if (!writable || !isValidPriceKey(key, current)) return
@@ -310,7 +370,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
 
   return el('section', { className: 'mygo-config', 'data-plugin': 'dsh-my-go' },
     el('p', { className: 'mygo-intro' }, '给每个工种单独指定模型优先级与思考档位；留空 = 跟随 Sisyphus（即对话框里选的模型）。改完点「立即保存」，下次派发生效。'),
-    el('p', { className: 'mygo-intro' }, '本页只是宿主里 dsh-my-go 命名空间的视图：不点保存不写任何字节；清空一个可空字段等于发 unset（回落到 cordis 行 config 或 schema 默认）；手改 settings.yaml 的 dsh-my-go 段与本面是同一层。'),
+    el('p', { className: 'mygo-intro' }, '本页只是宿主里 dsh-my-go 命名空间的视图：不点保存不写任何字节；清空一个可空字段 = 清除该项（回落到上级配置或默认值）；手改 settings.yaml 的 dsh-my-go 段与本面是同一层。'),
 
     ready ? null : el(BlockedNotice, { card, scope }),
     ready && !writable ? el('div', { className: 'mygo-notice mygo-noticeWarn' }, '这份文档当前只读（宿主拒绝写入）：编辑区照常可看，保存已禁用。') : null,
@@ -434,10 +494,156 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       el('div', { className: 'mygo-detail', 'data-role': 'price-detail' }, priceDetailText(selectedPrice, current, layers)),
     ),
 
+    el('div', { className: 'mygo-block', 'data-block': 'keepAlive' },
+      el('div', { className: 'mygo-blockHead' },
+        el('span', { className: 'mygo-blockTitle' }, '主编缓存心跳'),
+        el('span', { className: 'mygo-count' }, !keepAliveServed ? '宿主未声明' : keepAliveStored.enabled ? '已开启' : '默认关闭'),
+        el('span', { className: 'mygo-blockHint' }, !keepAliveServed
+          ? UNSERVED_SECTION_HINT
+          : `编排会话空闲时按拍距自动唤醒一次低成本维护：保持模型缓存新鲜，并提示长时间无响应的子代理。每拍约占 130 token（默认拍距下约 ${Math.round(3600 / (KEEP_ALIVE_DEFAULTS.orchestratorIntervalMs / 1000))} 拍/小时）——按缓存 TTL × 会话时长取舍。`),
+      ),
+      el('div', { className: 'mygo-fields' },
+        el('div', { className: 'mygo-field' },
+          el('label', { className: 'mygo-label' }, '开关'),
+          el('label', { className: 'mygo-check' },
+            el('input', {
+              type: 'checkbox',
+              checked: current.keepAlive?.enabled === true,
+              disabled: !writable || !keepAliveServed,
+              'aria-label': '缓存心跳开关',
+              onChange: (event) => setKeepAlive('enabled', event.target.checked),
+            }),
+            keepAliveStored.enabled ? '启用' : '关闭',
+          ),
+          el('div', { className: 'mygo-hint' }, '关闭 = 不唤醒：派发后主编静默等待，跨 turn 期间不做任何唤醒。开启会真实唤醒主编，请按缓存 TTL 权衡。'),
+        ),
+        el('div', { className: 'mygo-field' },
+          el('label', { className: 'mygo-label' }, '主编拍距（秒）'),
+          el('input', {
+            className: 'mygo-input mygo-inputMono',
+            type: 'number',
+            min: '1',
+            value: keepAliveFieldValue('orchestratorIntervalMs'),
+            disabled: !writable || !keepAliveServed || !keepAliveStored.enabled,
+            'aria-label': '主编拍距（秒）',
+            onChange: (event) => setKeepAlive('orchestratorIntervalMs', toMillis(event.target.value)),
+          }),
+          el('div', { className: 'mygo-hint' }, `空闲主编多久被唤醒一次；默认 ${KEEP_ALIVE_DEFAULTS.orchestratorIntervalMs / 1000} 秒（5 分钟档 TTL 的 5/6，留 1/6 余量——比 prompt 缓存 TTL 还长的一拍等于白醒）。`),
+        ),
+        el('div', { className: 'mygo-field' },
+          el('label', { className: 'mygo-label' }, '子代静默阈值（秒）'),
+          el('input', {
+            className: 'mygo-input mygo-inputMono',
+            type: 'number',
+            min: '1',
+            value: keepAliveFieldValue('childPingAfterMs'),
+            disabled: !writable || !keepAliveServed || !keepAliveStored.enabled,
+            'aria-label': '子代静默阈值（秒）',
+            onChange: (event) => setKeepAlive('childPingAfterMs', toMillis(event.target.value)),
+          }),
+          el('div', { className: 'mygo-hint' }, `多久没信号就在摘要里标「建议ping」；默认 ${KEEP_ALIVE_DEFAULTS.childPingAfterMs / 60000} 分钟。`),
+        ),
+        el('div', { className: 'mygo-field' },
+          el('label', { className: 'mygo-label' }, '升级梯（连拍数）'),
+          el('input', {
+            className: 'mygo-input mygo-inputMono',
+            type: 'number',
+            min: '1',
+            value: keepAliveFieldValue('escalateAfterPings'),
+            disabled: !writable || !keepAliveServed || !keepAliveStored.enabled,
+            'aria-label': '升级梯连拍数',
+            onChange: (event) => setKeepAlive('escalateAfterPings', event.target.value),
+          }),
+          el('div', { className: 'mygo-hint' }, `连着多少拍建议 ping 而无任何信号即标红（默认 ${KEEP_ALIVE_DEFAULTS.escalateAfterPings}）——标红的子代要求主编当场裁决。`),
+        ),
+      ),
+      // ── 速算区：只算数、只填数 ────────────────────────────────
+      // 位置：三字段表单之下、通栏说明条之上——它在视觉上是从属于「主编拍距」
+      // 那一行的填数助手（有边框 + 底色，与正式字段区分开）。
+      // 硬约束：本节零持久化字段（不进 schema、不进 lib/config.js），三个输入是
+      // 组件态；唯一的出口是「填入拍距」那一笔，走 setKeepAlive 写正式字段的草稿。
+      el('div', { className: 'mygo-calc', 'data-role': 'keepalive-calc' },
+        el('div', { className: 'mygo-calcHead' },
+          el('span', { className: 'mygo-calcTitle' }, '速算区'),
+          el('span', { className: 'mygo-calcNote' }, '只算数不落库：本节三个输入不写盘、刷新即回默认（填入拍距后才进草稿，仍是草稿，可继续手改）。'),
+        ),
+        el('div', { className: 'mygo-calcGrid' },
+          el('div', { className: 'mygo-calcField' },
+            el('label', { className: 'mygo-label' }, '缓存 TTL（秒）'),
+            el('input', {
+              className: 'mygo-input mygo-inputMono',
+              type: 'number',
+              min: '1',
+              value: calcTtl,
+              disabled: calcReadonly,
+              'aria-label': '速算-缓存TTL（秒）',
+              onChange: (event) => setCalcTtl(event.target.value),
+            }),
+            el('div', { className: 'mygo-hint' }, `provider 的 prompt 缓存存活多久（默认填 ${KEEP_ALIVE_CALC.defaultTtlSeconds} 秒；1 小时档填 3600）。`),
+          ),
+          el('div', { className: 'mygo-calcField' },
+            el('label', { className: 'mygo-label' }, '输入价（$/M）'),
+            el('input', {
+              className: 'mygo-input mygo-inputMono',
+              type: 'text',
+              inputMode: 'decimal',
+              value: calcInputPrice,
+              placeholder: KEEP_ALIVE_CALC.pricePlaceholder.input,
+              disabled: calcReadonly,
+              'aria-label': '速算-输入价（$/M）',
+              onChange: (event) => setCalcInputPrice(event.target.value),
+            }),
+            el('div', { className: 'mygo-hint' }, '未命中缓存时每百万输入 token 的价格（你的渠道实价）。'),
+          ),
+          el('div', { className: 'mygo-calcField' },
+            el('label', { className: 'mygo-label' }, '缓存命中价（$/M）'),
+            el('input', {
+              className: 'mygo-input mygo-inputMono',
+              type: 'text',
+              inputMode: 'decimal',
+              value: calcCachePrice,
+              placeholder: KEEP_ALIVE_CALC.pricePlaceholder.cacheRead,
+              disabled: calcReadonly,
+              'aria-label': '速算-缓存命中价（$/M）',
+              onChange: (event) => setCalcCachePrice(event.target.value),
+            }),
+            el('div', { className: 'mygo-hint' }, '命中缓存时每百万输入 token 的价格（通常便宜一个量级）。'),
+          ),
+        ),
+        el('div', { className: 'mygo-calcOuts' },
+          el('div', { className: 'mygo-calcOut', 'data-role': 'calc-interval' },
+            el('label', { className: 'mygo-label' }, '建议拍距 = TTL × 5/6'),
+            el('span', {
+              className: 'mygo-calcValue',
+              'data-tone': calc.intervalMs === null ? 'idle' : 'ready',
+            }, calc.intervalText),
+            el('div', { className: 'mygo-calcActions' },
+              el('button', {
+                className: 'mygo-btn',
+                'data-role': 'calc-fill',
+                disabled: calcReadonly || !calc.fillable,
+                onClick: fillCalcInterval,
+                title: '把建议拍距写进上面的「主编拍距」草稿；不点保存就不写盘',
+              }, '填入拍距'),
+            ),
+          ),
+          el('div', { className: 'mygo-calcOut', 'data-role': 'calc-lookahead' },
+            el('label', { className: 'mygo-label' }, '前瞻窗口 H =（输入价 ÷ 缓存命中价 − 1）× 拍距'),
+            el('span', {
+              className: 'mygo-calcValue',
+              'data-tone': calc.lookaheadMs === null ? 'idle' : 'ready',
+            }, calc.lookaheadText),
+            el('div', { className: 'mygo-hint' }, '用途：探过子代理的剩余等待时长后——剩余超过前瞻窗口 H 就暂停心跳，低于 H 则继续（缓存还热着，再等几拍不亏）。'),
+            calc.lookaheadNote === null ? null : el('div', { className: 'mygo-hint', 'data-role': 'calc-lookaheadNote' }, calc.lookaheadNote),
+          ),
+        ),
+      ),
+      el('div', { className: 'mygo-detail', 'data-role': 'keepalive-detail' }, keepAliveDetailText(current, layers, keepAliveStored, keepAliveServed)),
+    ),
+
     el('div', { className: 'mygo-legend' },
       el('span', null, '链：#1 主选，#2..N 备选，失败按序降级'),
       el('span', null, '覆盖：persona 覆盖了 prompts 文件默认'),
-      el('span', null, 'DSV：两阶段锚定注入，仅 DeepSeek V4 Pro 0813'),
       el('span', null, '未连接：工具名不在宿主花名册（MCP 未连或手填）'),
     ),
 
@@ -521,7 +727,6 @@ export function statusText({ ready, dirty, pending, revision }) {
 export function roleEntry(key, label, row, carried, builtin) {
   const badges = []
   if (typeof carried?.persona === 'string' && carried.persona !== '') badges.push({ text: '覆盖', tone: 'warn' })
-  if (row?.dsv4p0813 === true) badges.push({ text: 'DSV', tone: 'on' })
   if (!builtin) badges.push({ text: '自定义' })
   return { key, label, meta: chainText(row), badges, builtin }
 }
@@ -542,7 +747,7 @@ export function roleDetailText(key, current) {
   const lines = [
     `${AGENT_LABELS[key] ?? key}（${key}）· ${builtin ? '内置工种' : '自定义角色'}`,
     `模型优先级：${chain.map((entry, index) => `#${index + 1} ${entry.provider || '—'}/${entry.model || '—'}`).join('  ')}`,
-    `思考档位：${row.reasoningEffort || '跟随模型默认'}；DSV4P0813：${row.dsv4p0813 === true ? '开' : '关'}`,
+    `思考档位：${row.reasoningEffort || '跟随模型默认'}`,
   ]
   if (key !== 'sisyphus') lines.push(`人设来源：${personaOverrideSource(current.roles?.[key])}`)
   if (!builtin) {
@@ -579,6 +784,65 @@ export function priceSuggestions(catalog) {
   return [...new Set(Object.entries(map).flatMap(([provider, ids]) => (Array.isArray(ids) ? ids : []).map((id) => `${provider}/${id}`)))]
 }
 
+/**
+ * 心跳速算区的只读投影（纯函数，可单测）：两个算式的展示文案 + 各自的可算判据。
+ *
+ * 为什么文案在这里而不是 keepalive-calc.js：算式与量纲归 calc 模块（那边不认识
+ * 中文、也不认识「待填」这类界面态），面向用户的一句话归 settings-core（本文件
+ * 一直是纯文本投影的落点：priceDetailText / keepAliveDetailText 同款）。
+ *
+ * 降级口径（半输入是常态，绝不让框跟用户较劲）：任一输入不可算就出「为什么算不了」
+ * 的一句话，而不是 NaN/Infinity/0 这种看着像结果的假数。
+ * @param input.ttlSeconds / input.inputPrice / input.cachePrice 用户手填原值
+ * @returns { intervalMs, intervalText, fillable, lookaheadMs, lookaheadText, lookaheadNote }
+ *   intervalText 里同时给人类可读与秒（正式字段的量纲是秒，填之前要对得上）；
+ *   lookaheadNote 非 null 时是那一行下面的小字（降级原因，或 H=0 的口径解释）。
+ */
+export function keepAliveCalcText({ ttlSeconds, inputPrice, cachePrice } = {}) {
+  const intervalMs = intervalMsFromTtl(ttlSeconds)
+  const lookahead = lookaheadMs(inputPrice, cachePrice, intervalMs)
+  const input = parseCalcNumber(inputPrice)
+  const cache = parseCalcNumber(cachePrice)
+  let lookaheadNote = null
+  if (lookahead === null) {
+    if (cache === null || cache === 0) lookaheadNote = '缓存命中价留空或为 0：比价算不出来（这里不做「默认 0.3」之类的兜底猜测）。'
+    else if (input === null) lookaheadNote = '输入价留空或不是非负数：比价算不出来。'
+    else lookaheadNote = '先把上面的缓存 TTL 填成一个大于 0 的数。'
+  } else if (input !== null && cache !== null && input <= cache) {
+    // 比价 ≤ 1：命中缓存不比不命中便宜，没有省头 → H 夹到 0（剩余量只要 >0 就该停跳）。
+    lookaheadNote = '缓存命中价 ≥ 输入价：命中没有省头，前瞻窗口 H 记 0（剩余只要大于 0 就该暂停心跳）。'
+  }
+  return {
+    intervalMs,
+    intervalText: intervalMs === null
+      ? '待填 TTL'
+      : `${formatDurationHuman(intervalMs)}（${Math.round(intervalMs / 1000)} 秒）`,
+    fillable: intervalMs !== null,
+    lookaheadMs: lookahead,
+    lookaheadText: lookahead === null ? '—' : formatDurationHuman(lookahead),
+    lookaheadNote,
+  }
+}
+
+/** 心跳块的说明条：三个时长的秒/人类可读对账 + 覆盖层说明（纯投影，可单测）。 */
+export function keepAliveDetailText(current, layers, stored = keepAliveFrom(current), served = true) {
+  const user = layers?.user?.keepAlive
+  // fmt：现在与速算区共用同一枚实现（src/keepalive-calc.js）——两处各自维护一份
+  // 「秒/分/时」梯子，改一处忘一处就是同一屏里两个口径。
+  const fmt = formatDurationHuman
+  const lines = [
+    stored.enabled
+      ? `心跳开启：主编每 ${fmt(stored.orchestratorIntervalMs)} 被唤醒一拍；子代静默超 ${fmt(stored.childPingAfterMs)} 标「建议ping」，连 ${stored.escalateAfterPings} 拍无信号标红。`
+      : '心跳关闭：主编派发后静默等待，不做任何周期性唤醒。',
+    '摘要是进主编上下文的一条短文本（目标 ≤500 字节）：每个在飞子代一行（childId / 工种 / 本轮已运行 / 距上次信号 / 未回应 ping 数），另附排队数与待决求助数。',
+    `未回应 ping 数 = 连着几拍建议了 ping 而该子代仍无任何信号；主编照摘要发一次 continue(steer) 询问即清零。标红的子代要求当场裁决（继续 / 掐断 / 派 explore 验活）。`,
+  ]
+  if (!served) lines.push('宿主现值里根本没有这一段（宿主进程早于本版本插件）：这一块只读，重启宿主后才会出现这一段与它的保存面。')
+  else if (user === undefined) lines.push('本段在宿主现值里还没有用户层覆盖：保存后按默认（关闭）起算，改哪个字段才写哪个字段。')
+  else lines.push(`用户层已覆盖 ${Object.keys(user).length} 个字段；把某项改回默认值保存 = 撤销该项覆盖。`)
+  return lines.join('\n')
+}
+
 export function isValidRoleKey(key, customRows) {
   return typeof key === 'string' && ROLE_KEY_PATTERN.test(key) && !AGENT_TYPES.includes(key) && !customRows.some((row) => row.key === key)
 }
@@ -602,7 +866,6 @@ export function parseRoleText(text) {
     provider: typeof parsed.provider === 'string' ? parsed.provider : '',
     model: typeof parsed.model === 'string' ? parsed.model : '',
     reasoningEffort: typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort : '',
-    dsv4p0813: parsed.dsv4p0813 === true,
     fallbacks: Array.isArray(parsed.fallbacks) ? parsed.fallbacks : [],
     persona: typeof parsed.persona === 'string' ? parsed.persona : '',
     toolFilter: {
@@ -614,7 +877,7 @@ export function parseRoleText(text) {
 }
 
 export function blankRole() {
-  return { provider: '', model: '', reasoningEffort: '', dsv4p0813: false, fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } }
+  return { provider: '', model: '', reasoningEffort: '', fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } }
 }
 
 export function blankPriceRow() {
@@ -622,7 +885,7 @@ export function blankPriceRow() {
 }
 
 export function emptyDraft() {
-  const draft = { roles: {}, usagePrices: {}, usageCurrency: 'USD' }
-  for (const type of AGENT_TYPES) draft[type] = { provider: '', model: '', reasoningEffort: '', dsv4p0813: false, fallbacks: [] }
+  const draft = { roles: {}, usagePrices: {}, usageCurrency: 'USD', keepAlive: keepAliveFrom({}) }
+  for (const type of AGENT_TYPES) draft[type] = { provider: '', model: '', reasoningEffort: '', fallbacks: [] }
   return draft
 }

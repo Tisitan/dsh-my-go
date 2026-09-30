@@ -18,7 +18,7 @@ test('usagePrices 随宿主配置桥到达 broker 半：消费链路健康，绑
   // 新字段：到场与否不得影响 mergeRoleBindings / 缓存失效链路。
   const restore = setHostBindings({
     roles: { hermes: { model: 'm1' } },
-    usagePrices: { 'newapi/k3-256k': { input: 2, output: 8, cacheRead: 0.4 } },
+    usagePrices: { 'my-provider/model-a': { input: 2, output: 8, cacheRead: 0.4 } },
   })
   try {
     const specs = []
@@ -35,7 +35,7 @@ test('usagePrices 随宿主配置桥到达 broker 半：消费链路健康，绑
     assert.doesNotThrow(() => setHostBindings({
       roles: { hermes: { model: 'm1' } },
       usagePrices: {
-        'newapi/k3-256k': { input: 2, output: 8, cacheRead: 0.4 },
+        'my-provider/model-a': { input: 2, output: 8, cacheRead: 0.4 },
         'openrouter/deepseek/deepseek-chat': { input: 0.27, output: 1.1 },
       },
     }), '热更消费（绑定重建 + 缓存失效）在单价表变化时健康')

@@ -1,33 +1,31 @@
 /**
- * dsh-my-go — persona 装配 / prompt 加载 / DSV4P0813 bootstrap 簇（5.3 波自
- * broker.mjs 抽出）。
+ * dsh-my-go — persona 装配 / prompt 加载簇。
  *
- * 三件事一族：① prompts/*.md 的读盘与人设缓存（promptCache / loadPrompt，
- * 0.3.0-tisitan.7 N11 纪律：缓存壳随挂载建立、失败不写缓存）；② system-prompt
+ * 两件事一族：① prompts/*.md 的读盘与人设缓存（promptCache / loadPrompt，
+ * 纪律：缓存壳随挂载建立、失败不写缓存）；② system-prompt
  * 的人设/编排/名册三段组装（宿主代双分支注册，0.1.5 上游拆 prefix/suffix 的
- * 探测分界）；③ DSV4P0813 两段式 bootstrap（phase-1 只给 persona 段 +
- * 7 具 bootstrap 工具，首响/首工具调用后晋升全量）。
+ * 探测分界）。
  *
  * 拆分总原则的「簇模块零 ctx」在本簇的自洽解法（派工单第 2 条指定的口径）：
  * 碰 ctx 的动作（systemPrompt.section 注册 / ctx.effect 生命周期 / ctx.on 事件
  * 监听 / getSectionOrder 宿主代探针）全部以回调注入，由 broker.mjs 侧包一层，
- * 本簇只做纯组装与注册编排——注册时机、effect 名、段定义逐字节与原实现一致。
- * 实读确认无「与 ctx 深度缠绕到无法纯化」的函数，本簇整体迁出，零留守。
+ * 本簇只做纯组装与注册编排——注册时机、effect 名、段定义在本簇单点定义；簇内
+ * 没有与 ctx 深度缠绕到无法纯化的函数，故零 ctx、零留守。
  *
  * 依赖注入面：
  *   - effect / registerSection / getSectionOrder / on：broker 侧的 ctx 包壳
  *     （getSectionOrder 保留可选链语义：更老宿主无该方法时判假走旧名分支）；
- *   - sessionTypes：登记表活句柄（roster 段儿童门控 + assemble 的工种解析）；
+ *   - sessionTypes：登记表活句柄（roster 段儿童门控）；
  *   - getBindings：绑定表逐调用现读（宿主配置桥段变化后必须看到新值，
  *     与原闭包直读 `let bindings` 的时点一致）。
  * 纯函数层（loadAllPrompts / typeOfAgent / renderRosterBriefing）直引 ../shared/。
- * 接线位点注（5.4 声明重排）：本簇接线点前移至调度簇之前（promptCache/loadPrompt
+ * 接线位点注：本簇接线点前移至调度簇之前（promptCache/loadPrompt
  * 是调度簇 rolePersona 的注入源），promptCache 缓存壳与 sharedLoadAllPrompts 的
  * fire-and-forget 预热随工厂调用建立——位移不改注册序，预热不 await 不阻塞挂载。
  *
- * 卸载口径：本簇无定时器/登记表类状态（promptCache 与挂载实例同寿，晋升表是
- * WeakMap），无 clear* 需要导出；段注册的生命周期由注入的 effect 壳持有，
- * 卸载即随 broker 侧 effect scope 回收。
+ * 卸载口径：本簇无定时器/登记表类状态（promptCache 与挂载实例同寿），无 clear*
+ * 需要导出；段注册的生命周期由注入的 effect 壳持有，卸载即随 broker 侧 effect
+ * scope 回收。
  *
  * 形态：createBootstrapOps({ effect, registerSection, getSectionOrder, on,
  * sessionTypes, getBindings }) → { promptCache, loadPrompt }。
@@ -43,7 +41,7 @@ import { renderRosterBriefing as sharedRenderRosterBriefing } from '../shared/ro
 // Prompt files live in the installed package's prompts/ directory (two levels up
 // from preset/tools/, i.e. <pkg>/prompts). 0.1.7 retired the preset-directory
 // copy (ensurePresetInstalled), so the package layout is the only layout.
-// 读盘与缓存分离（0.3.0-tisitan.7 N11）：本函数只回答「读得到就给文本、读不到给
+// 读盘与缓存分离：本函数只回答「读得到就给文本、读不到给
 // null」，缓存策略见工厂体内的 promptCache/loadPrompt。
 // 解析点：dirname(import.meta.url) = <pkg>/preset/tools，两级上跳 = <pkg>，
 // prompts/ 与 preset/ 平级。
@@ -61,15 +59,13 @@ export function createBootstrapOps({
   effect,
   registerSection,
   getSectionOrder,
-  on,
   sessionTypes,
   getBindings,
 }) {
-  // 人设缓存随挂载建立（0.3.0-tisitan.7 N11）：原本它是模块级的，失败还写 null——
-  // 那条 null 会把本进程所有挂载的人设一起永久钉死，儿童带着「无 persona」上岗且
-  // 无从自愈。两条纪律：① 缓存壳从模块作用域移进挂载作用域（一次挂载一份，重挂载
-  // 即重新现读）；② 失败不写缓存（下次现读重试，与 effortCache / modelCache 的
-  // 「只缓存成功结果」同一纪律）。
+  // 人设缓存随挂载建立：模块级缓存跨挂载实例存活，一次读盘失败写进去的 null 会把
+  // 本进程所有挂载的人设一起永久钉死（儿童带着「无 persona」上岗且无从自愈）。
+  // 两条纪律：① 缓存壳在挂载作用域（一次挂载一份，重挂载即重新现读）；② 失败不写
+  // 缓存（下次现读重试，与 effortCache / modelCache 的「只缓存成功结果」同一纪律）。
   const promptCache = new Map()
   async function loadPrompt(agentType) {
     if (promptCache.has(agentType)) return promptCache.get(agentType)
@@ -78,8 +74,28 @@ export function createBootstrapOps({
     return content
   }
 
+  // 联网搜索纪律段的人设档键：prompts/search-discipline.md 是一份
+  // **公共纪律段**，不是工种人设——键名刻意与内置工种键空间同形（走同一个
+  // readPromptFile/缓存），但绝不进 AGENT_TYPES，否则 typeOfAgent / 名册 /
+  // 面板工种解析会凭空多出一个不存在的工种。
+  const SEARCH_DISCIPLINE_PROMPT_KEY = 'search-discipline'
+
+  // 纪律段的最小兜底串：档案读不到时给这三句，而不是空串。
+  // 空串等于让子代理在「手里有 web_search/curl、脑里无任何联网纪律」的静默
+  // 状态下上岗；兜底串至少把三条硬纪律说清。console.warn 走 once 标志位防刷屏
+  // （段体是函数态，每次 assemble 现调，档案真缺席时会调很多次）。
+  const SEARCH_DISCIPLINE_FALLBACK = '## 联网搜索纪律\n搜索前先把关键词想具体；采信搜索结果前用 curl 抓正文核实（curl -sL --max-time 20 <url> | head -c 30000）；报告中源自搜索的事实必须附 URL。\n'
+  let searchDisciplineFallbackWarned = false
+
   // Load all prompt files from the prompts/ directory at startup
   void sharedLoadAllPrompts(promptCache, loadPrompt)
+
+  // 联网搜索纪律段的人设档预热：它**不是工种**，故刻意不进
+  // AGENT_TYPES（那枚常量喂 typeOfAgent / 名册 / 面板工种解析，塞进去等于多出
+  // 一个不存在的工种）——预热单独一发，与 loadAllPrompts 同为 fire-and-forget，
+  // 同守「失败不写缓存、下次现读重试」纪律。段体函数只读缓存（text 必须同步返
+  // 回字符串），故读盘时机固定在挂载期，不在 assemble 路径上现读。
+  void loadPrompt(SEARCH_DISCIPLINE_PROMPT_KEY)
 
   // ── per-agent persona + orchestration sections ───────────────────────────
   // Sub-agents inherit the preset's scope, so they DO see these sections.
@@ -89,12 +105,15 @@ export function createBootstrapOps({
   // For sub-agents:
   //   - deployment:persona: empty (sub-agent persona is injected via context)
   //   - dsh-my-go:orchestration: empty (sub-agents don't orchestrate)
+  //   - dsh-my-go:search-discipline: loaded from prompts/search-discipline.md
+  //     (公共联网纪律，只对子代理发声)
   //   - systemPrompt.context: injects the sub-agent's role description
   //
   // For orchestrator sessions:
   //   - deployment:persona: loaded from prompts/sisyphus.md
   //   - dsh-my-go:orchestration: loaded from prompts/sisyphus.md (same file
   //     contains both persona and orchestration rules)
+  //   - dsh-my-go:search-discipline: empty (Sisyphus 的搜索口径在 sisyphus.md)
   //   - systemPrompt.context: empty
 
   // Fallback if file hasn't loaded yet
@@ -162,7 +181,7 @@ export function createBootstrapOps({
     },
   }), 'dsh-my-go-broker.orchestration()')
 
-  // 名册简报段（0.2.3-tisitan.18）：向根编排会话现渲活名册 + 失败通知协议指路
+  // 名册简报段：向根编排会话现渲活名册 + 失败通知协议指路
   // （harness 原生 failed 通知先于 broker 异步处置到达，真空期内主流程需
   // 知道备选链存在才不会自行报死）。函数态 text 每次 assemble 现调——
   // bindings 由宿主配置桥逐调用现读（段一变即新值），经 getBindings 转出，
@@ -179,88 +198,31 @@ export function createBootstrapOps({
     },
   }), 'dsh-my-go-broker.roster()')
 
-  // ── DSV4P0813 bootstrap (liangshen pattern) ──────────────────────────────
-  // When dsv4p0813 is enabled for an agent type, the first request uses
-  // minimal prompt + minimal tools. After the model responds (anchor
-  // detected), expand to full tools and prompt.
-  //
-  // Phase 1: only persona section + bootstrap tools (bash/pwsh/read/write/edit)
-  // Phase 2: full sections + full tools + orchestration rules
-  //
-  // Detection: session/event listener reacts to the tool/call and turn/end
-  // events themselves (append-then-notify makes any array scan of the
-  // *current* step blind — see the listener below).
-  // Promotion: after first tool call or first response (per policy).
-
-  const PROMOTED_BY_SESSION = new WeakMap()
-  // 并集非替换：新宿主上我方注册的是 prefix/suffix 两个新名，但旧名仍可能来自
-  // 更老形态的装配输入（以及旧宿主兼容分支注册的 'deployment:persona'）；
-  // phase-1 白名单漏掉任何一代的真名段，开了开关的工种第一轮就是零人设。
-  const PERSONA_SECTION_NAMES = new Set(['deployment:persona', 'persona', 'deployment:persona-prefix', 'deployment:persona-suffix'])
-
-  function promotionStateFor(session) {
-    let state = PROMOTED_BY_SESSION.get(session)
-    if (state === undefined) {
-      state = { promoted: false, toolCalled: false, responded: false }
-      PROMOTED_BY_SESSION.set(session, state)
-    }
-    return state
-  }
-
-  // Listen to the session event firehose to detect promotion triggers.
-  // 判据是**当前事件自身的类型**，不是事件数组（0.3.0-tisitan.7 N7）：宿主 append
-  // 先 push 再派发（@deepseek-ai/dsh-session/lib/index.js:1433-1435），处理器
-  // 收到 step/end 时末位恒为该 step/end 自己——旧实现「从末位倒扫到上一个
-  // step/end 找 tool/call」当场 break，toolCalled 永假（tool/call 在 agent-loop
-  // 里先于 step/end 落账：dsh-agent-loop/lib/index.js:295 vs :563）。phase-1 是
-  // 「只给 persona + 7 具 bootstrap 工具、零运行期上下文」的重压形态，这支
-  // 死掉就意味着开了开关的工种整个第一轮都在戴着镣铐跑。
-  // 直判同时消掉一次全量事件快照重建（sessionEvents → alpha.4 的
-  // snapshotEvents() 每次 append 后都要重算缓存）。
-  on('session/event', (_session, event) => {
-    if (event.type !== 'tool/call' && event.type !== 'turn/end') return
-    const state = promotionStateFor(_session)
-    if (state.promoted) return
-    if (event.type === 'tool/call') {
-      state.toolCalled = true
-    } else {
-      state.responded = true
-    }
-    // Promote after first tool call or first response
-    if (state.toolCalled || state.responded) {
-      state.promoted = true
-    }
-  })
-
-  // Filter tools/sections during phase 1 via system-prompt/assemble
-  on('system-prompt/assemble', (_assembly, _context, next) => {
-    return next().then((assembled) => {
-      const agent = _context?.agent
-      if (agent === undefined) return assembled
-      // Check if dsv4p0813 is enabled for this agent type
-      // (0.2.3-tisitan.15: sessionTypes-first lookup, persisted label as fallback)
-      const agentType = typeOfAgent(sessionTypes, agent)
-      if (!agentType) return assembled
-      const binding = getBindings()[agentType]
-      if (!binding?.dsv4p0813) return assembled
-
-      const state = promotionStateFor(agent.session)
-      if (state.promoted) return assembled
-
-      // Phase 1: filter to persona section only + bootstrap tools
-      const BOOTSTRAP_TOOLS = new Set(['bash', 'pwsh', 'read', 'write', 'edit', 'glob', 'grep'])
-      return {
-        ...assembled,
-        sections: Array.isArray(assembled.sections)
-          ? assembled.sections.filter(s => PERSONA_SECTION_NAMES.has(s?.name))
-          : assembled.sections,
-        tools: Array.isArray(assembled.tools)
-          ? assembled.tools.filter(t => BOOTSTRAP_TOOLS.has(t?.name))
-          : assembled.tools,
-        contexts: [],  // no runtime context during phase 1
+  // 联网搜索纪律段：全体子代理可见的公共人设段，段体取自
+  // prompts/search-discipline.md（挂载期预热进 promptCache，段体只读缓存——
+  // 与 persona/orchestration 段同一读盘纪律：不现读、不炸；读不到时不给空串，
+  // 给 SEARCH_DISCIPLINE_FALLBACK 最小兜底串 + 一次性告警，见常量处注释）。
+  // 儿童门控与 roster 段**反向**：本段只对子代理发声，根编排会话（Sisyphus）
+  // 返回空串——Sisyphus 的搜索口径在 sisyphus.md 里另有交代，此处不重复注入。
+  // 门控只认 parentSession 直达（与 persona/orchestration 段同款），不加
+  // typeOfAgent label 兜底：本段是子代公共段，冷恢复 label 兜底那套属 roster
+  // 的「别把名册泄给儿童」场景，反向套用会把 Sisyphus 的冷恢复会话也判成儿童。
+  // 与 sisyphus.md 的 `## 编排规则` 切分零交集：那段切分只读 promptCache 的
+  // 'sisyphus' 键，本段读自己的键，互不可见。
+  effect(() => registerSection({
+    name: 'dsh-my-go:search-discipline',
+    order: 30,
+    text: (context) => {
+      if (!isSubAgentContext(context)) return ''
+      const cached = promptCache.get(SEARCH_DISCIPLINE_PROMPT_KEY)
+      if (cached) return cached
+      if (!searchDisciplineFallbackWarned) {
+        searchDisciplineFallbackWarned = true
+        console.warn('[dsh-my-go] search-discipline prompt missing, using fallback')
       }
-    })
-  })
+      return SEARCH_DISCIPLINE_FALLBACK
+    },
+  }), 'dsh-my-go-broker.searchDiscipline()')
 
   return { promptCache, loadPrompt }
 }

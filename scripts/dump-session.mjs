@@ -1,4 +1,4 @@
-// dsh-my-go — 会话档案取证 CLI（0.2.3-tisitan.16c）。
+// dsh-my-go — 会话档案取证 CLI。
 //
 // 用法：
 //   node scripts/dump-session.mjs <childId>          在 <DSH_HOME>/sessions 下
@@ -36,9 +36,9 @@ function oneLine(text, limit) {
 // 101-112 产出 { role:'tool', source:{kind:'tool',callId}, toolCallId, content,
 // isError }），旧的 content[0].type==='tool-result' wrapper 被 v4 迁移链明令
 // 拒收（dsh-session-format-v3-to-v4「must not contain a released tool-result
-// wrapper」）；wrapper 形状只存在于 v3 旧档（本机仍有 395 份在读）。故**顶层
+// wrapper」）；wrapper 形状只存在于 v3 旧档（该兼容分支仍在役）。故**顶层
 // 优先、wrapper 兜底**——只读 wrapper 会让 v4 档案里所有被拒调用显示 false
-// （真机全量逐事件扫描：v4 档案的 tool/result 一律顶层形状、wrapper 零命中）。
+// （全量逐事件扫描：v4 档案的 tool/result 一律顶层形状、wrapper 零命中）。
 export function summarizeEvent(ev) {
   const data = ev?.data ?? {}
   switch (ev?.type) {
@@ -72,7 +72,8 @@ export function locateArchive(childId, root = sessionsHome()) {
 }
 
 // dumpArchive：读档案 → 帧扫描 → 逐帧解压 → 逐行摘要。返回
-// { lines, frames, events }；档案不可读/帧扫描失败/无完整帧/全部帧解压失败
+// { lines, frames, events, badFrames }（badFrames = 解压失败的帧数，逐帧 warn 之外
+// 供汇总行做运维信号）；档案不可读/帧扫描失败/无完整帧/全部帧解压失败
 // 抛 Error（CLI 层转非零退出码）。单帧解压失败/单行 JSON 损坏只 warn 跳过。
 export function dumpArchive(logFile, warn = console.warn) {
   let buffer
@@ -121,7 +122,7 @@ export function dumpArchive(logFile, warn = console.warn) {
   if (tailEnd < buffer.length) {
     warn(`dump-session: 末帧截断，跳过不完整尾部 ${buffer.length - tailEnd} 字节`)
   }
-  return { lines, frames: ranges.length, events: lines.length }
+  return { lines, frames: ranges.length, events: lines.length, badFrames }
 }
 
 function main(argv) {
@@ -150,9 +151,9 @@ function main(argv) {
     return
   }
   try {
-    const { lines, frames, events } = dumpArchive(logFile)
+    const { lines, frames, events, badFrames } = dumpArchive(logFile)
     console.log(`archive: ${logFile}${projectDir ? `（项目目录 ${projectDir}）` : ''}`)
-    console.log(`frames: ${frames} events: ${events}`)
+    console.log(`frames: ${frames} events: ${events}${badFrames > 0 ? ` badFrames: ${badFrames}` : ''}`)
     for (const line of lines) console.log(line)
   } catch (error) {
     console.error(String(error?.message ?? error))

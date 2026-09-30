@@ -1,10 +1,10 @@
 /**
- * settings-core 纯投影/校验层直测（0.5.0-tisitan.3 批次 6A）。
+ * settings-core 纯投影/校验层直测。
  *
  * 0.5.0 设置页重写后，配置卡的行级编辑状态迁移内联进了 settings-core.js；
- * 这批函数此前是模块私有、零直接单测——真正在生产跑的 parseRoleText（宽松
+ * 这批函数是模块私有、零直接单测——真正在生产跑的 parseRoleText（宽松
  * 语义：空 key 放行、字段收窄、列表元素不强洗）与已退役的 parseRoleCardJson
- * （严格轨）是分叉的两轨。批次 3 删除孤儿轨后，这里给活轨补上纯函数直测。
+ * （严格轨）是分叉的两轨。孤儿轨删除后，这里给活轨补上纯函数直测。
  * 风格同 settings-ops.test.mjs：不起浏览器、不 mock 宿主，deepEqual 具体
  * 形状，脏输入分支逐条钉住。
  */
@@ -25,15 +25,19 @@ import {
   blankRole,
   blankPriceRow,
   emptyDraft,
+  keepAliveDetailText,
+  keepAliveCalcText,
 } from '../src/settings-core.js'
 import { effortLabel } from '../src/roles-editor.js'
+import { keepAliveFrom } from '../src/settings-ops.js'
+import { KEEP_ALIVE_DEFAULTS } from '../preset/shared/constants.mjs'
 import { AGENT_TYPES } from '../src/client-constants.js'
 
 // ── 种子形状：新建行 / 新草稿 ───────────────────────────────────────────────
 
 test('emptyDraft/blankRole/blankPriceRow：种子形状逐字钉住', () => {
   assert.deepEqual(blankRole(), {
-    provider: '', model: '', reasoningEffort: '', dsv4p0813: false,
+    provider: '', model: '', reasoningEffort: '',
     fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] },
   }, '新建自定义角色的整行种子（含嵌套 toolFilter）')
   assert.deepEqual(blankPriceRow(), { input: '', output: '', cacheRead: '', cacheWrite: '' }, '新建计价行的四桶空串种子')
@@ -42,21 +46,21 @@ test('emptyDraft/blankRole/blankPriceRow：种子形状逐字钉住', () => {
   assert.deepEqual(draft.roles, {})
   assert.deepEqual(draft.usagePrices, {})
   assert.deepEqual(Object.keys(draft).filter((k) => AGENT_TYPES.includes(k)), AGENT_TYPES, '九个内置工种顶级空行齐备、顺序同名单')
-  assert.deepEqual(draft.hermes, { provider: '', model: '', reasoningEffort: '', dsv4p0813: false, fallbacks: [] })
+  assert.deepEqual(draft.hermes, { provider: '', model: '', reasoningEffort: '', fallbacks: [] })
 })
 
 // ── parseRoleText：生产在跑的宽松导入轨 ────────────────────────────────────
 
 test('parseRoleText：合法卡白名单收窄入册（key 在顶层、行本体不带 key）', () => {
   const parsed = parseRoleText(JSON.stringify({
-    key: 'coder-x', provider: 'p9', model: 'm9', reasoningEffort: 'high', dsv4p0813: true,
+    key: 'coder-x', provider: 'p9', model: 'm9', reasoningEffort: 'high',
     fallbacks: [{ provider: 'p8', model: 'm8' }],
     persona: 'X 人设', toolFilter: { allow: ['read', 'read', '', 42], deny: ['write'] }, hackerField: 'strip-me',
   }))
   assert.equal(parsed.ok, true)
   assert.equal(parsed.key, 'coder-x', 'key 提到顶层供 importRole 二段校验')
   assert.deepEqual(parsed.row, {
-    provider: 'p9', model: 'm9', reasoningEffort: 'high', dsv4p0813: true,
+    provider: 'p9', model: 'm9', reasoningEffort: 'high',
     fallbacks: [{ provider: 'p8', model: 'm8' }], persona: 'X 人设',
     toolFilter: { allow: ['read', 'read', '42'], deny: ['write'] },
   }, '宽松语义实锤：多余字段剥离，但 allow 只 map(String)+剔空串——重复条目保留、非串强转，不去重')
@@ -80,17 +84,17 @@ test('parseRoleText：宽松边界——空 key 放行、标量收窄、fallback
   assert.equal(emptyKey.ok, true)
   assert.equal(emptyKey.key, '')
   assert.deepEqual(emptyKey.row, {
-    provider: 'p', model: '', reasoningEffort: '', dsv4p0813: false,
+    provider: 'p', model: '', reasoningEffort: '',
     fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] },
   })
   const coerced = parseRoleText(JSON.stringify({
-    key: 'k', provider: 42, model: null, reasoningEffort: {}, dsv4p0813: 'yes',
+    key: 'k', provider: 42, model: null, reasoningEffort: {},
     fallbacks: 'nope', persona: 7, toolFilter: null,
   }))
   assert.deepEqual(coerced.row, {
-    provider: '', model: '', reasoningEffort: '', dsv4p0813: false,
+    provider: '', model: '', reasoningEffort: '',
     fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] },
-  }, '非字符串标量归空、布尔严格 === true、非数组列表与 toolFilter 归空')
+  }, '非字符串标量归空、非数组列表与 toolFilter 归空')
   const keptChain = parseRoleText(JSON.stringify({ key: 'k', fallbacks: [{ provider: 'p8' }, 'junk', null] }))
   assert.deepEqual(keptChain.row.fallbacks, [{ provider: 'p8' }, 'junk', null], 'fallbacks 元素宽松透传（脏条目写回时由 decomposeChain 归一，导入时不洗）')
   const stringified = parseRoleText(JSON.stringify({ key: 'k', toolFilter: { allow: [null, 'ok'], deny: [7, ''] } }))
@@ -101,7 +105,7 @@ test('parseRoleText：宽松边界——空 key 放行、标量收窄、fallback
 
 test('isValidPriceKey：shared 新语义（model 段可含 /）、重名与脏输入拒绝', () => {
   assert.equal(isValidPriceKey('deepseek/deepseek-chat', { usagePrices: {} }), true)
-  assert.equal(isValidPriceKey('openrouter/deepseek/deepseek-chat', { usagePrices: {} }), true, 'OpenRouter 式多级 model 段合法（批次 2 起的 shared 语义）')
+  assert.equal(isValidPriceKey('openrouter/deepseek/deepseek-chat', { usagePrices: {} }), true, 'OpenRouter 式多级 model 段合法（shared 语义）')
   assert.equal(isValidPriceKey('a/b', { usagePrices: { 'a/b': {} } }), false, '重名拒绝')
   assert.equal(isValidPriceKey('a/b', {}), true, '无单价表 = 无重名（新建首行不炸）')
   for (const bad of ['noslash', '/lead', 'trail/', '', '   ', null, undefined, 42]) {
@@ -145,8 +149,8 @@ test('roleEntry：badges 三源组合，meta 委托 chainText', () => {
     { key: 'hermes', label: '快速执行 Hermes', meta: 'p/m', badges: [], builtin: true },
   )
   assert.deepEqual(
-    roleEntry('custom', 'custom', { provider: 'p', model: 'm', dsv4p0813: true }, { persona: '覆盖' }, false).badges,
-    [{ text: '覆盖', tone: 'warn' }, { text: 'DSV', tone: 'on' }, { text: '自定义' }],
+    roleEntry('custom', 'custom', { provider: 'p', model: 'm' }, { persona: '覆盖' }, false).badges,
+    [{ text: '覆盖', tone: 'warn' }, { text: '自定义' }],
   )
   assert.deepEqual(roleEntry('k', 'K', {}, {}, false).badges, [{ text: '自定义' }])
   assert.deepEqual(roleEntry('k', 'K', {}, {}, true).badges, [], '内置无 persona 覆盖时零徽章')
@@ -156,7 +160,7 @@ test('roleDetailText：内置/自定义/sisyphus 特例/未选中四种面', () 
   assert.equal(roleDetailText(null, {}), '左列选一个角色来编辑。')
   assert.equal(roleDetailText('', {}), '左列选一个角色来编辑。')
   const current = {
-    hermes: { provider: 'p1', model: 'm1', fallbacks: [{ provider: 'p2', model: 'm2' }], reasoningEffort: 'high', dsv4p0813: true },
+    hermes: { provider: 'p1', model: 'm1', fallbacks: [{ provider: 'p2', model: 'm2' }], reasoningEffort: 'high' },
     roles: {
       hermes: { persona: '覆盖人设' },
       'custom-x': { provider: 'p9', model: 'm9', toolFilter: { allow: ['read'], deny: ['write'] }, persona: 'X' },
@@ -165,7 +169,7 @@ test('roleDetailText：内置/自定义/sisyphus 特例/未选中四种面', () 
   const hermesDetail = roleDetailText('hermes', current)
   assert.match(hermesDetail, /^快速执行 Hermes（hermes）· 内置工种$/m)
   assert.match(hermesDetail, /^模型优先级：#1 p1\/m1  #2 p2\/m2$/m)
-  assert.match(hermesDetail, /^思考档位：high；DSV4P0813：开$/m)
+  assert.match(hermesDetail, /^思考档位：high$/m)
   assert.match(hermesDetail, /^人设来源：已覆盖（保存后替换文件默认）$/m, '内置工种的人设覆盖来源读 roles 行')
   assert.equal(/工具面/.test(hermesDetail), false, '内置行无工具面行')
   const customDetail = roleDetailText('custom-x', current)
@@ -216,4 +220,76 @@ test('effortLabel：空档位/三档映射/枚举外透传', () => {
   assert.equal(effortLabel('high'), '高（high）')
   assert.equal(effortLabel('max'), '最高（max）')
   assert.equal(effortLabel('medium'), 'medium', '枚举外原样透传（不炸、不吞）')
+})
+
+test('keepAliveDetailText：宿主没声明这一段时说明条改口径，不再许诺「保存后按默认起算」', () => {
+  const draft = { keepAlive: { ...KEEP_ALIVE_DEFAULTS } }
+  const stored = keepAliveFrom(draft)
+  const served = keepAliveDetailText(draft, { user: undefined }, stored, true)
+  assert.match(served, /本段在宿主现值里还没有用户层覆盖/)
+  const unserved = keepAliveDetailText(draft, { user: undefined }, stored, false)
+  assert.match(unserved, /宿主现值里根本没有这一段/)
+  assert.match(unserved, /重启宿主/)
+  assert.doesNotMatch(unserved, /保存后按默认/, '块已只读，别再许诺保存')
+  // 第四参缺省 = 在席（老调用点行为不变）
+  assert.equal(keepAliveDetailText(draft, { user: undefined }, stored), served)
+  const covered = keepAliveDetailText(draft, { user: { keepAlive: { enabled: true } } }, stored, false)
+  assert.doesNotMatch(covered, /用户层已覆盖/, '未声明优先于覆盖层说明')
+})
+
+// ── 心跳速算区的只读投影（ 步2）─────────────────────────────
+
+test('keepAliveCalcText：两个算式都出人类可读文案，填数判据只看拍距那一半', () => {
+  const ready = keepAliveCalcText({ ttlSeconds: '300', inputPrice: '3.00', cachePrice: '0.30' })
+  assert.equal(ready.intervalMs, 250000)
+  assert.equal(ready.intervalText, '4.2 分钟（250 秒）', '正式字段的量纲是秒：人类可读与秒一起给，填之前对得上')
+  assert.equal(ready.fillable, true)
+  assert.equal(ready.lookaheadMs, 2250000)
+  assert.equal(ready.lookaheadText, '37.5 分钟')
+  assert.equal(ready.lookaheadNote, null, '算得出来就不出小字')
+  // 1 小时档：同一个投影换一个 TTL（一条规则覆盖两档）
+  const hour = keepAliveCalcText({ ttlSeconds: '3600', inputPrice: '3', cachePrice: '0.3' })
+  assert.equal(hour.intervalMs, 3000000)
+  assert.equal(hour.intervalText, '50 分钟（3000 秒）')
+  assert.equal(hour.lookaheadMs, 27000000)
+  assert.equal(hour.lookaheadText, '7.5 小时')
+  // 无参/空对象不炸（首屏就是「默认 TTL + 两个空价格」）
+  const empty = keepAliveCalcText()
+  assert.equal(empty.intervalMs, null)
+  assert.equal(empty.lookaheadMs, null)
+})
+
+test('keepAliveCalcText：降级各有各的「为什么」，H 缺一门不影响拍距那一半', () => {
+  // 缓存命中价留空 / 为 0 / 非法：除零与缺项同一档降级，文案点名原因
+  //（不做「默认 0.3」之类的兜底猜测——猜出来的 H 会被当成事实）
+  for (const cache of ['', '0', 'abc', '-1', null, undefined]) {
+    const text = keepAliveCalcText({ ttlSeconds: '300', inputPrice: '3', cachePrice: cache })
+    assert.equal(text.lookaheadMs, null, `缓存价不可算 → null：${String(cache)}`)
+    assert.equal(text.lookaheadText, '—', '降级归降级，这一行照在（不是把元素撤掉）')
+    assert.match(text.lookaheadNote, /缓存命中价/)
+    assert.equal(text.intervalMs, 250000, 'H 缺一门不影响拍距')
+    assert.equal(text.fillable, true, '拍距可填就照常可填')
+  }
+  // 输入价留空 / 非法
+  for (const input of ['', 'abc', '-3']) {
+    const text = keepAliveCalcText({ ttlSeconds: '300', inputPrice: input, cachePrice: '0.3' })
+    assert.equal(text.lookaheadMs, null)
+    assert.match(text.lookaheadNote, /输入价/)
+  }
+  // TTL 非法：拍距与 H 同时降级（H 依赖拍距），填数口关掉
+  for (const ttl of ['', '0', 'abc', '-300']) {
+    const text = keepAliveCalcText({ ttlSeconds: ttl, inputPrice: '3', cachePrice: '0.3' })
+    assert.equal(text.intervalMs, null, `TTL 非法 → null：${String(ttl)}`)
+    assert.equal(text.intervalText, '待填 TTL')
+    assert.equal(text.fillable, false)
+    assert.equal(text.lookaheadMs, null)
+    assert.match(text.lookaheadNote, /TTL/)
+  }
+  // 比价 ≤ 1：H=0，但必须给出解释（光看「0 秒」像 bug）
+  const noGain = keepAliveCalcText({ ttlSeconds: '300', inputPrice: '0.2', cachePrice: '0.3' })
+  assert.equal(noGain.lookaheadMs, 0)
+  assert.equal(noGain.lookaheadText, '0 秒')
+  assert.match(noGain.lookaheadNote, /没有省头/)
+  const even = keepAliveCalcText({ ttlSeconds: '300', inputPrice: '0.30', cachePrice: '0.30' })
+  assert.equal(even.lookaheadMs, 0, '比价恰好 1 也是 0（不出现负数）')
 })

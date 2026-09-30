@@ -12,12 +12,12 @@ import { zstdDecompressSync } from 'node:zlib'
 import { normalizeTurnFailure } from './failure.mjs'
 import { sessionsHome } from './paths.mjs'
 
-// ── 失败附因：持久化档案读取（0.2.3-tisitan.9）────────────────────────────────
-// 根因：continuable Activation 的销毁顺序（dsh-subagent/lib/types/continuation.js
-// ~L1016-1050）是先 dispose 子 session（连带从 sessions live store 摘除）、删
-// activation，最后 observer.settle() 才发射 subagent/end——end 处理器读 live
-// store 必然落空，附因永远丢失（0.2.3-tisitan.8 实锤：failed 记录只有 '(error)'）。
-// 主路径改读持久化档案，live 读法保留为快路径。
+// ── 失败附因：持久化档案读取 ────────────────────────────────────────────────
+// 为什么必须读档案：continuable Activation 的销毁顺序（dsh-subagent/lib/types/
+// continuation.js ~L1016-1050）是先 dispose 子 session（连带从 sessions live
+// store 摘除）、删 activation，最后 observer.settle() 才发射 subagent/end——
+// end 处理器此刻读 live store 必然落空，failed 记录只剩 '(error)' 占位。
+// 故主路径读持久化档案，live 读法保留为快路径。
 // 档案目录规则与 dsh-session-persistence-jsonl 完全一致（行号以 npm 检出
 // @deepseek-ai/dsh 为准）：
 //   root     = <DSH_HOME>/sessions（home 解析：dsh-home-paths/lib/index.js:73，
@@ -34,9 +34,9 @@ const ZSTD_FRAME_MAGIC = 0xfd2fb528
 // dsh-session-persistence-jsonl/lib/index.js:745-763 `generationLogFilename` 拼压缩
 // 后缀（zstd → `.zstd`）。宿主现行格式代=4（0.1.7-alpha.2 起，dsh-session-format
 // 链 v0→v4），故生产档案实为 `session.v4.jsonl.zstd`；`session.jsonl.zstd` 是
-// v0 无版本后缀旧名。此前本模块写死 v0 名 ⇒ 按 childId 定位生产档案永远不命中
-// （0.5.0-tisitan.4 修复：改「候选枚举」，现行名优先、旧名兜底，且天然兼容
-// 未来代升级）。规范名判据与宿主 parseGenerationLogFilename 一致：小写、无
+// v0 无版本后缀旧名。按 childId 定位档案只能走「候选枚举」（现行名优先、旧名
+// 兜底）：写死任何一代的名字都会在宿主代升级后整体失配。规范名判据与宿主
+// parseGenerationLogFilename 一致：小写、无
 // 前导零、无 v0 标记、非临时文件。
 export const SESSION_ARCHIVE_NAME_RE = /^session(?:\.v([1-9][0-9]*))?\.jsonl\.zstd$/
 // 现行代档案名：仅用于「未命中」时报错文案里的期望路径（真实定位走上面的枚举）。
@@ -135,7 +135,7 @@ export function scanZstdFrameRanges(buffer) {
   return ranges
 }
 
-// 兜底搜索（0.2.3-tisitan.16b）：枚举 root 下全部项目目录，找
+// 兜底搜索：枚举 root 下全部项目目录，找
 // <项目目录>/<encodeSegment(childId)> 下任一规范档案名存在的候选；多命中
 // 取 mtime 最新。单个项目目录的 readdir/stat 失败（权限/竞态删除）跳过，
 // 不挡全局搜索。返回 { projectDir, logFile, version, mtimeMs } 或 undefined。
@@ -196,9 +196,9 @@ export function selectArchiveLog(sessionDir) {
 // 结构化契约）。找不到档案/解压失败/无 error 事件均静默退回 undefined 并
 // console.warn 留痕（可观测性，不静默吞）。options.root / options.cwd 供测试
 // 注入；缺省按 DSH_HOME 惯例与 process.cwd() 解析。
-// 0.2.3-tisitan.16b：dsh web 宿主进程 cwd 与用户工作区不一致时 projectKey(cwd) 解析
-// 错项目目录，档案永远找不到（生产上「未读到附因」从未成功过）。默认路径不可
-// 读时兜底按 childId 全局搜索 root 下各项目目录（多命中取 mtime 最新）。
+// dsh web 宿主进程的 cwd 与用户工作区不一致，projectKey(cwd) 会解析到错的项目
+// 目录、档案不可命中——故默认路径不可读时兜底按 childId 全局搜索 root 下各项目
+// 目录（多命中取 mtime 最新）。
 export function readArchivedTurnFailure(childId, options = {}) {
   const root = options.root ?? sessionsHome()
   const cwd = options.cwd ?? process.cwd()

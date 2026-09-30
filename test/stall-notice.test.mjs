@@ -1,4 +1,4 @@
-// 挂起停摆可观测性（本批）：need_help 挂起的子代占着槽位、队列不推进（E8
+// 挂起停摆可观测性：need_help 挂起的子代占着槽位、队列不推进（E8
 // suspended-help-hold 的 advance='no'），流水线就此停摆而主编毫无回声。两个触发点
 // 各补一行非唤醒通知（T1 挂起瞬间 / T2 停摆期 go_work 入队），共享「每次 episode
 // 只报一次」守卫。断言面在 broker 集成层（要的是 end dispatcher 与入队路径真跑通），
@@ -45,7 +45,7 @@ test('T1 挂起瞬间 + 队列有货 → 停摆通知恰一次且字段齐全；
   const longAsk = '请代跑 pwsh ' + 'A'.repeat(300)
   const { helpRequestId } = await tools.get('need_help').execute({ intent: 'execute', content: longAsk }, helpExecOf('sess-1'))
   assert.equal(currentOf('parent-1')?.status, 'waiting')
-  assert.equal(stallNoticesOf(injected).length, 0, '挂起本身不报：本批只报「有积压的停摆」')
+  assert.equal(stallNoticesOf(injected).length, 0, '挂起本身不报：只报「有积压的停摆」')
   // E8：挂起那一轮的 completed end 落到静默出口 → T1 在此补报
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '中场哨' }] })
   const notices = stallNoticesOf(injected)

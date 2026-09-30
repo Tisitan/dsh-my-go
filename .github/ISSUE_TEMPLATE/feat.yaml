@@ -1,10 +1,9 @@
-name: 我有一计（新功能建议）
+name: 新功能建议
 description: 点击此项使软件功能更丰富
 title: '[新功能?]: '
 labels: [ "enhancement" ]
 assignees: []
 projects: []
-# type: feature   # 组织级功能：个人仓库校验不通过，如需启用请取消注释
 
 body:
   - type: markdown
@@ -80,7 +79,7 @@ body:
         - Multimodal Looker（看图）
         - Hephaestus（写代码）
         - Prometheus（规划）
-        - Oracle（调试/终验）
+        - Oracle（最后手段：架构调试）
         - client UI（面板/设置页）
         - 我不确定
     validations:

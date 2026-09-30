@@ -30,8 +30,6 @@ export interface AgentBinding {
   model?: string
   /** Desired reasoning effort; applied only when the exact model supports it. */
   reasoningEffort?: ReasoningEffortId
-  /** Whether the DSV4P0813 two-phase bootstrap applies to this agent type. */
-  dsv4p0813: boolean
   /** Custom-role persona, forwarded through the spawn channel (SubagentStartRequest). */
   persona?: string
   /** Scoped tool surface for the child, forwarded through the spawn channel. */
@@ -103,9 +101,9 @@ export function agentTypeOf(
 
 /** Resolve the binding for one agent type (defaults: no override). */
 export function bindingFor(table: BindingTable, type: string | undefined): AgentBinding {
-  if (type === undefined) return { dsv4p0813: false }
+  if (type === undefined) return {}
   const key = type as keyof BindingTable
-  return table[key] ?? { dsv4p0813: false }
+  return table[key] ?? {}
 }
 
 /**
@@ -113,7 +111,7 @@ export function bindingFor(table: BindingTable, type: string | undefined): Agent
  *
  * ⚠️ Archived snapshot: the concrete provider/model values below are the
  * original author's own deployment routes, kept here as historical reference
- * only. The runtime defaults were generalized in tisitan.7 — the live
+ * only. The runtime defaults were generalized — the live
  * implementations (preset/tools/broker.mjs, lib/index.js) now ship EMPTY
  * defaults (every agent type inherits the environment's default route) and
  * leave per-type binding entirely to user configuration.
@@ -124,12 +122,12 @@ export function bindingFor(table: BindingTable, type: string | undefined): Agent
  * heavy agents request high/max, applied only when the model supports it.
  */
 export const DEFAULT_BINDINGS: BindingTable = {
-  sisyphus: { dsv4p0813: false },
-  hermes: { model: 'mimo-v2.5', dsv4p0813: false },
-  explore: { model: 'mimo-v2.5', dsv4p0813: false },
-  librarian: { model: 'mimo-v2.5', dsv4p0813: false },
-  looker: { model: 'mimo-v2.5', dsv4p0813: false },
-  hephaestus: { provider: 'octopus', model: 'deepseek-v4-flash', reasoningEffort: 'high' as ReasoningEffortId, dsv4p0813: false },
-  prometheus: { provider: 'octopus', model: 'deepseek-v4-pro', reasoningEffort: 'max' as ReasoningEffortId, dsv4p0813: false },
-  oracle: { provider: 'octopus', model: 'deepseek-v4-pro', reasoningEffort: 'max' as ReasoningEffortId, dsv4p0813: false },
+  sisyphus: {},
+  hermes: { model: 'mimo-v2.5' },
+  explore: { model: 'mimo-v2.5' },
+  librarian: { model: 'mimo-v2.5' },
+  looker: { model: 'mimo-v2.5' },
+  hephaestus: { provider: 'my-provider', model: 'deepseek-v4-flash', reasoningEffort: 'high' as ReasoningEffortId },
+  prometheus: { provider: 'my-provider', model: 'deepseek-v4-pro', reasoningEffort: 'max' as ReasoningEffortId },
+  oracle: { provider: 'my-provider', model: 'deepseek-v4-pro', reasoningEffort: 'max' as ReasoningEffortId },
 }

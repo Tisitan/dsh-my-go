@@ -24,6 +24,7 @@ import {
   computeTotalCost,
   hasAnyPrice,
   modelDisplayKey,
+  childRowTitle,
   formatBucketCell,
   formatCost,
   currencySymbol,
@@ -143,6 +144,7 @@ export function UsageSection({ usage, open, onToggle }) {
   const gridRow = (columns, key, opts = {}, ...children) => React.createElement('div', {
     key,
     onClick: opts.onClick,
+    title: opts.title,
     style: {
       display: 'grid',
       gridTemplateColumns: columns,
@@ -199,19 +201,12 @@ export function UsageSection({ usage, open, onToggle }) {
         const costShown = cost ? { ...cost, partial: cost.partial || rowPartial } : null
         const segments = Array.isArray(child.segments) ? child.segments : []
         const isOpen = expanded[child.childId] === true
-        const title = [
-          child.isSelf ? '主编排（本会话）：会话自身的模型用量，不含子代' : typeLabel(child.agentType),
-          child.childId,
-          running ? '运行中（数字随轮询实时增长）' : null,
-          child.frozen ? '终态已冻结（不再扫描）' : null,
-          rowPartial ? '含未上报分桶，数字为下界' : null,
-          `${child.messageCount ?? 0} 条消息`,
-        ].filter(Boolean).join('\n')
         return React.createElement('div', { key: child.childId, style: { marginBottom: 2 } },
           // 行1：状态 + 工种 + 短 id + 锁标 + 成本（有点击时展开/收起分段明细）
           gridRow(costColumn ? 'minmax(0,1fr) 54px' : 'minmax(0,1fr)', `c1-${child.childId}`, {
             onClick: segments.length > 0 ? () => toggleChild(child.childId) : undefined,
             accent: running ? ACCENT_RUNNING : undefined,
+            title: childRowTitle(child, running, rowPartial),
           },
             React.createElement('span', { style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' } },
               React.createElement('span', { style: { flexShrink: 0, width: 12, textAlign: 'center', color: childGlyphColor(child.status) } },
@@ -260,7 +255,6 @@ export function UsageSection({ usage, open, onToggle }) {
   }
 
   const renderTotals = () => {
-    const children = Array.isArray(report.children) ? report.children : []
     const byModel = Array.isArray(report.byModel) ? report.byModel : []
     const totalCost = computeTotalCost(report)
     const totalCostShown = totalCost ? { ...totalCost, partial: totalCost.partial || partial } : null

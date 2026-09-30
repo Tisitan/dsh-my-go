@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — shared client constants (tisitan.15 split).
+ * dsh-my-go — shared client constants.
  *
  * Color palettes, label maps and glyph helpers used by both the orchestration
  * tree panel (panel-tree.js) and the settings editors (settings-core.js and

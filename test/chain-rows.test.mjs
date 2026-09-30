@@ -130,12 +130,12 @@ test('updateChainEntry：provider 变更重置该行 model（防悬空模型名�
     [{ provider: 'p1', model: 'm1' }, { provider: 'p2', model: 'm9' }],
   )
   // 非法 field / 越界 / 非字符串值：防御
-  assert.deepEqual(updateChainEntry(rows, 0, 'dsv4p0813', true), rows)
+  assert.deepEqual(updateChainEntry(rows, 0, 'persona', true), rows)
   assert.deepEqual(updateChainEntry(rows, 7, 'model', 'x'), rows)
   assert.deepEqual(updateChainEntry(rows, 0, 'model', 42), [{ provider: 'p1', model: '' }, rows[1]])
 })
 
-test('stripEmptyFallbackRows：保存边界剔除全空备选行（0.2.3-tisitan.20 D1）', () => {
+test('stripEmptyFallbackRows：保存边界剔除全空备选行（D1）', () => {
   // provider/model 双空（含缺失、null、非对象条目）的备选不落盘；半填行保留
   assert.deepEqual(
     stripEmptyFallbackRows({ provider: 'p0', model: 'm0', fallbacks: [{ provider: '', model: '' }, { provider: 'p1', model: '' }, null, {}] }),

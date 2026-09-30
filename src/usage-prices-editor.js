@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — usage price detail pane (0.5.0-tisitan.3).
+ * dsh-my-go — usage price detail pane.
  *
  * The right-hand column of the 用量单价表 block: the currency knob for the whole
  * table plus the four buckets of the selected "{provider}/{model}" key.

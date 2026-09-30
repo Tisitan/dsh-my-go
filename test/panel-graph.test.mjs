@@ -242,7 +242,7 @@ test('F5 edgeFlash 有回收：节点存活但闪环过期即清', () => {
   engine.destroy()
 })
 
-test('F3+N1 复活守卫对称：记录在席时 gone 与 end 两类淡出都被撤', () => {
+test('复活守卫对称（F3）：记录在席时 gone 与 end 两类淡出都被撤', () => {
   const gone = newEngine(true)
   gone.engine.start()
   const A = rec('p1', 'child-A', 'running', 1)
@@ -310,7 +310,7 @@ test('同职责多子代标签加序号（按 createdAt 升序），单条保持
   engine.destroy()
 })
 
-test('N1 终局淡出窗内记录回归：撤 fade 且不重放派工脉冲（活子代不「消失一次」）', () => {
+test('终局淡出窗内记录回归：撤 fade 且不重放派工脉冲（活子代不「消失一次」）', () => {
   const { engine } = newEngine(true)
   engine.start()
   const A = rec('p1', 'child-A', 'running', 1)
@@ -326,7 +326,7 @@ test('N1 终局淡出窗内记录回归：撤 fade 且不重放派工脉冲（�
   engine.destroy()
 })
 
-test('N1 对照：记录持续缺席时终局淡出照常走完（900ms 后回收）', () => {
+test('对照：记录持续缺席时终局淡出照常走完（900ms 后回收）', () => {
   const { engine } = newEngine(true)
   engine.start()
   engine.applySnapshot([rec('p1', 'child-A', 'running', 1)], [], [])
@@ -340,7 +340,7 @@ test('N1 对照：记录持续缺席时终局淡出照常走完（900ms 后回�
   engine.destroy()
 })
 
-test('N2 hitTest 归一：宿主 border-box 压缩时按 rect.width/296 换算，仍精确命中', () => {
+test('hitTest 归一：宿主 border-box 压缩时按 rect.width/296 换算，仍精确命中', () => {
   const { engine } = newEngine(true)
   engine.start()
   engine.applySnapshot([
@@ -360,13 +360,13 @@ test('N2 hitTest 归一：宿主 border-box 压缩时按 rect.width/296 换算�
   engine.destroy()
 })
 
-test('N2 toCanvasPoint 边界：rect 缺失/零宽不炸，退化 1:1', () => {
+test('toCanvasPoint 边界：rect 缺失/零宽不炸，退化 1:1', () => {
   assert.deepEqual(toCanvasPoint(null, 10, 20), { x: 10, y: 20 })
   assert.deepEqual(toCanvasPoint({ left: 0, top: 0, width: 0 }, 10, 20), { x: 10, y: 20 })
   assert.deepEqual(toCanvasPoint({ left: 5, top: 7, width: 148 }, 5 + 74, 7 + 76), { x: 148, y: 152 })
 })
 
-test('N3 空桶占位文案：records/queue 双空才给，多桶带归属口径', () => {
+test('空桶占位文案：records/queue 双空才给，多桶带归属口径', () => {
   const empty = pickBucket([], [], [], undefined)
   assert.equal(emptyGraphHint(empty), '当前会话无在飞子代')
 

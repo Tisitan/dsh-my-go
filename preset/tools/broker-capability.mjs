@@ -1,6 +1,5 @@
 /**
- * dsh-my-go — model/effort 能力缓存（request waterfall 的能力判定面；
- * 5.1 波自 broker.mjs 抽出）。
+ * dsh-my-go — model/effort 能力缓存（request waterfall 的能力判定面）。
  *
  * reasoningEffort follows the DSH model catalog: some models have no
  * thinking levels, others expose a different set (off/high/max, low, etc.).
@@ -17,7 +16,7 @@
  * 形态：createCapabilityOps({ getLlm, modelCache }) → { supportedEfforts,
  * modelExists, invalidateCaches }。
  *   - effortCache 本体与 modelCacheEpoch 归本模块持有；两者都必须在 broker
- *     apply 的 settings 块之前就位（N9/N10 时序说明）——本 apply 中段有 await
+ *     apply 的 settings 块之前就位（时序说明）——本 apply 中段有 await
  *     （loadLedger），段版本推进若恰好在窗口里到达，处理器按尾部落在
  *     的 const 取值会撞 TDZ；缓存本体与失效计数都必须在处理器定义之前就位，
  *     失效入口即 invalidateCaches。
@@ -52,7 +51,7 @@ export function createCapabilityOps({ getLlm, modelCache }) {
     }
     // 只缓存查询成功的结果：瞬时失败/服务缺席不永久缓存（负缓存会让
     // effort 绑定在本进程生命周期内静默失效），留待下次请求重试。
-    // null 也是「未知」而非结论（0.3.0-tisitan.7 N10）：模型不暴露档位与「这次没读到
+    // null 也是「未知」而非结论：模型不暴露档位与「这次没读到
     // 档位」在返回值上同形，当真值缓存下去就成了永久的「不支持 effort」——
     // 于是宁可每次请求多一次 resolveModelInfo，也不替用户把绑定判死。
     if (resolved && result !== null) effortCache.set(key, result)
@@ -76,23 +75,22 @@ export function createCapabilityOps({ getLlm, modelCache }) {
           listed = true
         }
       } catch { /* provider may not support listing */ }
-      // 区分两种「清单为空」（0.3.0-tisitan.7 N9）：列举**成功**但里面没有绑定的模型
+      // 区分两种「清单为空」：列举**成功**但里面没有绑定的模型
       // 是真结论，缓存它（含空集）——否则每次模型请求都对同一个坏 provider 重
       // 拉一遍清单；抛错/服务缺席是「不知道」，不缓存，留待下次重试。
       // epoch 比对挡在飞响应：本函数 await 期间若发生段版本推进，那次
       // 陈旧清单不得回写（回写等于把刚清掉的缓存原样塞回去，热更失效无声撤销）。
-      // 无论回写与否，本次请求仍按已读到的结果作答——语义与旧实现一致。
+      // 无论回写与否，本次请求都按已读到的结果作答。
       if (listed && modelCacheEpoch === epoch) modelCache.set(key, set)
     }
     return set.has(String(model))
   }
 
-  // 段版本推进的同点失效三连（注释细节见 broker.mjs settings 块的接线点）：
-  // modelCache 根治（0.3.0-tisitan.4）→ provider 模型清单缓存随绑定热更失效；
-  // epoch 同点自增（0.3.0-tisitan.7 N9）→ clear 只清已落账的条目，清不掉此刻
-  // 正在飞的 listModels，不回查就会让那次陈旧响应把旧清单又塞回来；effortCache
-  // 同点失效（N10）→ 它此前无清理点，一次 resolveModelInfo 的结果在本进程内
-  // 永挂。三连顺序与拆分前逐行一致。
+  // 段版本推进的同点失效三连（接线点细节见 broker.mjs settings 块）：
+  // provider 模型清单缓存随绑定热更失效；epoch 同点自增——clear 只清已落账的
+  // 条目，清不掉此刻正在飞的 listModels，不回查就会让那次陈旧响应把旧清单又塞
+  // 回来；effortCache 同点失效——它没有别的清理点，一次 resolveModelInfo 的结果
+  // 会在本进程内永挂。三连顺序敏感，不可拆开。
   function invalidateCaches() {
     modelCache.clear()
     modelCacheEpoch += 1

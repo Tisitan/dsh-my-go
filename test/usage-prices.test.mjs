@@ -20,7 +20,7 @@ process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-my-go-usage-prices-home-'
 const PRICE_ROW_FULL = { input: 2, output: 8, cacheRead: 0.4, cacheWrite: 1.25 }
 const PRICE_ROW_NO_CACHE = { input: 0.27, output: 1.1 }
 const USAGE_PRICES = {
-  'newapi/k3-256k': PRICE_ROW_FULL,
+  'my-provider/model-a': PRICE_ROW_FULL,
   'openrouter/deepseek/deepseek-chat': PRICE_ROW_NO_CACHE,
 }
 
@@ -60,14 +60,14 @@ const resolveSection = (row) => resolvedHostConfig(row)
 test('schema：usagePrices 合法表原样解析，model 含 / 的键与可选桶缺省行均保留', async () => {
   await captureSchema()
   const parsed = resolveSection({ usagePrices: USAGE_PRICES }).usagePrices.get()
-  assert.deepEqual(parsed['newapi/k3-256k'], PRICE_ROW_FULL, '四桶齐全的行原样保留')
+  assert.deepEqual(parsed['my-provider/model-a'], PRICE_ROW_FULL, '四桶齐全的行原样保留')
   assert.deepEqual(parsed['openrouter/deepseek/deepseek-chat'], PRICE_ROW_NO_CACHE, 'model 余部含 / 的键原样保留')
   assert.deepEqual(Object.keys(parsed['openrouter/deepseek/deepseek-chat']), ['input', 'output'], '可选桶缺省 = 输出行键省略（PriceInfo 语义）')
 })
 
 test('schema：usagePrices 缺省解析为空 dict（空表 = 不计成本），既有顶级键行为不变', async () => {
   await captureSchema()
-  const legacy = { sisyphus: { provider: 'p', model: 'm', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] }, toolMask: { deny: ['mcp__a__x'] } }
+  const legacy = { sisyphus: { provider: 'p', model: 'm', reasoningEffort: 'high', fallbacks: [] }, toolMask: { deny: ['mcp__a__x'] } }
   const parsed = resolveSection(legacy)
   assert.deepEqual(parsed.usagePrices.get(), {}, '无 usagePrices 键 = 空表默认，不 undefined 不炸')
   assert.deepEqual(parsed.sisyphus.get(), legacy.sisyphus, '既有字段不受新字段影响')
@@ -108,8 +108,8 @@ test('schema：usageCurrency 缺省 USD、CNY 合法、非法枚举拒（D1a 全
 // ── round-trip：读面投影 / 写面不触碰存量 ─────────────────────────────────
 
 const STORED_WITH_PRICES = {
-  sisyphus: { provider: 'p-s', model: 'm-s', reasoningEffort: 'high', dsv4p0813: false, fallbacks: [] },
-  roles: { hermes: { provider: 'p1', model: 'm1', reasoningEffort: 'default', dsv4p0813: false, fallbacks: [] } },
+  sisyphus: { provider: 'p-s', model: 'm-s', reasoningEffort: 'high', fallbacks: [] },
+  roles: { hermes: { provider: 'p1', model: 'm1', reasoningEffort: 'default', fallbacks: [] } },
   usagePrices: USAGE_PRICES,
 }
 

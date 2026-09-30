@@ -1,12 +1,12 @@
 /**
  * dsh-my-go — 调度核（dispatchWork / advanceQueue / scheduleQueueRetry / 队列重试
- * 定时器 + 名册路由薄壳 + spawnChild 派发组合子 + 挂起停摆可观测；5.4 波自
+  * 定时器 + 名册路由薄壳 + spawnChild 派发组合子 + 挂起停摆可观测；自
  * broker.mjs 抽出）。
  *
  * 拆分动机：这一族是「派发面」——从 go_work 直派、队列补位、备选转正共用的
  * 上岗判定与派发执行，连同它的名册路由输入（rosterKeys/rolePersona/
  * resolveRoleToolFilter）与 spawnChild 唯一 spawn 出口。**互递归环
- * advanceQueue↔dispatchWork 整体随迁、环内聚在本模块**（5.4 裁决）：
+ * advanceQueue↔dispatchWork 整体随迁、环内聚在本模块**：
  * advanceQueue 的派发失败回补 catch 调 scheduleQueueRetry，scheduleQueueRetry 的
  * 放弃支与定时器回调再调 advanceQueue，dispatchWork 的 D19 补位与 catch 清槽也
  * 调 advanceQueue——三向环全部是模块内函数声明的相互调用（提升语义与原 broker
@@ -18,17 +18,20 @@
  *
  * 形态：createSchedulerOps({ childRegistry, getBindings, getAgents, getTools,
  * getSubagents, orchFor, bump, metrics, notifyParent, modelExists, promptCache,
- * loadPrompt, claimBufferedEnd, processEnd, backfillHopOnArrival,
+ * loadPrompt, claimBufferedEnd, processEnd, ensureHeartbeat, backfillHopOnArrival,
  * handleQueueWorkDropped, REPORT_EXT, SUBAGENT_PROMPT_MAX, HELP_CONTENT_MAX,
  * QUEUE_RETRY_BASE_MS }) →
  *   { dispatchWork, advanceQueue, rosterKeys, liveToolNames, spawnChild,
  *     buildStallNotice, clearQueueRetryTimers, cancelQueueRetryTimer }。
+ *   - ensureHeartbeat：派发成功后的心跳起表（broker 侧包壳闭包，
+ *     产物是心跳簇工厂实例）——派发面是「有在飞子代」的唯一事实来源，起表只能
+ *     挂在这里；本簇不认识定时器，只把它当一次回调转出。
  *   - dispatchWork / advanceQueue / rosterKeys / liveToolNames：tools 注册块与
  *     broker 生命周期的既有消费名，逐名转注。
  *   - spawnChild / buildStallNotice：end 管线的重派路与 T1 停摆通报消费。
  *   - clearQueueRetryTimers / cancelQueueRetryTimer：卸载收尾（ctx.effect 与
  *     session/disposed 的「表本体随簇、收尾走簇口」口径，同 clearChainHops 先例；
- *     原 session/disposed 里裸操作 queueRetryTimers 的三行换成本簇同语义调用）。
+  *     session/disposed 里对 queueRetryTimers 一律走本簇同语义调用，不裸操作）。
  *   - scheduleQueueRetry / stallHolder / rolePersona / resolveRoleToolFilter：
  *     簇内私有（实读无簇外消费点），不出口。
  *
@@ -51,7 +54,7 @@ import {
   resolveRoleToolFilter as sharedResolveRoleToolFilter,
 } from '../shared/roles.mjs'
 import { agentLabel, describeAgent } from '../shared/misc.mjs'
-import { laneOf } from '../shared/orchestration.mjs'
+import { laneOf, bindSpawnedChild } from '../shared/orchestration.mjs'
 import { REPORT_CLAUSE } from '../shared/report-format.mjs'
 
 export function createSchedulerOps({
@@ -69,6 +72,7 @@ export function createSchedulerOps({
   loadPrompt,
   claimBufferedEnd,
   processEnd,
+  ensureHeartbeat,
   backfillHopOnArrival,
   handleQueueWorkDropped,
   REPORT_EXT,
@@ -78,7 +82,7 @@ export function createSchedulerOps({
 }) {
   const { sessionTypes, childOwner } = childRegistry
 
-  // ── 挂起停摆可观测性（本批）───────────────────────────────────────────────
+    // ── 挂起停摆可观测性 ─────────────────────────────────────────────────────
   // E8（suspended-help-hold）把挂起轮那条 end 静默吞掉，代价是「槽位被一个不会
   // 自己醒的子代占着、后面的任务永无推进事件」这件事主编看不见。补两个触发点，
   // 同一份文案、同一枚守卫：
@@ -122,7 +126,7 @@ export function createSchedulerOps({
   // 队列推进：取出队首并派发；派发失败时回补队首——任务不蒸发、队列不停摆，
   // 失败原因进日志与控制台，Sisyphus 可通过 orchestration_status 看到它仍在排队。
   //
-  // 回补之后没有任何事件源会再触发推进（0.2.3-tisitan.6 实战确认的队列停摆），
+    // 回补之后没有任何事件源会再触发推进（队列就此停摆），
   // 因此回补时挂一个带线性退避的重试定时器；超过上限则放弃该任务——
   // 从队列移除并写 failed 历史 + console.error，绝不静默滞留。
   const QUEUE_RETRY_MAX = 3
@@ -170,7 +174,7 @@ export function createSchedulerOps({
 
   function advanceQueue(orch, parentHint) {
     if (!orch) return
-    // 二期 2.3（D18 已裁决 global-scan，read-pool-semantics.md §2.1）：自队首扫描
+        // D18（global-scan，read-pool-semantics.md §2.1）：自队首扫描
     // 全队列，第一条其 lane 有空位的 work 上岗；满池 lane 的 work 原地保留——
     // skip 不重排队列序，lane 内 FIFO 与全局序可观测都不变。readPoolSize=1 时
     // isLaneFree 退化为全局单线（size===0 才 free），本循环与旧「队首一刀切」
@@ -189,7 +193,7 @@ export function createSchedulerOps({
       if (picked < 0) return
       const work = orch.dequeueById(queueSnapshot[picked].id)
       if (!work) continue
-      // 埋点（0.4.0-tisitan.0）：队列等待时长基线（work.createdAt 于 enqueue 时落账，
+            // 埋点：队列等待时长基线（work.createdAt 于 enqueue 时落账，
       // shared/orchestration.mjs）。只读快照，零时序影响。
       metrics.record({ kind: 'queue-pop', waitMs: Date.now() - work.createdAt })
       const agents = getAgents()
@@ -205,7 +209,7 @@ export function createSchedulerOps({
     }
   }
 
-  // ── 名册路由辅助（0.2.3-tisitan.14 数据层 roles dict 的消费面） ────────────────
+    // ── 名册路由辅助（数据层 roles dict 的消费面） ────────────────────────────────
   // 核心逻辑在 shared/roles.mjs，这里是注入每半可变状态的薄壳。bindings 经
   // getBindings 现读（宿主配置桥段变化后必须看到新值，与原闭包直读
   // `let bindings` 的时点逐调用一致）。
@@ -286,15 +290,15 @@ export function createSchedulerOps({
     // startContinuable 无条件调用 spec.signal.throwIfAborted()（dsh-subagent
     // SubagentContinuationManager.startContinuable）：直发路径 exec.signal 恒在，
     // 队列路径（advanceQueue）没有调用方信号可传——必须合成一个永不中止的信号，
-    // 否则队列派发必败 TypeError（0.2.3-tisitan.6 部署实测：重试 4 次全败后放弃）。
+        // 否则队列派发必败 TypeError（重试 4 次全败后放弃）。
     const sig = signal ?? new AbortController().signal
-    // 泳道容量分叉（二期 2.3，原 isBusy 判定迁移）：目标 lane 有空位即直接 spawn，
+        // 泳道容量分叉（按 lane 判定，不再看 isBusy）：目标 lane 有空位即直接 spawn，
     // 满则入队等本 lane 释放。readPoolSize=1 时 isLaneFree 退化口径 = 全局空，
-    // 与旧 isBusy() 判定逐字节等价（D5 默认关 = 现状）。
+        // 与 isBusy() 判定逐字节等价（D5 默认关 = 现状）。
     if (!orch.isLaneFree(laneOf(agentType))) {
       const workId = orch.enqueue(agentType, prompt, parent?.id)
       bump()
-      // T2 停摆期新派工（本批）：任务已入队，而占着本泳道槽位的是一位挂起等处置的
+            // T2 停摆期新派工：任务已入队，而占着本泳道槽位的是一位挂起等处置的
       // 子代——它不会自己结束，这条 work 也就永远不会被 end 驱动上岗。与 T1 共用
       // 同一份文案与同一枚 episode 守卫（谁先撞上谁报，另一处自然静默）。
       const stallNotice = buildStallNotice(orch, stallHolder(orch, agentType))
@@ -324,30 +328,42 @@ export function createSchedulerOps({
       const label = agentLabel(agentType, prompt.slice(0, SUBAGENT_PROMPT_MAX))
       const childId = await spawnChild({ agentType, prompt, parent, label, agentOptions: agentOpts, toolFilter: binding.toolFilter, sig })
       sessionTypes.set(childId, agentType)
-      orch.bindChild(placeholder.childId, childId)
+      // 占位可能在 spawn 窗口里已被回收：E2 泄漏哨兵的年龄判定只看 createdAt，冷读慢的
+      // 派发（实测 56~145ms，测试场景 grace=50ms）会被判成「链无进展」并 finish+retire。
+      // 三条分支的收口在 shared/orchestration.mjs 的 bindSpawnedChild（直派与备选重派
+      // 共用同一份实现）；此处只负责观测留痕。同步段零 await，无新真空期。
+      const placeholderLive = orch.currentMap.has(placeholder.childId)
+      bindSpawnedChild(orch, placeholder, childId, agentType, prompt)
+      if (!placeholderLive) console.warn(`[dsh-my-go] spawn for reclaimed placeholder ${String(placeholder.childId)} landed late; child ${String(childId)} (${agentType}) re-adopted into tracking`)
       childOwner.set(childId, parent.id)
+            // 心跳信号 + 起表：spawn 是子代给主编的第一个信号（本轮从此刻起算），
+      // 随后 ensure 起拍——已有拍子的会话幂等跳过（派第二跳不会把拍距推后）。
+      // 占位键的表项同点丢弃（spawn 窗口里若走过一拍，表上会留一条 work-* 孤儿）。
+      childRegistry.dropHeartbeat(placeholder.childId)
+      childRegistry.noteHeartbeatSignal(childId, Date.now())
+      ensureHeartbeat(parent.id)
       bump()
-      // 链 hop 回填（三期 3.4，§4.2-① 时序契约；回填本体在 relay 簇
+            // 链 hop 回填（§4.2-① 时序契约；回填本体在 relay 簇
       // backfillHopOnArrival）：位置锁死在下方 E2 认领（claimBufferedEnd）之前——
       // 认领重放走全归因管线后查链时回填必已就位，重放查不到链的时序窗口结构性
       // 消失（R11 探针锁此位置约束：挪到认领之后必红）。同步段零 await（协议第 3 条）。
       if (queuedWork) backfillHopOnArrival(queuedWork, childId)
-      // E2 缓冲认领点（二期 2.4，方案 A）：登记已落地（type/台账/childOwner 三表
+            // E2 缓冲认领点（方案 A）：登记已落地（type/台账/childOwner 三表
       // 就位），spawn resolve 前抢跑的那条 end 若在缓冲里，此刻按真 id 精确认领
       // 并同步重入归因管线（重放走全管线：E4/E5/E6/E7/E9 全量生效）。同步段零
       // await：认领与重放不引入任何新真空期。
       const buffered = claimBufferedEnd(childId)
       if (buffered !== undefined) processEnd(buffered)
-      // 埋点（0.4.0-tisitan.0）：派发成功基线。spawn 已 resolve、登记已落位，
+            // 埋点：派发成功基线。spawn 已 resolve、登记已落位，
       // 此处即「成功处」——三条派发路（go_work 直派/队列补位/forward 转派工种）
       // 共用本出口，一处埋点全量覆盖。
-      metrics.record({ kind: 'dispatch', agentType, promptBytes: prompt.length, ts: Date.now() })
+      metrics.record({ kind: 'dispatch', agentType, promptBytes: prompt.length, ts: Date.now(), ...(placeholderLive ? {} : { readopted: true }) })
       // 队列任务上岗映射推送：占位 work-* 与真身 childId 的对应关系低频高价值
       // （Sisyphus 手里的 go_work 返回值只有占位 id），注入一行短通知补齐。
       if (queuedWork) {
         notifyParent(parent, `[dsh-my-go] 队列任务上岗: ${queuedWork.id} → ${childId} (${agentType})`)
       }
-      // D19 直派补位（二期 2.3，read-pool-semantics.md §2.2）：直派占槽后同 lane
+            // D19 直派补位（read-pool-semantics.md §2.2）：直派占槽后同 lane
       // 可能仍有空位，立即推进队列——否则读池 2~3 时队列中同 lane 等待任务无人
       // 驱动，饿死到下一个 end。满池/队列无匹配时本调用是 no-op（global-scan
       // 扫不到可上岗 work 即返回），容量 1 退化下恒 no-op（= 旧「直派后不推进」）。
@@ -355,6 +371,10 @@ export function createSchedulerOps({
       return { childId, status: 'running', label, queued: false }
     } catch (error) {
       orch.abort(placeholder.childId)
+      // 心跳表项同点丢（对齐成功路径 bindChild 后的 dropHeartbeat）：spawn 失败的
+      // 窗口里若正好走过一拍，表上会按占位 id（work-*）留一条永无清理点的孤儿
+      // ——「容量恒 ≤ CURRENT_MAP_CAP」的声明在这条路径上必须同样成立。
+      childRegistry.dropHeartbeat(placeholder.childId)
       bump()
       // 槽位已腾出：立即推进队首，避免后续排队任务永久等待
       advanceQueue(orch, parent)

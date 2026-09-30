@@ -1,24 +1,24 @@
-// alpha.2/3 ↔ alpha.4 兼容适配回归批（0.3.0-tisitan.4）。
+// alpha.2/3 ↔ alpha.4 兼容适配回归。
 // 上游 0.1.2-alpha.4：SubagentRuntime.followup 并入 sendMessage、reportFrom
 // 整个删除、Session.events getter 删除（→ snapshotEvents()）。共享适配
 // （preset/shared/adjacent.mjs 的 sessionEvents/deliverToAdjacent/reportToParent）
 // 按方法存在性特性探测：已核实 alpha.2/3 无 sendMessage、alpha.4 无
 // followup/reportFrom，探测即干净分界。
-// 本批覆盖：① 适配函数新/旧双路径；② broker 在 alpha.4 形态 mock（仅
+// 覆盖：① 适配函数新/旧双路径；② broker 在 alpha.4 形态 mock（仅
 // sendMessage）下的 continue/need_help 接线；③ modelCache 随 settings/updated
 // 失效（改模型清单无需重启即被 agent/request 校验感知）。
 // 旧路径（followup/reportFrom）的 broker 级覆盖由 multi-session/bridge 等
 // 既有测试持有（它们的 mock 只提供旧 API，探测自然走旧路）。
 // 断裂①补丁追加：queued 档的排队符号两版通吃（queuePrompt 5 参 ↔ deliverPrompt
 // 6 参），相应用例见「断裂①」三形态批与文末契约哨兵。
-// 0.5.0-tisitan.1（F1）追加：本文件同时承担 0.1.5-alpha.1 的 **web 面**对账——
+// （F1）追加：本文件同时承担 0.1.5-alpha.1 的 **web 面**对账——
 // lib 半面板通道改走 webServer 直注册后，信封契约以搬进来的浏览器侧解析器为闸
 // （见文末 ④′，含「未认证 401 而非 405」的验收口径）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import * as broker from '../preset/tools/broker.mjs'
 import { apply as hostApply } from '../lib/index.js'
@@ -127,10 +127,10 @@ test('canQueueAdjacent：alpha.2/3 的 followup 本身 FIFO → 天然可排队'
   assert.equal(canQueueAdjacent({ sendMessage: async () => {}, followup: async () => {}, [DELIVER_PROMPT]: () => {} }), true)
 })
 
-// ── ①′ N15：投递计划（探测与投递同一份分支表的同构不变量）───────────────────
+// ── ①′ 投递计划（探测与投递同一份分支表的同构不变量）───────────────────
 
-// 形态表 × 两档位。旧写法里 canQueueAdjacent 与 deliverToAdjacent 各存一份分支
-// 顺序，靠注释维持同构；本批合一成 planAdjacentDelivery 后，这条不变量必须能被
+// 形态表 × 两档位。canQueueAdjacent 与 deliverToAdjacent 若各存一份分支
+// 顺序，靠注释维持同构；合一成 planAdjacentDelivery 后，这条不变量必须能被
 // 直接测出来：**探测说能不能排队，投递就必须真的走那条路**。
 // 形态表第三元 = 该 runtime 上「真排队」实际应命中的原语名（无排队通路给 null）。
 // 两代符号各自单独在位、以及同时在位（新优先），都必须被这张表覆盖——断裂①的
@@ -163,7 +163,7 @@ const RUNTIME_SHAPES = [
   ['什么都不给（坏 runtime）', () => ({}), null],
 ]
 
-test('N15 planAdjacentDelivery：runtime 形态 × 两档位的路由枚举全在册', () => {
+test('planAdjacentDelivery：runtime 形态 × 两档位的路由枚举全在册', () => {
   const expect = {
     'alpha.4 带旧符号队列（queuePrompt）': { queued: 'queue', steer: 'steer' },
     'alpha.4+ 带新符号队列（deliverPrompt，6 参）': { queued: 'queue', steer: 'steer' },
@@ -186,7 +186,7 @@ test('N15 planAdjacentDelivery：runtime 形态 × 两档位的路由枚举全�
   }
 })
 
-test('N15 同构不变量：canQueueAdjacent 的答复与 deliverToAdjacent 实际命中的原语逐格一致', async () => {
+test('同构不变量：canQueueAdjacent 的答复与 deliverToAdjacent 实际命中的原语逐格一致', async () => {
   const HIT_OF_ROUTE = { steer: 'sendMessage', legacy: 'followup' }
   for (const [name, make, queuePrim] of RUNTIME_SHAPES) {
     const hit = []
@@ -194,7 +194,7 @@ test('N15 同构不变量：canQueueAdjacent 的答复与 deliverToAdjacent 实�
     const probe = canQueueAdjacent(subagents)
     const planRoute = planAdjacentDelivery(subagents, 'queued').route
     assert.equal(probe, planRoute === 'queue' || planRoute === 'legacy',
-      `${name}：探测答复必须等于 plan 的路由口径（旧写法靠注释维持，现在靠同一张分支表）`)
+      `${name}：探测答复必须等于 plan 的路由口径（靠同一张分支表，不靠注释维持）`)
     if (planRoute === 'unavailable') {
       await assert.rejects(() => deliverToAdjacent(subagents, parentAgent, 'sess-1', blocks, { delivery: 'queued' }), /neither sendMessage/)
       assert.deepEqual(hit, [], '无通路时绝不瞎调某个原语')
@@ -577,7 +577,7 @@ test('broker/alpha.4：steer 被门面拒收 → warn 留痕并回落 queued 通
 
 // ── ③ modelCache 根治：宿主配置段变化后模型清单缓存失效 ─────────────────────
 // 0.1.7：broker 不再订阅 settings/updated（该事件通道退役），改由现读时的段签名比对
-// 触发同一枚三连失效——用例只需改「宿主半桥返回的段」，语义与旧写法逐条对齐。
+// 触发同一枚三连失效——用例只需改「宿主半桥返回的段」，语义逐条对齐。
 
 test('modelCache：宿主段热更后重新拉取 provider 模型清单，无需重启即感知', async (t) => {
   let catalog = ['m-old']
@@ -586,9 +586,9 @@ test('modelCache：宿主段热更后重新拉取 provider 模型清单，无需
   const llm = {
     listModels: async (pid) => { listCalls += 1; assert.equal(pid, 'p1'); return catalog.map((id) => ({ id })) },
   }
-  const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
+  const { ctx, listeners } = mockCtxAlpha4({ llm })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
-  // C-09：listeners 的值是 fn[] 多播数组——重复注册不再互相覆盖，而是当场数得出来
+  // listeners 的值是 fn[] 多播数组——重复注册不再互相覆盖，而是当场数得出来
   const onRequestHandlers = listeners.get('agent/request') ?? []
   assert.equal(onRequestHandlers.length, 1, 'agent/request 只注册一个 handler')
   const onRequest = onRequestHandlers[0]
@@ -615,8 +615,8 @@ test('modelCache：宿主段热更后重新拉取 provider 模型清单，无需
   assert.equal(third.model, 'm-new')
 })
 
-// ── ③b 缓存纪律（0.3.0-tisitan.7 N9/N10）：什么算结论、热更后一律作废 ─────────────
-// 两枚缓存此前各有一个方向失误：modelCache 把「列举成功的空/不含结果」当未知
+// ── ③b 缓存纪律：什么算结论、热更后一律作废 ─────────────
+// 两枚缓存各有一个方向失误：modelCache 把「列举成功的空/不含结果」当未知
 // 反复重拉，却又让在飞响应回写刚清掉的缓存；effortCache 压根没有清理点，还把
 // null（未知）当真值永挂。以下用例逐条钉死。
 
@@ -626,7 +626,7 @@ const seedNext = async () => ({ provider: 'p1', model: 'seed-model' })
 // waterfall 链的返回值 = 最外层 handler 的结果（替身 dispatch 已按真宿主串法实现）
 const askWaterfall = (dispatch) => dispatch('agent/request', sisyphusPayload, seedNext)
 
-test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoch 竞态，N9）', async (t) => {
+test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoch 竞态）', async (t) => {
   let catalog = ['m-old']
   let listCalls = 0
   let release
@@ -639,7 +639,7 @@ test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoc
       return snapshot
     },
   }
-  const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
+  const { ctx, dispatch } = mockCtxAlpha4({ llm })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   const inflight = askWaterfall(dispatch)
   await settle()
@@ -656,7 +656,7 @@ test('modelCache：在飞的 listModels 响应不回写热更后的缓存（epoc
   assert.equal(second.model, 'm-new')
 })
 
-test('modelCache：列举成功但绑定的模型不在（含空清单）是结论 → 缓存之，不逐请求重拉（N9）', async (t) => {
+test('modelCache：列举成功但绑定的模型不在（含空清单）是结论 → 缓存之，不逐请求重拉', async (t) => {
   const warnings = []
   const origWarn = console.warn
   console.warn = (...a) => { warnings.push(a.map(String).join(' ')) }
@@ -664,7 +664,7 @@ test('modelCache：列举成功但绑定的模型不在（含空清单）是结�
   try {
     let listCalls = 0
     const llm = { listModels: async () => { listCalls += 1; return [] } }
-    const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
+    const { ctx, dispatch } = mockCtxAlpha4({ llm })
     await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
     const first = await askWaterfall(dispatch)
     assert.equal(first.model, 'seed-model', '校验不过 → 保留种子模型（行为不变）')
@@ -677,14 +677,14 @@ test('modelCache：列举成功但绑定的模型不在（含空清单）是结�
   }
 })
 
-test('modelCache：listModels 抛错 / llm 服务缺席属「不知道」→ 不缓存，逐请求重试（N9）', async (t) => {
+test('modelCache：listModels 抛错 / llm 服务缺席属「不知道」→ 不缓存，逐请求重试', async (t) => {
   const origWarn = console.warn
   console.warn = () => {}
   t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'm1' } }))
   try {
     let listCalls = 0
     const llm = { listModels: async () => { listCalls += 1; throw new Error('provider offline') } }
-    const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
+    const { ctx, dispatch } = mockCtxAlpha4({ llm })
     await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
     assert.equal((await askWaterfall(dispatch)).model, 'seed-model')
     assert.equal((await askWaterfall(dispatch)).model, 'seed-model')
@@ -694,7 +694,7 @@ test('modelCache：listModels 抛错 / llm 服务缺席属「不知道」→ 不
   }
 })
 
-test('effortCache：能力表热更后重新解析，改好的档位即刻生效（此前无任何清理点，N10）', async (t) => {
+test('effortCache：能力表热更后重新解析，改好的档位即刻生效（热更前无清理点）', async (t) => {
   let efforts = [{ id: 'low' }]
   let infoCalls = 0
   t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } }))
@@ -702,7 +702,7 @@ test('effortCache：能力表热更后重新解析，改好的档位即刻生效
     listModels: async () => [{ id: 'm1' }],
     resolveModelInfo: async () => { infoCalls += 1; return { reasoning: { efforts } } },
   }
-  const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
+  const { ctx, dispatch } = mockCtxAlpha4({ llm })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   const first = await askWaterfall(dispatch)
   assert.equal(first.reasoningEffort, undefined, 'high 不在能力表内 → 不设档位（既有纪律）')
@@ -716,14 +716,14 @@ test('effortCache：能力表热更后重新解析，改好的档位即刻生效
   assert.equal(after.reasoningEffort, 'high', '热更后 effort 绑定重新生效（修复前旧表永挂，绑定静默失效）')
 })
 
-test('effortCache：resolveModelInfo 成功但读不到档位表 → null 不缓存（不把「没读到」判成永久不支持，N10）', async (t) => {
+test('effortCache：resolveModelInfo 成功但读不到档位表 → null 不缓存（不把「没读到」判成永久不支持）', async (t) => {
   let infoCalls = 0
   t.after(setHostBindings({ sisyphus: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } }))
   const llm = {
     listModels: async () => [{ id: 'm1' }],
     resolveModelInfo: async () => { infoCalls += 1; return {} }, // 无 reasoning 段
   }
-  const { ctx, listeners, dispatch } = mockCtxAlpha4({ llm })
+  const { ctx, dispatch } = mockCtxAlpha4({ llm })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, bindSisyphus: true })
   assert.equal((await askWaterfall(dispatch)).reasoningEffort, undefined)
   assert.equal((await askWaterfall(dispatch)).reasoningEffort, undefined)
@@ -735,8 +735,8 @@ test('effortCache：resolveModelInfo 成功但读不到档位表 → null 不缓
 // 符号」这一事实上。上游若改名/删符号，本仓 mock 测试不会红——只有拿真宿主
 // prototype 对账才会红。解析不到宿主包或版本不足 alpha.3 门槛时整组 skip 并注明原因。
 //
-// 0.3.0-tisitan.11（N1）起本闸**在本仓合闸真跑**：devDependencies 从 rc.8 线升到
-// `^0.1.2-alpha.4`（npm 因家族内交叉 peer 实际解析到 0.1.2-alpha.5）。此前它长期
+// 起本闸**在本仓合闸真跑**：devDependencies 从 rc.8 线升到
+// `^0.1.2-alpha.4`（npm 因家族内交叉 peer 实际解析到 0.1.2-alpha.5）。它长期
 // 停在 rc.8（低于自家 peer floor），门槛不满足 → 本仓 npm test 恒走 skip 分支，
 // 也就是「全仓唯一的宿主契约闸从未在本仓合过闸」。现在 `# skipped 0` 就是它在位的
 // 证据；真要回归，看这条用例红没红，别看别的档。
@@ -788,7 +788,7 @@ function hostSubagentVersion() {
 // 两版通吃，故这里也两枚并查——**只有两枚同时缺席**才是真断链（queued 档静默
 // 塌成 steer），存在任一枚即必须由对应 arity 命中。本机实装 0.1.2-alpha.5 只有
 // 旧符号（5 参），新符号缺席不构成红。
-// 哨兵 skip 的醒目告警（批次 4+6）：本用例曾因宿主依赖不可解析而长期恒 skip
+// 哨兵 skip 的醒目告警：本用例曾因宿主依赖不可解析而长期恒 skip
 // 且零声息（README「已知局限」自述）——skip 保持绿是刻意的（缺依赖的环境不算
 // 红），但静默失效必须消除：stderr 直接透传 CI/终端日志，报告器不吞。任何
 // skip 都在此打出多行边框告警，肉眼可搜「契约哨兵未生效」。
@@ -837,7 +837,7 @@ test('契约哨兵：宿主 dsh-subagent >= 0.1.2-alpha.3 时门面只剩 sendMe
 // ── ④′ 0.1.5-alpha.1 的 web 面对账：面板通道信封必须过浏览器侧解析器 ────────────
 // 上方哨兵能拿真宿主包对账，是因为 dsh-subagent 在本仓 devDependencies 里解析得到；
 // 而 F1 依赖的 dsh-client-connection / dsh-host-webserver 是宿主的**嵌套**依赖，插件
-// 侧 createRequire 恒 MODULE_NOT_FOUND——照 ④ 的形态再写一枚哨兵就是 N1 刚清理过的
+// 侧 createRequire 恒 MODULE_NOT_FOUND——照 ④ 的形态再写一枚哨兵就是刚刚清理过的那类
 // 「永不点火的闸」。所以这里换个方向对账：把**消费者**从宿主包里搬进来。
 // parseBrowserFrame 逐行同构于 dsh-client-connection@0.1.5-alpha.1
 // lib/client.js:6222-6247 的 parseConnectionResponse（type / rpcId 回显 / result.ok

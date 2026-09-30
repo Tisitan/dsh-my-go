@@ -1,5 +1,5 @@
 /**
- * 配置卡写面（0.5.0-tisitan.3）：浏览器侧 ops 编译层。
+ * 配置卡写面：浏览器侧 ops 编译层。
  *
  * 这批规则原本住私有 RPC `saveSettings` 闭包里（lib 半唯一权威），随配置面迁
  * 官方 configForms 一起搬到 src/settings-ops.js——原 lib 侧同名用例逐条搬来，
@@ -15,15 +15,17 @@ import {
   buildSettingsOps,
   compareKey,
   dirtyLabels,
+  keepAliveIntent,
   draftFromSection,
   sectionAfterWrite,
   summaryLine,
   writeLanded,
 } from '../src/settings-ops.js'
+import { KEEP_ALIVE_DEFAULTS } from '../preset/shared/constants.mjs'
 
 const layers = (value, { user = value, base = {} } = {}) => ({ value, user, base })
 
-const row = (over = {}) => ({ provider: '', model: '', reasoningEffort: '', dsv4p0813: false, fallbacks: [], ...over })
+const row = (over = {}) => ({ provider: '', model: '', reasoningEffort: '', fallbacks: [], ...over })
 
 // ── 读面投影 ───────────────────────────────────────────────────────────────
 
@@ -116,7 +118,7 @@ test('写面：fallbacks 空数组转 unset，非空数组原样 set', () => {
   assert.deepEqual(full.find((op) => op.path[1] === 'fallbacks'), { op: 'set', path: ['sisyphus', 'fallbacks'], value: [{ provider: 'p', model: 'm' }] })
 })
 
-test('写面：新建但还没填完的角色整行 set（旧写法只发 unset，保存后静默消失）', () => {
+test('写面：新建但还没填完的角色整行 set（只发 unset 会保存后静默消失）', () => {
   // 页面的「新建角色」写的是完整一行（含 fallbacks 数组与 toolFilter 对象），
   // 这就是「新建」与「只改人设的部分行」的唯一可分标志。
   const blank = { ...row(), persona: '', toolFilter: { allow: [], deny: [] } }
@@ -242,4 +244,171 @@ test('summaryLine：内置数、自定义数、单价条数与币种一句话', 
     usagePrices: { 'a/b': { input: 1, output: 1 } },
     usageCurrency: 'CNY',
   }), '编排 9 角色（1 个指定了模型） · 自定义 1 · 单价 1 条（CNY）')
+})
+
+// ── keepAlive（主编缓存心跳）：读面归一 / 只写真变的字段 / 改回默认 = 撤销覆盖 ──
+// 第五个配置段。三条纪律与既有各段同源：缺席回落默认单源、显式携带才
+// 写、草稿与现值同形时不发 op（否则每次保存都会把 schema 默认钉进用户层）。
+
+test('keepAlive 读面：段缺席/值非法一律回落默认单源，段在席则逐字段收口', () => {
+  assert.deepEqual(draftFromSection({}).keepAlive, { ...KEEP_ALIVE_DEFAULTS }, '缺席 = 默认段（enabled 关）')
+  assert.deepEqual(
+    draftFromSection({ keepAlive: { enabled: true, orchestratorIntervalMs: 60000 } }).keepAlive,
+    { ...KEEP_ALIVE_DEFAULTS, enabled: true, orchestratorIntervalMs: 60000 },
+    '段里给的用段，缺的补默认',
+  )
+  assert.deepEqual(
+    draftFromSection({ keepAlive: { enabled: 'yes', orchestratorIntervalMs: 0, childPingAfterMs: -1, escalateAfterPings: 'x' } }).keepAlive,
+    { ...KEEP_ALIVE_DEFAULTS },
+    '非法值不冒充配置：布尔只要真 true，三个数字各按 >=1 的整数收口',
+  )
+  assert.equal(draftFromSection({ keepAlive: { orchestratorIntervalMs: '90000' } }).keepAlive.orchestratorIntervalMs, 90000, '数字串收口（settings.yaml 手改形态）')
+})
+
+test('keepAlive 写面：只发真变了的字段；未携带 = 零触碰；改回默认 = unset 撤销覆盖', () => {
+  const stored = { roles: {}, usagePrices: {}, usageCurrency: 'USD', keepAlive: { ...KEEP_ALIVE_DEFAULTS } }
+  const same = draftFromSection(stored)
+  assert.deepEqual(buildSettingsOps(same, layers(stored, { user: { keepAlive: { enabled: true } } })).filter((op) => op.path[0] === 'keepAlive'),
+    [], '草稿与现值同形 → 零 op（schema 默认不落用户层）')
+  const enabled = { ...same, keepAlive: { ...same.keepAlive, enabled: true } }
+  assert.deepEqual(buildSettingsOps(enabled, layers(stored, { user: {} })).filter((op) => op.path[0] === 'keepAlive'),
+    [{ op: 'set', path: ['keepAlive', 'enabled'], value: true }], '只发开关这一条 set')
+  // 用户层已有覆盖、草稿把值改回默认 → unset（露出行 config 的 base），不是再写一遍默认
+  const backToDefault = { ...same, keepAlive: { ...same.keepAlive, orchestratorIntervalMs: KEEP_ALIVE_DEFAULTS.orchestratorIntervalMs } }
+  const withPinned = layers({ ...stored, keepAlive: { ...KEEP_ALIVE_DEFAULTS, orchestratorIntervalMs: 60000 } }, { user: { keepAlive: { orchestratorIntervalMs: 60000 } } })
+  assert.deepEqual(buildSettingsOps(backToDefault, withPinned).filter((op) => op.path[0] === 'keepAlive'),
+    [{ op: 'unset', path: ['keepAlive', 'orchestratorIntervalMs'] }], '改回默认 = 撤销该项覆盖')
+  // 半输入 / 非法串：收口丢弃（与单价行 fail-closed 同款），不写盘也不会回退成默认
+  for (const raw of ['', '  ', '-', 'abc', '1e']) {
+    const half = { ...same, keepAlive: { ...same.keepAlive, orchestratorIntervalMs: raw } }
+    assert.deepEqual(buildSettingsOps(half, layers(stored, { user: {} })).filter((op) => op.path[0] === 'keepAlive'), [], `半输入「${raw}」不写盘`)
+  }
+  // draft 不携带该段（脚本直调 / 老草稿）：零触碰
+  assert.deepEqual(buildSettingsOps({ roles: {} }, layers(stored)).filter((op) => op.path[0] === 'keepAlive'), [])
+})
+
+test('keepAlive 写面：宿主没声明这一段 ⇒ 一条 op 都不发（不许把整批写入拖死）', () => {
+  // 真事故（ 补测）：宿主半进程持有的是**旧** schema（插件经 import()
+  // 装配、Node 的 ESM 缓存按 URL 命中，改过的 lib/config.js 换不掉已启动进程里的
+  // fiber.runtime.Config）⇒ 宿主侧 volatile 闸判 `keepAlive.enabled is not volatile`。
+  // 页面的读面此刻没有这一段（schema 默认没解析进现值），我们若照常发 op，后果不是
+  // 「这一段没保存」而是**整次原子写入被拒**——同一次点击里改过的角色/单价一并陪葬。
+  const undeclared = { roles: {}, usagePrices: {}, usageCurrency: 'USD' }
+  const draft = draftFromSection(undeclared)
+  draft.keepAlive = { ...draft.keepAlive, enabled: true, orchestratorIntervalMs: 600000 }
+  draft.usageCurrency = 'CNY'
+  draft.oracle = { ...draft.oracle, model: 'm2' }
+  const ops = buildSettingsOps(draft, layers(undeclared, { user: { usageCurrency: 'USD', roles: { oracle: { model: 'm1' } } } }))
+  assert.deepEqual(ops.filter((op) => op.path[0] === 'keepAlive'), [], '未声明段零 op（哪怕草稿把四个字段都改了个遍）')
+  assert.deepEqual(ops.filter((op) => op.path[0] === 'usageCurrency'), [{ op: 'set', path: ['usageCurrency'], value: 'CNY' }], '同一次点击里的其它改动照常发')
+  assert.ok(ops.some((op) => op.op === 'set' && op.path.join('.') === 'roles.oracle.model' && op.value === 'm2'), '同一次点击里的角色改动照常发')
+  assert.equal(ops.some((op) => op.path[0] === 'keepAlive'), false, '整份 ops 里没有一条心跳 op')
+  // 对照组：段在席（schema 已声明、默认已解析）时照旧只发真变了的字段
+  const declared = { ...undeclared, keepAlive: { ...KEEP_ALIVE_DEFAULTS } }
+  const declaredOps = buildSettingsOps(draft, layers(declared, { user: {} }))
+  assert.deepEqual(declaredOps.filter((op) => op.path[0] === 'keepAlive'), [
+    { op: 'set', path: ['keepAlive', 'enabled'], value: true },
+    { op: 'set', path: ['keepAlive', 'orchestratorIntervalMs'], value: 600000 },
+  ], '在席时：草稿真改了的两个字段照常发 op（段在席判据只看宿主现值，不看草稿）')
+})
+
+test('keepAlive 往返：脏标签「缓存心跳」、数字串编辑落盘后读回判定为已落盘', () => {
+  const stored = { roles: {}, usagePrices: {}, usageCurrency: 'USD', keepAlive: { ...KEEP_ALIVE_DEFAULTS } }
+  const draft = draftFromSection(stored)
+  draft.keepAlive = { ...draft.keepAlive, enabled: true, orchestratorIntervalMs: '60' }
+  assert.deepEqual(dirtyLabels(draft, stored), ['缓存心跳'])
+  const ops = buildSettingsOps(draft, layers(stored, { user: stored }))
+  assert.deepEqual(ops.filter((op) => op.path[0] === 'keepAlive'), [
+    { op: 'set', path: ['keepAlive', 'enabled'], value: true },
+    { op: 'set', path: ['keepAlive', 'orchestratorIntervalMs'], value: 60 },
+  ])
+  assert.equal(writeLanded(draft, layers(stored, { user: stored }), ops), true, '按 ops 模拟写回后草稿与现值同形（判定已落盘）')
+  assert.equal(summaryLine({ ...stored, keepAlive: { ...KEEP_ALIVE_DEFAULTS, enabled: true } }).endsWith('缓存心跳开'), true, '开启态进 summary 一行')
+  assert.ok(!summaryLine(stored).includes('缓存心跳'), '默认关不进 summary（不在折叠行里占字数）')
+})
+
+// ── 半输入的两条不一致路径─────────────────────
+
+test('keepAliveIntent：不可用原文 = 未触碰（null）；越界值按 min(1) 回落，不再被读成「回到默认」', () => {
+  // 不可用原文：空、空白、只有个减号、非数字残字、指数残字、非字符串容器
+  for (const raw of ['', '  ', '-', 'abc', '1e', 'x1', null, undefined, {}, [], true]) {
+    for (const field of ['orchestratorIntervalMs', 'childPingAfterMs', 'escalateAfterPings']) {
+      assert.equal(keepAliveIntent(field, raw), null, `未触碰：${field} = ${String(raw)}`)
+    }
+  }
+  // 域内照收：数字毫秒原样、数字串与读面同读法（n≥1 当毫秒）
+  assert.equal(keepAliveIntent('orchestratorIntervalMs', 600000), 600000)
+  assert.equal(keepAliveIntent('orchestratorIntervalMs', 250000), 250000)
+  assert.equal(keepAliveIntent('orchestratorIntervalMs', '90000'), 90000, 'settings.yaml 手改形态的数字串照 keepAliveFrom 读法')
+  assert.equal(keepAliveIntent('escalateAfterPings', '3'), 3)
+  assert.equal(keepAliveIntent('escalateAfterPings', 5), 5)
+  assert.equal(keepAliveIntent('enabled', true), true)
+  assert.equal(keepAliveIntent('enabled', false), false, '关掉开关是一次真意图，不是「未触碰」')
+  // 越界（可解析但 < 下限）：时长项夹到 1 秒 = 1000ms；连拍数夹到 1
+  for (const raw of ['0', 0, '-5', -5, '0.5']) {
+    assert.equal(keepAliveIntent('orchestratorIntervalMs', raw), 1000, `越界 → min(1 秒)：${String(raw)}`)
+    assert.equal(keepAliveIntent('childPingAfterMs', raw), 1000)
+  }
+  assert.equal(keepAliveIntent('escalateAfterPings', '0'), 1, '连拍数的下限是 1 拍')
+  assert.equal(keepAliveIntent('escalateAfterPings', 0), 1)
+  // 非有限数（NaN/Infinity 以数字形态混进来）仍算未触碰
+  assert.equal(keepAliveIntent('orchestratorIntervalMs', NaN), null)
+  assert.equal(keepAliveIntent('orchestratorIntervalMs', Infinity), null)
+})
+
+test('keepAlive 半输入口子一：清空拍距框不算改动——不报脏、零 op、读回判定不相诉', () => {
+  // 现场：用户层钉过拍距 60000（非默认）。旧口径把「清空」投影成默认值 → 与现值
+  // 不等 → 页面报脏 + 发 0 条 op + 读回判「没落盘」= 一次纯属虚构的红字。
+  const pinned = {
+    roles: {}, usagePrices: {}, usageCurrency: 'USD',
+    keepAlive: { ...KEEP_ALIVE_DEFAULTS, enabled: true, orchestratorIntervalMs: 60000 },
+  }
+  const userLayer = { keepAlive: { enabled: true, orchestratorIntervalMs: 60000 } }
+  const stored = draftFromSection(pinned)
+  for (const raw of ['', '  ', '-', 'abc', '1e']) {
+    const cleared = { ...stored, keepAlive: { ...stored.keepAlive, orchestratorIntervalMs: raw } }
+    assert.equal(compareKey(cleared, stored), compareKey(stored), `清空「${raw}」= 未触碰：两侧同形（页面不报脏）`)
+    assert.deepEqual(dirtyLabels(cleared, pinned), [], `待保存清单里没有「缓存心跳」：[${raw}]`)
+    const ops = buildSettingsOps(cleared, layers(pinned, { user: userLayer }))
+    assert.deepEqual(ops.filter((op) => op.path[0] === 'keepAlive'), [], `零 op（不写盘、也不悄悄回退成默认）：[${raw}]`)
+    assert.equal(writeLanded(cleared, layers(pinned, { user: userLayer }), ops), true, `零 op 的保存照判「已落盘」：[${raw}]`)
+    assert.deepEqual(sectionAfterWrite(layers(pinned, { user: userLayer }), ops).keepAlive.orchestratorIntervalMs, 60000, '用户层那条覆盖原封不动')
+  }
+  // 对照（没有用户层覆盖、现值为默认）：清空同样零 op、同样不报脏
+  const plain = { roles: {}, usagePrices: {}, usageCurrency: 'USD', keepAlive: { ...KEEP_ALIVE_DEFAULTS } }
+  const plainStored = draftFromSection(plain)
+  const plainCleared = { ...plainStored, keepAlive: { ...plainStored.keepAlive, orchestratorIntervalMs: '' } }
+  assert.deepEqual(dirtyLabels(plainCleared, plain), [])
+  assert.deepEqual(buildSettingsOps(plainCleared, layers(plain)).filter((op) => op.path[0] === 'keepAlive'), [])
+})
+
+test('keepAlive 半输入口子二：敲 0 按 min(1) 回落成 set（不是 unset 掉用户的覆盖）', () => {
+  const pinned = {
+    roles: {}, usagePrices: {}, usageCurrency: 'USD',
+    keepAlive: { ...KEEP_ALIVE_DEFAULTS, enabled: true, orchestratorIntervalMs: 60000 },
+  }
+  const userLayer = { keepAlive: { enabled: true, orchestratorIntervalMs: 60000 } }
+  const stored = draftFromSection(pinned)
+  const zeroed = { ...stored, keepAlive: { ...stored.keepAlive, orchestratorIntervalMs: '0' } }
+  assert.deepEqual(dirtyLabels(zeroed, pinned), ['缓存心跳'], '敲 0 是一次真改动（不是「回到默认」）')
+  const ops = buildSettingsOps(zeroed, layers(pinned, { user: userLayer }))
+  assert.deepEqual(ops.filter((op) => op.path[0] === 'keepAlive'),
+    [{ op: 'set', path: ['keepAlive', 'orchestratorIntervalMs'], value: 1000 }],
+    '0 → 夹到下限 1 秒并 set；旧口径会误发 unset，把用户层那条覆盖悄悄删掉')
+  assert.equal(writeLanded(zeroed, layers(pinned, { user: userLayer }), ops), true, '写回后判据一致（不是每次都红）')
+  assert.deepEqual(sectionAfterWrite(layers(pinned, { user: userLayer }), ops).keepAlive.orchestratorIntervalMs, 1000, '落盘值就是 1 秒')
+  // 越界家族同类：负数 / 0.5 都夹到 1 秒，且都不碰别的字段
+  for (const raw of ['-5', '0.5', 0]) {
+    const bad = { ...stored, keepAlive: { ...stored.keepAlive, childPingAfterMs: raw } }
+    assert.deepEqual(buildSettingsOps(bad, layers(pinned, { user: userLayer })).filter((op) => op.path[0] === 'keepAlive'),
+      [{ op: 'set', path: ['keepAlive', 'childPingAfterMs'], value: 1000 }], `越界「${String(raw)}」→ 1 秒`)
+  }
+  // 连拍数越界：下限 1 拍（不是 1000）
+  const pings = { ...stored, keepAlive: { ...stored.keepAlive, escalateAfterPings: '0' } }
+  assert.deepEqual(buildSettingsOps(pings, layers(pinned, { user: userLayer })).filter((op) => op.path[0] === 'keepAlive'),
+    [{ op: 'set', path: ['keepAlive', 'escalateAfterPings'], value: 1 }])
+  // 「改回默认 = 撤销覆盖」的老口径不受影响（默认值仍走 unset）
+  const backToDefault = { ...stored, keepAlive: { ...stored.keepAlive, orchestratorIntervalMs: KEEP_ALIVE_DEFAULTS.orchestratorIntervalMs } }
+  assert.deepEqual(buildSettingsOps(backToDefault, layers(pinned, { user: userLayer })).filter((op) => op.path[0] === 'keepAlive'),
+    [{ op: 'unset', path: ['keepAlive', 'orchestratorIntervalMs'] }], '真改回默认值仍是 unset')
 })

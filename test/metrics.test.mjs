@@ -1,4 +1,4 @@
-// dsh-my-go — metrics 观测埋点测试（0.4.0-tisitan.0 第 0 期 0.1 步）。
+// dsh-my-go — metrics 观测埋点测试（ 第 0 期 0.1 步）。
 //
 // 两档：
 //   ① 模块直测（脱离 mock-ctx 的纯函数直测，既有成功模式）：追加/保序/close 幂等/
@@ -198,7 +198,7 @@ test('broker 接线（默认开）：go_work 派发与 end 落账各产生一行
     await broker.apply(ctx, {})
     const r = await tools.get('go_work').execute({ agent: 'explore', prompt: '观测档' }, execOf(parent))
     assert.equal(r.status, 'running', '编排行为零变化（派发照常成功）')
-    // 提交制起（0.5.0-tisitan.1）：completed 终局需先 report_submit 才会直通（end 行），
+    // 提交制起：completed 终局需先 report_submit 才会直通（end 行），
     // 否则走 report-gate-repair（不记 end 行）——本用例主旨是 metrics 接线，先提交。
     const submitArgs = { report: '完整报告全文', conclusion: '结论摘要', evidence: ['src/a.js:12'], open: '无' }
     const expectedSummary = [

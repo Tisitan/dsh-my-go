@@ -5,7 +5,7 @@
  * src/client.js) and the node --test suite (imported directly) — keep this
  * module dependency-free (no react, no @deepseek-ai/*).
  *
- * The priority chain (tisitan.19) merges the former primary binding selects
+ * The priority chain merges the former primary binding selects
  * and the fallback chain list into ONE editor: a chain is
  * `[{ provider: string, model: string }...]` where #1 IS the primary binding
  * (attempt 0) and #2..N are the fallback chain in order. Storage shape is
@@ -63,7 +63,7 @@ export function decomposeChain(chain) {
 }
 
 /**
- * Save-boundary normalization (tisitan.20 D1): drop fallback entries whose
+ * Save-boundary normalization (D1): drop fallback entries whose
  * provider AND model are both empty. A fully-empty fallback has zero runtime
  * semantics — the host pickFallbackEntry warns and skips it, while attempt/
  * total counters still count it — so half-filled placeholder rows never

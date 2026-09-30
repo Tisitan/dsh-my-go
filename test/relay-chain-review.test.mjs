@@ -120,7 +120,7 @@ test('R4(终局真空探针): 挂起链随主编会话销毁清理并留痕（wa
     dispatch('subagent/end', { ...GOOD_END('摘要'), id: spawned[0].childId })
     await waitFor(() => snapshotNow().parents[PARENT.id]?.chains?.[0]?.state === 'suspended', { what: 'chain suspended' })
     // 挂起已落盘（chains 桶在台账上）。注意：waitFor 不支持 async 谓词（Promise
-    // 恒真，3.3 教训）——台账/板面轮询一律 readFileSync 同步读。
+    // 恒真）——台账/板面轮询一律 readFileSync 同步读。
     const ledgerPath = join(home, 'dsh-my-go', 'orchestration-ledger.json')
     const readLedger = () => { try { return JSON.parse(readFileSync(ledgerPath, 'utf-8')) } catch { return null } }
     await waitFor(() => { const l = readLedger(); return l !== null && l.chains !== undefined && l.chains[PARENT.id] !== undefined }, { what: 'chains bucket persisted' })

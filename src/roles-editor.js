@@ -1,5 +1,5 @@
 /**
- * dsh-my-go — role detail pane (0.5.0-tisitan.3).
+ * dsh-my-go — role detail pane.
  *
  * The right-hand column of the 模型与角色 block: everything you can change about
  * the *selected* role. Built-in and custom roles share the pane; a custom row
@@ -146,22 +146,6 @@ export function renderRolesPane(deps) {
         }, EFFORTS.map((option) => el('option', { key: option, value: option }, effortLabel(option)))),
         el('div', { className: 'mygo-hint' }, '推理强度：越高越聪明，也越贵。'),
       ),
-      el('div', { className: 'mygo-field' },
-        el('label', { className: 'mygo-label' }, 'DSV4P0813 补丁'),
-        el('label', { className: 'mygo-check' },
-          el('input', {
-            type: 'checkbox',
-            checked: row.dsv4p0813 === true,
-            disabled: disabled || key === 'sisyphus',
-            onChange: (event) => setBinding(key, 'dsv4p0813', event.target.checked),
-          }),
-          '启用',
-        ),
-        el('div', { className: 'mygo-hint' }, key === 'sisyphus'
-          ? 'Sisyphus 会话不经过 DSV4P0813 注入识别面，勾选对其不生效，已置灰锁定。'
-          : '两阶段锚定上下文注入，专为 DeepSeek V4 Pro 0813 调校，其他模型勿开；只对 MyGO preset 派发的子代理会话生效。'),
-      ),
-
       key === 'sisyphus'
         ? el('div', { className: 'mygo-field mygo-fieldWide' },
           el('div', { className: 'mygo-hint' }, 'Sisyphus 的编排纪律人设不提供面板覆盖；总调度只认对话框所选模型，此处配置为兜底/补丁位（仅当插件配置 bindSisyphus 开启时生效）。'),

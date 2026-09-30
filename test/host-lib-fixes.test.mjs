@@ -1,18 +1,18 @@
-// lib 半存储/面板面回归（0.3.0-tisitan.8 lib/client 修复批，0.1.7 契约改造后）：
-//   E4/B-04  读面失败不许谎报成功 → 端点退役后改判为「旧设置面端点不再存在」
-//   E7/B-05  脏键整批毒杀 → ROLE_KEY_PATTERN 过滤（ops 编译层已搬浏览器侧）
-//   E10/B-03 snapshot 端点无 try → 桥抛错回结构化 internal
-//   E5/A-02  snapshot 出口裁剪（history 末 8 / 剔 prompt）
-//   E9/B-07  面板通道注册壳（原 rpc.handle arity 探测 → F1 换 webServer 直注册）
-//   B-10     getBuiltinPersona 单一来源（0.1.7：包内 prompts/ 就地生效）
+// lib 半存储/面板面回归（lib/client 修复项，0.1.7 契约后）：
+//   E4  读面失败不许谎报成功 → 端点退役后口径为「旧设置面端点不再存在」
+//   E7  脏键整批毒杀 → ROLE_KEY_PATTERN 过滤（ops 编译层已搬浏览器侧）
+//   E10 snapshot 端点无 try → 桥抛错回结构化 internal
+//   E5/ snapshot 出口裁剪（history 末 8 / 剔 prompt）
+//   E9  面板通道注册壳（原 rpc.handle arity 探测 → F1 换 webServer 直注册）
+//   getBuiltinPersona 单一来源（0.1.7：包内 prompts/ 就地生效）
 // 0.1.7 退役面（随预设声明行范式一并删除）：安装同步安装器（ensurePresetInstalled /
 // presetInstallRoot / BROKER_CLUSTER_ROSTER）与其全部用例——$DSH_HOME/.agent-presets
 // 在 0.1.7 已无任何代码读取，整条拷贝机制连同 config.installPreset 闸一起退役。
 // 每进程独立（node --test 按文件分进程），DSH_HOME 指向本文件专属临时目录。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as host from '../lib/index.js'
 import { createPanelRpcTransport, callWebRouteHandler, resolvedHostConfig, createSettingsStub } from './helpers/mock-ctx.mjs'
@@ -88,7 +88,7 @@ test('段访问器抛错：独立留痕，RPC 面不受牵连', async () => {
   }
 })
 
-// ── E4/B-04（改判）：旧设置面端点必须彻底不在 ─────────────────────────────
+// ── E4：旧设置面端点必须彻底不在 ─────────────────────────────
 
 test('loadSettings / saveSettings / listModels 端点已退役：一律 bad-request（混合通道不许复活）', async () => {
   const settings = {
@@ -107,9 +107,9 @@ test('loadSettings / saveSettings / listModels 端点已退役：一律 bad-requ
   assert.equal((await rpc('/dsh-my-go', 'snapshot', {})).ok, true, '面板端点照常（迁移没牵连非设置面）')
 })
 
-// ── E7/B-05：脏键不再毒杀整批保存（判据搬到 ops 编译层）────────────────────
+// ── E7：脏键不再毒杀整批保存（判据搬到 ops 编译层）────────────────────
 
-test('写面：draft.roles 里的脏键就地丢弃，其余行照常落盘（E7/B-05 判据搬到 ops 编译层）', () => {
+test('写面：draft.roles 里的脏键就地丢弃，其余行照常落盘（判据搬到 ops 编译层）', () => {
   const ops = buildSettingsOps({
     roles: {
       'Bad Key': { provider: 'evil', model: 'evil' }, // 大写 + 空格：schema 必拒
@@ -218,9 +218,9 @@ test('snapshot：桥缺席仍是降级空态（裁剪对空形状零副作用）
   }
 })
 
-// ── E9/B-07：rpc.handle arity 探测 ────────────────────────────────────────
+// ── E9：rpc.handle arity 探测 ────────────────────────────────────────
 
-// ── E9/B-07 → F1：面板通道注册壳（webServer 直注册 + 手工信封）───────────────
+// ── E9 → F1：面板通道注册壳（webServer 直注册 + 手工信封）───────────────
 // 0.1.5-alpha.1 的 connection.rpc.handle 在注册时读 owner.webServer 必抛（owner 被
 // 钉死在 client-connection 自己的 apply fiber），通道从未挂上、面板 RPC 全量吃 405。
 // 本半改为直接 webServer.register(prefix route)，并在 handler 内补回 rpc.handle 代做
@@ -381,7 +381,7 @@ test('F1 回归闸：宿主缺陷面 connection.rpc.handle 仍会抛，本半不
   assert.equal((await rpc('/dsh-my-go', 'listTools', {})).ok, true, '通道靠 webServer 直注册存活')
 })
 
-// ── B-10（0.1.7 改判）：getBuiltinPersona 单一来源 = 包内 prompts/ ─────────
+// ── 0.1.7 口径：getBuiltinPersona 单一来源 = 包内 prompts/ ─────────
 
 test('getBuiltinPersona：直接读包内 prompts/（安装副本这条候选随机制退役）', async () => {
   const { ctx, rpc } = mockHostCtx({ settings: createSettingsStub() })

@@ -3,12 +3,12 @@
 > **设计哲学**：让对的工种用对的脑子，Sisyphus 是唯一的总指挥和质检官。
 
 > **本文读者与权威关系**：本文是编排行为的**运行时规格**——Sisyphus 系统提示
-> 与五类通信工具协议的权威源（broker 按它实现，`preset/agent.cordis.yml` 的
+> 与五类通信工具协议的权威源（broker 按它实现，`preset/agent.patch.yml` 的
 > 编排指令段按它教 Sisyphus），面向维护本项目的 agent 与贡献者。使用与安装
 > 看 [README.md](README.md)，实现机制与文件映射看
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；三方各有分工，不互为抄本。
 
-**My** tasks, where to **GO**?????
+多智能体编排预设：主编调度 + 内置工种名册 + 报告落板。
 
 ---
 
@@ -18,7 +18,7 @@
 
 - **所有子智能体（叶子节点）不直接通信**，必须经由 Sisyphus 中转。
 - **执行模式**：单线阻塞，同一时段每个编排会话内只能有一个智能体在运行
-  （tisitan.10 起各会话流水线相互独立、互不排队）。
+  （各会话流水线相互独立、互不排队）。
 - **核心职责分离**：
   - Sisyphus 负责 **“调度 + 审查 + 驳回”**
   - 子智能体负责 **“执行 + 汇报”**
@@ -27,7 +27,7 @@
 
 ## 🧠 智能体清单
 
-参考 oh-my-openagent 的编排设计，针对 DSH 经过一定优化：
+参考 [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)（前身 oh-my-openagent） 的编排设计，针对 DSH 经过一定优化：
 
 | 智能体 | 绑定模型 | Effort | 职责 | 触发关键词 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -57,9 +57,9 @@
 
 当子智能体需要请求 Sisyphus 协助时使用该 tools
 
-| key     | value                          |
+| key     | value |
 | ------- | ------------------------------ |
-| intent  | 协助类型                       |
+| intent  | 协助类型 |
 | content | 具体情况、理由、内容的详细说明 |
 
 **`intent` 枚举值：**
@@ -78,10 +78,10 @@
 
 启动一个新的子智能体（空上下文）
 
-| key    | value            |
+| key    | value |
 | ------ | ---------------- |
 | agent  | 要调用哪个 agent |
-| prompt | 输入的 prompt    |
+| prompt | 输入的 prompt |
 
 新的智能体应当同样拥有一个唯一 ID 用于 Sisyphus 操作。
 
@@ -89,32 +89,32 @@
 
 恢复被挂起的 SubAgent，发送新的 Prompt 并继续运行，可用于驳回或传话。
 
-| key    | value             |
+| key    | value |
 | ------ | ----------------- |
 | id     | 要调用的 agent ID |
-| prompt | 输入的新 prompt   |
+| prompt | 输入的新 prompt |
 
 ### 4. 转发（子 Agent → Sisyphus → 子 Agent）—— forward
 
 当主模型批准了子 Agent 的 Help 请求，且 content 可直接作为 Prompt 时，主模型 Sisyphus 可使用此功能快速转发。
 
-| key    | value                                                        |
+| key    | value |
 | ------ | ------------------------------------------------------------ |
-| from   | 需要被转发的 need_help ID                                    |
+| from   | 需要被转发的 need_help ID |
 | target | 目标 Agent ID，或类型；填 ID 时等效于 continue + prompt，填类型时等效于 go_work + prompt |
 
 ### 5. 结论（子 Agent → Sisyphus）—— report_submit 报告落板制
 
-报告外部化开启时（`reportExternalization: true`，装机口径，见
-`preset/agent.cordis.yml`），子 Agent 的完工交付**不是**「输出最后一段输出等
+报告外部化开启时（`reportExternalization: true`，出厂即开，见
+`preset/agent.patch.yml`），子 Agent 的完工交付**不是**「输出最后一段输出等
 Sisyphus 分析」，而是**调用 `report_submit` 一次交齐六字段**：
 
-| key        | value                                                          |
+| key        | value |
 | ---------- | -------------------------------------------------------------- |
 | report     | 完整报告全文（实施细节、过程、全部证据），落报告板供主编切片取阅 |
-| conclusion | 2-4 句自包含完工结论（做了什么、关键决策、结果）               |
+| conclusion | 2-4 句自包含完工结论（做了什么、关键决策、结果） |
 | evidence   | 字符串数组，每项一条裸「路径:行号」锚点，或 `test:`/`image:` 前缀行；确无文件证据传 `["无"]` |
-| open       | 未决/遗留事项，没有写「无」                                     |
+| open       | 未决/遗留事项，没有写「无」 |
 | deviation  | 偏差记录：与派工方案的偏离点及理由，没有写「无」（**施工层 Hermes/Hephaestus 必填**，其余工种选填） |
 | unverified | 未验项：没验证到的面，确实没有才写「无」（**施工层 Hermes/Hephaestus 必填**，其余工种选填） |
 
@@ -143,23 +143,27 @@ Sisyphus 在收到子 Agent 的响应后，**有权** 要求驳回重做或追�
 1. **子 Agent 不得直接调用其他子 Agent**。所有外部操作必须通过 Sisyphus 转发。邻接消息工具（上游 `send_message` / `list_agents` / `interrupt_agent`）对子 Agent 已 deny 不可用，子 Agent 唯一的上报通道是 `need_help`（挂起并等 Sisyphus 处置）。
 2. **子 Agent 不得主动发起对话**。只能被动响应 Sisyphus 的分发——不得用邻接消息工具（`send_message` 等）直插 Sisyphus 回合；完工交付走 `report_submit` 报告落板制（报告外部化开启时，见「5. 结论」；闸关时随子会话最后一段输出经 harness 完工通知回传），下一步怎么走由 Sisyphus 裁定。
 3. **Sisyphus 不得将“换人”等同于“原地升级模型”**。当收到 `intent=replan` 时，必须切换智能体（如 Hephaestus → Oracle），而非切换模型。
+4. **CHANGELOG 只记产品变更**（功能 / 行为 / 契约 / 测试）。
+
+---
+
+## 🔧 仓内纪律（改代码必读）
+
+### 心跳信号点（keep-alive）
+
+修改 broker 事件发射路径后，**必须**逐点对照 `preset/tools/broker-heartbeat.mjs`
+头注的信号点清单与 `test/heartbeat.test.mjs` 的逐点 pin——心跳信号点共 **8 处**
+（`noteHeartbeatSignal` 调用点）：spawn（`broker-scheduler.mjs`）· 备选重派成功后 ·
+报告补发投递成功（`broker-ending.mjs`）· continue 两档出口（steer / queued 复活）·
+forward 复活支 · need_help · report_submit（`broker-tools.mjs`）。
+漏一处信号，正在干活的子代会在一拍后被判 stale、三拍后标红请主编当场裁决（误伤一条
+真在跑的线）；多一处则摘要里的信号时刻虚高，卡死的线不会被浮上台面。
+心跳摘要的渲染字段（行字段 / 排序 / ≤500B 截断口径）变动时，**必须同步**
+`test/heartbeat.test.mjs` 的 pin 与 `prompts/sisyphus.md` 的「心跳维护回合」段
+（机制见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §2.12）。
 
 ---
 
 ## 📝 配置
 
 配置项应当能在 DSH 的设置中使用 WebUI 直接进行配置。
-
-配置项除了模型和思考程度，应当再给每个智能体设计一个开关：是否对该智能体作用 DSV4P0813 补丁。DSV4P0813 需要特定的上下文注入流程才能发挥出全部能力（参考内部实验项目的两阶段注入方案）
-
-
-
-## 其他
-
-DSH 相关文档可参考由社区编写的《DeepSeek Harness 白皮书》
-
-在任务完成时，请完善 @README.md
-
-各个部分的 Prompt 由你自己书写。
-
-你还需要适配 DSH 的 UI，可以在右侧边栏上用树状图的形式标明子 Agent 的运行情况。

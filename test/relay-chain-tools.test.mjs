@@ -26,7 +26,7 @@ let spawnSeq = 0
 // 捕获 spawn 载荷、agents 注册主编（resolveParentAgent/notifyOwner 通路）。
 async function chainCtx(config = {}) {
   const spawned = []
-  const { ctx, dispatch, tools, restricted, home } = createMockCtx({
+  const { ctx, dispatch, tools, restricted } = createMockCtx({
     agents: { get: (id) => (id === PARENT.id ? PARENT : undefined) },
     captureRestrict: true, // deny 闸断言的数据源（agent/created → tools.restrict 捕获）
     startContinuable: withRealSignalContract(async (spec) => {
@@ -264,8 +264,8 @@ test('T8 赛跑预查(D10): fallback continue——世代已终局 → 直接推
     assert.equal(r.state, 'running')
     assert.ok(r.workId, 'settled 自查 → 直接 T2 派发下一跳（不二次挂起）')
     assert.equal(chain.cursor, 1)
-    // 断言口径修正（0.1.7 批）：标签说的是「resume 后下一跳 spawn」，而 resume 前
-    // spawned 已是 2（T2 自动推进那一跳）。旧写法钉 `=== 2` 与其标签自相矛盾——它
+    // 断言口径（0.1.7）：标签说的是「resume 后下一跳 spawn」，而 resume 前
+    // spawned 已是 2（T2 自动推进那一跳）。钉 `=== 2` 与其标签自相矛盾——它
     // 只在「第三跳的 startContinuable 尚未落地」那一瞬侥幸成立（await 链上多一次
     // fs 往返就赢、少一次就输）。0.1.7 起 prompts/ 就地可读、挂载期预热命中缓存，
     // 该竞速窗口消失，旧断言恒红。改钉真语义：resume 后必须多出第三跳。
@@ -284,7 +284,7 @@ test('T8 赛跑预查(D10): fallback continue——世代已终局 → 直接推
 // ── 台账 v3 round-trip（D12/D28）──────────────────────────────────────────────
 
 test('台账 v3: 建链落盘 → 全新 apply 恢复——running 归一 suspended(restart)（D28），运行时键作废', async () => {
-  const { ctx, tools, home } = await chainCtx()
+  const { tools, home } = await chainCtx()
   try {
     const r = await tools.get('chain_start').execute({ hops: DECL_AUTO2 }, execOf(PARENT))
     // 等防抖窗（250ms）后的落盘出现 chains 桶——有界轮询（waitFor 不吃 async 谓词，

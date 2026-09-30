@@ -1,6 +1,6 @@
 /**
  * dsh-my-go — end 管线（subagent/end dispatcher + 落账收尾 + 失败备选重派 +
- * 报告补发链及其贴身 helper；5.4 波自 broker.mjs 抽出）。
+ * 报告补发链及其贴身 helper；自 broker.mjs 抽出）。
  *
  * 成员与唯一归属：processEnd（归因六件套执行：缓冲闸、取快照、落地 ops、发
  * notices、按 decision 起执行链、按 facts.advance 推进队列——不含业务判定，
@@ -10,15 +10,15 @@
  * queued 投递 + 失败终局回退）与两件贴身 helper readTurnFailure（附因取证
  * live 快路径 → 档案主路径）、pickFallbackEntry（备选条目预检）。
  *
- * 与调度簇（./broker-scheduler.mjs）的双向环用**相互回调注入**解（5.2 波 E2 簇
- * 同手法，5.4 裁决）：dispatchWork 登记同步段的认领重放调本簇 processEnd 尾、
+ * 与调度簇（./broker-scheduler.mjs）的双向环用**相互回调注入**解（ E2 簇
+ * 同手法）：dispatchWork 登记同步段的认领重放调本簇 processEnd 尾、
  * 本簇 processEnd 的推进决策点与 attemptFallbackRedeploy / attemptReportRepair
  * 各终局支调调度簇 advanceQueue——两条边都由 broker.mjs 接线时包壳，本模块
  * 零 import 调度簇、零回引 broker.mjs，模块 import 环为零。对外消费面只有
  * processEnd 一件（ctx.on('subagent/end') 注册点留守本体）；finalizeEnd 等其余
  * 成员皆簇内私有（实读无簇外消费点）。
  *
- * persistReportBoard **不在本簇**（5.3 B2 裁定留守 broker.mjs）：它是本体侧的
+ * persistReportBoard **不在本簇**（留在 broker.mjs）：它是本体侧的
  * 落板底座，除本簇补发链三处兜底路径外还注入 relay 簇共用——随迁会让 relay
  * 的注入源变成兄弟簇（破坏「簇间零互引」），故以回调形态注入本簇。
  *
@@ -29,7 +29,8 @@
  * spawnChild / buildStallNotice）、notify 四件、endbuffer 两件、dispose 一件、
  * delivery 一件、relay 两件（包壳闭包）、capability 的 modelExists、本体的
  * orchOfChild / bump / persistReportBoard 全部显式注入；bindings 经 getBindings
- * 现读；REPORT_EXT / SUBAGENT_PROMPT_MAX 按值注入。纯函数层直引 ../shared/
+  * 现读；ensureHeartbeat（备选重派成功后的心跳信号 + 起表，包壳闭包）
+ * 与 REPORT_EXT / SUBAGENT_PROMPT_MAX 按值注入。纯函数层直引 ../shared/
  * （end-attribution / failure / archive / adjacent / board / misc / report-format）。
  *
  * 卸载口径：本簇无定时器与累积表（补发链与重派链的在飞 promise 与挂载实例
@@ -44,6 +45,7 @@ import { agentLabel } from '../shared/misc.mjs'
 import { hasBoardEntry } from '../shared/board.mjs'
 import { REDISPATCH_RESUME_PREFIX } from '../shared/report-format.mjs'
 import { attributeEnd, shouldAdvanceQueue } from '../shared/end-attribution.mjs'
+import { bindSpawnedChild } from '../shared/orchestration.mjs'
 
 export function createEndingOps({
   childRegistry,
@@ -64,6 +66,7 @@ export function createEndingOps({
   bufferEnd,
   claimBufferedEnd,
   deliverWithQueueFallback,
+  ensureHeartbeat,
   relayChainOnEnd,
   resolveChainFallback,
   persistReportBoard,
@@ -75,13 +78,13 @@ export function createEndingOps({
 
   // 失败附因兜底：subagent/end 的通知层载荷只有 stopReason 的 kind，
   // error.message 完整存在于子会话档案的 turn/end reason.error。
-  // 0.2.3-tisitan.9：continuable 销毁顺序使 subagent/end 发射晚于 live store 摘除，
+    // continuable 销毁顺序使 subagent/end 发射晚于 live store 摘除，
   // live 读法（sessions 服务 API）降级为快路径；主路径读持久化档案
   // （readArchivedTurnFailure，多帧 zstd 逐帧解压）。哪边先拿到用哪边。
   function readTurnFailure(childId) {
     try {
       const session = getSessions()?.get?.(childId)
-      // alpha.4 起 Session.events getter 删除 → snapshotEvents()（0.3.0-tisitan.4，
+            // alpha.4 起 Session.events getter 删除 → snapshotEvents()（
       // 共享适配 sessionEvents 特性探测，双版本同跑；坏档/已关闭回落空数组）
       const events = sessionEvents(session)
       if (Array.isArray(events)) {
@@ -118,9 +121,9 @@ export function createEndingOps({
   }
 
   // subagent/end 收尾共用：落史 + 失败附因推送 + 登记清理 + 快照刷新。
-  // **本函数不推进队列**——0.3.0-tisitan.12 起这条不再是注释协议：推进时机是
-  // attributeEnd 返回值里的 facts.advance（'now' / 'no' / 'if-owned'），由 end
-  // dispatcher 单点执行（R3/R4）。重派成功路径占槽不推进，也走同一个决策点。
+    // **本函数不推进队列**：推进时机是 attributeEnd 返回值里的 facts.advance
+    // （'now' / 'no' / 'if-owned'），由 end dispatcher 单点执行——不是靠注释约定
+    // （R3/R4）。重派成功路径占槽不推进，也走同一个决策点。
   function finalizeEnd(orch, ownerPid, type, childId, conclusion, failed, failure) {
     const done = orch.finish(childId, conclusion, failed)
     if (done?.clearedHelp) notifyClearedHelp(ownerPid, childId, done.clearedHelp)
@@ -144,10 +147,10 @@ export function createEndingOps({
   // 递增（新记录 fallbackAttempt=attempt，下次决策从该索引起找）而链长有限
   // ⇒ 必然终止，绝无无限循环。
   //
-  // 链 × 备选链的感知点（三期 3.4，D10/T11/T12；本体在 ./broker-relay.mjs 的
-  // resolveChainFallback，接线在 broker 侧）：pending-fallback 态的链按亡棒
+    // 链 × 备选链的感知点（D10/T11/T12；本体在 ./broker-relay.mjs 的
+  // resolveChainFallback，接线在 broker 侧）：pending-fallback 态的链按失败子代
   // childId 精确查找，评估终局喂给状态机（重派成功 → 换绑挂起等裁决；失败落账 →
-  // 链 failed）。非链棒（绝大多数）查不到链，零开销直落。
+  // 链 failed）。非链子代（绝大多数）查不到链，零开销直落。
   async function attemptFallbackRedeploy({ orch, ownerPid, type, childId, failure, baseConclusion, failureLine }) {
     // 分类器否决（abort/dispose/用户中断特征）绝不重派，走既有失败路径
     if (!isFallbackable(failure)) {
@@ -155,7 +158,7 @@ export function createEndingOps({
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
       // 链感知（T12）：评估终局为失败落账，链 failed（§四 E6 格）
       resolveChainFallback(orch, childId, { type: 'fallback-failed', reason: '附因属中断类，不重派' })
-      // 终局显式通知（0.2.3-tisitan.18）：评估中预告之后必有终局口径到达，
+            // 终局显式通知：评估中预告之后必有终局口径到达，
       // 主流程据此解除静默等待、进入自己的失败处置
       notifyOwner(ownerPid, `[dsh-my-go] 失败终局: ${childId} (${type}) 附因属中断类，不重派，按失败终局落账`)
       advanceQueue(orch)
@@ -168,7 +171,7 @@ export function createEndingOps({
       console.warn(`[dsh-my-go] fallback: ${String(childId)} 无法重派（${!prompt ? '编排记录缺原始 prompt' : `父会话 ${String(ownerPid)} 已不在注册表`}），按失败终局处理 (${type})`)
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
       resolveChainFallback(orch, childId, { type: 'fallback-failed', reason: '无法重派（缺编排记录或父会话）' })
-      // 终局显式通知（0.2.3-tisitan.18）：同终局口径
+            // 终局显式通知：同终局口径
       notifyOwner(ownerPid, `[dsh-my-go] 失败终局: ${childId} (${type}) 无法重派（${!prompt ? '编排记录缺原始 prompt' : '父会话已不在注册表'}），按失败终局落账`)
       advanceQueue(orch)
       return
@@ -179,7 +182,7 @@ export function createEndingOps({
       // 无链/链尽/备选预检全败：既有失败历史路径不变（附因保留）
       finalizeEnd(orch, ownerPid, type, childId, `${baseConclusion}${failureLine}`, true, failure)
       resolveChainFallback(orch, childId, { type: 'fallback-failed', reason: '备选链尽' })
-      // 终局显式通知（0.2.3-tisitan.18）
+            // 终局显式通知
       notifyOwner(ownerPid, `[dsh-my-go] 失败终局: ${childId} (${type}) 备选链尽，按失败终局落账`)
       advanceQueue(orch)
       return
@@ -201,15 +204,15 @@ export function createEndingOps({
     }
     if (done.clearedHelp) notifyClearedHelp(ownerPid, childId, done.clearedHelp)
     childRegistry.retireChild(childId)
-    // fallbackEntry 与 fallbackAttempt 同点入账（0.2.3-tisitan.17）：备选条目本体随
+        // fallbackEntry 与 fallbackAttempt 同点入账：备选条目本体随
     // 编排记录走 finish→history→台账落盘全链路，供复活时重建 activeFallback；
     // 链上下一跳重派时新占位记录携带新条目，天然覆盖上一跳。
     // fallbackLabel 提到 try 外声明（与 request.label 同源同值）：spawn 失败
     // 的 catch 块看不到 try 内的 request，清理必须依赖外层作用域的 label。
-    // R2.3 复合键（二期 2.4，read-pool-semantics.md §5.1）：label 内嵌 spawnToken
+        // R2.3 复合键（read-pool-semantics.md §5.1）：label 内嵌 spawnToken
     // （占位 id）——resolve 前窗口的 waterfall 覆盖查询键 = header.label（=
     // request.label 落盘镜像），token 使并发同工种同 prompt 的双重派各自精确
-    // 命中自己的 pending 条目；旧裸 label 键在并行下后写覆盖先写 = 备选配置串号。
+    // 命中自己的 pending 条目；裸 label 键在并行下后写覆盖先写 = 备选配置串号。
     const placeholder = orch.beginSpawning(type, prompt, {
       fallbackAttempt: attempt,
       fallbackEntry: { provider: entry.provider, model: entry.model },
@@ -219,7 +222,7 @@ export function createEndingOps({
       // agentOptions 覆盖为备选条目（provider/model 均已过 pickFallbackEntry 预检）；
       // persona/toolFilter 与 dispatchWork 同源（bindings[type] + prompts 链），
       // 重派 = 同角色换脑重新上岗。
-      // spawn 前登记 pending 备选（棒2-Z2）：覆盖 startContinuable resolve
+            // spawn 前登记 pending 备选：覆盖 startContinuable resolve
       // 之前 waterfall 只能靠 label 识别工种的窗口
       pendingFallbackByLabel.set(fallbackLabel, { provider: entry.provider, model: entry.model })
       // 恢复前缀注入（A1）：仅本重派分支把 REDISPATCH_RESUME_PREFIX 拼进
@@ -239,14 +242,27 @@ export function createEndingOps({
       // 旧 childId 的清理已在同步段做过），waterfall 运行期重绑据此保持备选
       // provider/model 不回跳主模型（spawn 的 agentOptions 只管首帧配置）
       childRegistry.promoteFallback({ label: fallbackLabel, childId: newChildId, type, entry: { provider: entry.provider, model: entry.model } })
-      orch.bindChild(placeholder.childId, newChildId)
+            // 与直派同窗口同收口：重派的 spawn 也可能在飞期间撞上 E2 泄漏
+      // 哨兵的年龄回收（占位只按 createdAt 判定），照旧 bindChild 会命中不在册的占位 ⇒
+      // untracked + 结论丢弃 + 假 failed。三条分支收口在 shared/orchestration.mjs 的
+      // bindSpawnedChild（与 broker-scheduler 的直派路径共用同一份实现，不复制第二份）；
+      // extra 承接 fallbackAttempt/fallbackEntry，③ 分支重建占位时链状态不丢。
+      const placeholderLive = orch.currentMap.has(placeholder.childId)
+      bindSpawnedChild(orch, placeholder, newChildId, type, prompt, { fallbackAttempt: attempt, fallbackEntry: { provider: entry.provider, model: entry.model } })
+      if (!placeholderLive) console.warn(`[dsh-my-go] spawn for reclaimed placeholder ${String(placeholder.childId)} landed late; child ${String(newChildId)} (${type}) re-adopted into tracking (fallback redeploy)`)
       childOwner.set(newChildId, parent.id)
+            // 心跳信号 + 起表（与 dispatchWork 同律）：重派是同一属主会话下的新
+      // 世代——新 childId 从此刻开始计时，拍子照常（已有拍子幂等跳过）；占位键的
+      // 表项同点丢弃，不留 work-* 孤儿。
+      childRegistry.dropHeartbeat(placeholder.childId)
+      childRegistry.noteHeartbeatSignal(newChildId, Date.now())
+      ensureHeartbeat(parent.id)
       bump()
       // 链感知（T11/D10）：重派成功 → 链换绑新世代并挂起等裁决。插点同律于
       // dispatchWork 的回填契约：换绑先于下方 E2 认领——重放的 end 查链时
       // state 已是 suspended（不命中 running 匹配），无双推进面。
       resolveChainFallback(orch, childId, { type: 'fallback-redeployed', newChildId })
-      // E2 缓冲认领点（二期 2.4，方案 A）：重派 spawn 也可能被抢跑 end——登记
+            // E2 缓冲认领点（方案 A）：重派 spawn 也可能被抢跑 end——登记
       // （promoteFallback/bindChild/childOwner）落地后同步认领重放，与直派同律。
       const bufferedReplay = claimBufferedEnd(newChildId)
       if (bufferedReplay !== undefined) processEnd(bufferedReplay)
@@ -254,19 +270,19 @@ export function createEndingOps({
       notifyParent(parent, `[dsh-my-go] 备选重派: ${String(childId)} → ${newChildId} (${type}) [备选 ${attempt}/${total}] ${entry.provider}/${entry.model}${failure ? `：${failure.message}` : '（未读到附因，保守切换）'}`)
       // 不 advanceQueue：新 child 已在原槽位语义内运行，队列保持原状
     } catch (error) {
-      // spawn 失败：pending 登记同步清理（棒2-Z2 清理路径），不留悬空覆盖
+            // spawn 失败：pending 登记同步清理，不留悬空覆盖
       pendingFallbackByLabel.delete(fallbackLabel)
       orch.abort(placeholder.childId)
       bump()
       console.error(`[dsh-my-go] fallback 重派 spawn 失败（${entry.provider}/${entry.model}），按失败终局回退:`, error)
       resolveChainFallback(orch, childId, { type: 'fallback-failed', reason: `备选重派 spawn 失败（${entry.provider}/${entry.model}）` })
       notifyParent(parent, `[dsh-my-go] 备选重派 spawn 失败（${entry.provider}/${entry.model}）：${String(childId)} 已按失败落账，队列已推进`)
-      // 槽位已腾出：立即推进队首（0.2.3-tisitan.6 教训：清槽动作必须推进队列）
+            // 槽位已腾出：立即推进队首——清槽动作不推进队列会让队列永久冻结
       advanceQueue(orch, parent)
     }
   }
 
-  // ── 报告补发链（报告提交制，0.5.0-tisitan.1）────────────────────────────────
+    // ── 报告补发链（报告提交制）────────────────────────────────────────────────
   // 前提：report-gate-repair 决策**不 finish**——记录留在 currentMap 实体占槽
   // （「补发期间槽位仍占」的实体化），repairRetried 已在同步段登记（防无限循环：
   // 本链不走 rearmChild，guard 存续到补发轮 end 的转裁决）。本链只做：台账照记
@@ -282,8 +298,8 @@ export function createEndingOps({
       console.warn(`[dsh-my-go] 报告补发无法投递 (${childId}): ${!parent ? `父会话 ${String(ownerPid)} 已不在注册表` : '编排实例缺失'}；按未交付落账转主编裁决`)
       notifyOwner(ownerPid, `[dsh-my-go] 报告补发投递失败: ${childId}，已按「未交付（补发投递失败）」落账，请主编裁决`)
       metrics.record({ kind: 'report-gate', phase: 'repair-failed', childId, sessionId: ownerPid ?? null })
-      // verdict 落账路径补落板（三期 3.5 移交②）：此前此路全文从未落板——
-      // gate-verdict 挂起后主编「带病续链」的直投读板会扑空（input-missing 误挂）。
+            // verdict 落账路径补落板：这条路径不落板时，gate-verdict 挂起后主编
+            // 「带病续链」的直投读板会扑空（input-missing 误挂）。
       // 幂等（report_submit 已落则跳过），fire-and-forget 不改终局时序。
       void persistReportBoard(ownerPid, childId, fullText)
       finalizeEnd(orch, ownerPid, type, childId, fallbackConclusion, false, undefined)
@@ -305,12 +321,16 @@ export function createEndingOps({
       advanceQueue(orch)
       return
     }
+        // 心跳信号：补发链**不 finish**（记录留槽继续干活），投递成功即把该
+    // 子代的心跳信号刷新掉——否则一个正在补交报告、干得好好的子代会在下一拍被
+    // 判成 stale、三拍后被标红请主编当场裁决（误伤一条正在工作的线）。
+    childRegistry.noteHeartbeatSignal(childId, Date.now())
     notifyOwner(ownerPid, `[dsh-my-go] 报告补发已投递: ${childId}（queued），等待补交轮终局`)
     // 投递成功：补交轮自己的 end 会再进闸门（reportSubmitted 已登记 → 合成回执直通 /
     // 仍未提交转裁决），本链到此结束。
   }
 
-  // ── subagent/end dispatcher（B5：决策在 shared/end-attribution.mjs，本处只执行）──
+  // ── subagent/end dispatcher（决策在 shared/end-attribution.mjs，本处只执行）──
   // 归因链的九条决策与三条协议（同步段零 await / 推进时机显式 / guard 消费可见）
   // 都在那个纯函数里，改动前先读它的文件头注释。本处职责只有六件：缓冲闸、取
   // 快照、落地 ops、发 notices、按 decision 起执行链、按 facts.advance 推进队列
@@ -321,7 +341,7 @@ export function createEndingOps({
     // 无 id 的载荷在表上没有键，自撤是幂等空转，故这一步无条件执行。
     cancelDisposeFallback(childId)
     // ★ 缓冲闸（方案 A）：类型登记与台账双双缺席 = 登记未就绪 ⇒ 暂存待认领，
-    //   绝不猜测归因（占位归因兜底已退役，见 end-attribution.mjs E2 收窄注释）。
+    //   绝不猜测归因（占位归因兜底不在归因面，见 end-attribution.mjs E2 注释）。
     //   条件与 attributeEnd 的 E2 前置严格一致：type 取证（活登记 ?? 墓碑）失败
     //   且属主实例台账（currentMap + history）无记录。
     if (childId) {
@@ -335,7 +355,7 @@ export function createEndingOps({
       }
     }
     // 快照只读：类型取证顺序（活登记 → 墓碑 → 编排台账）与属主路由（childOwner
-    // 直达 → 全实例 record 扫描兜底）沿用原实现；写一律走 ops 由下面按序落地。
+    // 直达 → 全实例 record 扫描兜底）在本段固定；写一律走 ops 由下面按序落地。
     const routed = childId ? orchOfChild(childId) : undefined
     const routedOrch = routed?.orch
     const { decision, ops, notices, facts } = attributeEnd({
@@ -394,7 +414,7 @@ export function createEndingOps({
     }
     if (decision === 'fallback-evaluation') {
       // ops（fallbackDecided.add）与 notices（评估中预告）都已在同步段落地，异步
-      // 重派链**必须**是本决策点的最后一件事——协议第 1 条（0.3.0-tisitan.18）。
+            // 重派链**必须**是本决策点的最后一件事——协议第 1 条（同步段零 await）。
       void attemptFallbackRedeploy({
         orch,
         ownerPid,
@@ -409,7 +429,7 @@ export function createEndingOps({
         advanceQueue(orch)
       })
     } else if (decision === 'suspended-help-hold') {
-      // T1 挂起瞬间的停摆通报（本批）。E8 是静默出口：不落史、不腾槽、不推进，
+            // T1 挂起瞬间的停摆通报。E8 是静默出口：不落史、不腾槽、不推进，
       // 于是「槽位被一个等处置的子代占着」在主编那边完全没有回声——队列里有货
       // 才说明这真是一次停摆（有任务在等一个永不到来的推进事件），此时经
       // notifyParent 推一行非唤醒通知补齐可见性；队列空则零通知，与 E8 原口径
@@ -419,7 +439,7 @@ export function createEndingOps({
       const stallNotice = buildStallNotice(orch, orch?.currentMap.get(childId))
       if (stallNotice) notifyOwner(ownerPid, stallNotice)
     } else if (decision === 'finalize') {
-      // 埋点（0.4.0-tisitan.0）：终局落账基线——报告大小分布（conclusionBytes）、
+            // 埋点：终局落账基线——报告大小分布（conclusionBytes）、
       // 子代运行时长（runMs，spawning 占位起算到 end）。record 在 finalizeEnd 之前
       // 取（finish 挪史不影响，取的是同一份 createdAt）；无记录时 runMs 缺席如实。
       const endRecord = orch?.record(childId)
@@ -432,7 +452,7 @@ export function createEndingOps({
         conclusionBytes: facts.conclusion.length,
         ...(endRecord ? { runMs: Date.now() - endRecord.createdAt } : {}),
       })
-      // 报告提交制终局口径（0.5.0-tisitan.1）：pass（回执内芯 = 合成概要，全文已
+            // 报告提交制终局口径：pass（回执内芯 = 合成概要，全文已
       // 随 report_submit 落板）与 verdict（补发后仍未提交，转主编裁决）都记
       // report-gate 事件供观测。D2 阈值反馈环原料：report-gate 事件按 phase 记。
       if (facts.reportGate) {
@@ -475,7 +495,7 @@ export function createEndingOps({
         advanceQueue(orch)
       })
     }
-    // ── 链匹配回调（三期 3.4，§四矩阵：归因之后、推进决策点之前）──────────────
+        // ── 链匹配回调（§四矩阵：归因之后、推进决策点之前）────────────────────────
     // 先匹配后决策（协议第 1 条）：hopChildId 精确命中才轮到链轴，链绝不改写
     // 归因结论。同步段（决策 + patch + notices）零 await；enqueue-hop 的直投
     // 落地是 void 异步链且必须是本决策点最后一件事（协议第 1 条同律）——它

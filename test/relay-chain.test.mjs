@@ -20,7 +20,7 @@ import {
   createChain,
   isChainRow,
   matchChainForEnd,
-  matchChainForWork,
+  
   normalizeRestoredChain,
   reconcileHopDispatch,
   reconcileWorkEnqueued,
@@ -245,7 +245,7 @@ test('T11: fallback-redeployed → suspend-fallback，hopChildId 换绑新世代
   const r = advanceChain(pending, { type: 'fallback-redeployed', newChildId: 'sess-gen2' }, 1009)
   assert.equal(r.decision, 'suspend-fallback')
   assert.deepEqual(r.patch, { state: 'suspended', suspendReason: 'fallback', hopChildId: 'sess-gen2', hopWorkId: null, updatedAt: 1009 })
-  assert.match(r.notices[0].text, /棒亡备选重派成功（新世代 sess-gen2）/)
+  assert.match(r.notices[0].text, /子代失败，备选重派成功（新世代 sess-gen2）/)
   assert.match(r.notices[0].text, /\[fallback\]/)
   // 非 pending 态防御
   assert.equal(advanceChain(started().chain, { type: 'fallback-redeployed', newChildId: 'x' }, 1009).decision, 'idle')
@@ -353,7 +353,7 @@ test('X2: decision 词表封闭——RELAY_DECISIONS 全登记（新增决策不
 
 // ── 匹配 / 回填契约（调用方协议第 1 条 + §4.2-① 时序窗口的纯函数面）────────────
 
-test('M1: matchChainForEnd——running+hopChildId 精确命中；未回填/非 running/旧世代恒不命中', () => {
+test('matchChainForEnd：running+hopChildId 精确命中；未回填/非 running/旧世代恒不命中', () => {
   const chains = [
     started().chain, // running, hopChildId=null（未回填窗口）
     { ...started().chain, hopChildId: 'sess-a' }, // running 已回填
@@ -368,7 +368,7 @@ test('M1: matchChainForEnd——running+hopChildId 精确命中；未回填/非 
   assert.equal(matchChainForEnd([], 'sess-a'), undefined)
 })
 
-test('M2: reconcileWorkEnqueued / reconcileHopDispatch——前置校验 + 幂等（绝不覆盖）', () => {
+test('reconcileWorkEnqueued / reconcileHopDispatch：前置校验 + 幂等（绝不覆盖）', () => {
   const chain = started().chain
   // 回填 A：enqueue 落地
   assert.deepEqual(reconcileWorkEnqueued(chain, 'work-7', 2000), { hopWorkId: 'work-7', updatedAt: 2000 })

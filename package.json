@@ -1,7 +1,7 @@
 {
   "name": "dsh-my-go",
-  "version": "0.5.0-tisitan.7",
-  "description": "DSH plugin: Sisyphus agent orchestration — star topology, single-line blocking, 8 specialist sub-agents (Hermes/Explore/Librarian/Looker/Hephaestus/Prometheus/Oracle/Apelles) with per-type model binding, go_work/continue/need_help/forward communication tools, Web UI tree panel and settings.",
+  "version": "0.5.0",
+  "description": "多智能体编排预设：主编（Sisyphus）调度 + 内置工种名册 + 报告落板；星型拓扑单线阻塞、按工种绑定模型，含 go_work/continue/need_help/forward 通信工具、Web UI 树状图面板与设置页。",
   "author": "Tisitan",
   "license": "MIT",
   "repository": {
@@ -54,6 +54,7 @@
   "scripts": {
     "build": "node scripts/build-client.mjs",
     "build:client": "node scripts/build-client.mjs",
+    "lint": "eslint .",
     "dump:session": "node scripts/dump-session.mjs",
     "typecheck:archive": "tsc --noEmit",
     "test": "node scripts/build-client.mjs && node test/apply.mjs && node --test \"test/**/*.test.mjs\""
@@ -77,13 +78,13 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": ">=0.1.7-alpha.1 <0.2.0",
-    "@deepseek-ai/dsh-subagent": ">=0.1.7-alpha.1 <0.2.0",
-    "@deepseek-ai/dsh-agent": ">=0.1.7-alpha.1 <0.2.0",
-    "@deepseek-ai/dsh-llm": ">=0.1.7-alpha.1 <0.2.0",
-    "@deepseek-ai/dsh-settings": ">=0.1.7-alpha.1 <0.2.0",
-    "@deepseek-ai/dsh-client-locale": ">=0.1.7-alpha.1 <0.2.0",
-    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.7-alpha.1 <0.2.0",
+    "@deepseek-ai/dsh-agent": ">=0.1.7-alpha.1 <0.3.0",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.7-alpha.1 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.7-alpha.1 <0.3.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.7-alpha.1 <0.3.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-alpha.1 <0.3.0",
+    "@deepseek-ai/dsh-subagent": ">=0.1.7-alpha.1 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.7-alpha.1 <0.3.0",
     "react": "^18.2.0"
   },
   "dependencies": {
@@ -94,8 +95,11 @@
     "@deepseek-ai/dsh-agent": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-llm": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-subagent": "^0.1.7-alpha.1",
+    "@eslint/js": "^9.39.5",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "globals": "^17.12.0",
     "js-yaml": "^4.1.0",
     "typescript": "^5.6.0"
   }

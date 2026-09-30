@@ -1,4 +1,4 @@
-// 多会话编排隔离回归批：每个 Sisyphus 编排会话一条独立流水线。
+// 多会话编排隔离：每个 Sisyphus 编排会话一条独立流水线。
 // 旧 standing-scope 单例下，会话1的子代理在跑时会话2的 go_work 会被排队
 // 阻塞；改造后两侧队列/槽位/求助单互不干扰，childOwner 把子代理侧事件
 // 路由回属主流水线。
@@ -60,7 +60,7 @@ test('A 忙时 B 的 go_work 不排队：两个编排会话各自独立的流水
 test('childOwner 路由：need_help 落进属主流水线，subagent/end 只推进属主队列', async () => {
   let spawnCalls = 0
   const reports = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
     subagentsExtra: {
@@ -108,7 +108,7 @@ test('childOwner 路由：need_help 落进属主流水线，subagent/end 只推�
 
 test('session/disposed 销毁该会话的整条流水线，其他会话不受影响', async () => {
   let spawnCalls = 0
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
   })
@@ -144,11 +144,11 @@ test('session/disposed 销毁该会话的整条流水线，其他会话不受影
 test('continue 先查调用方实例再全局扫描：复活已完工子代理并重新登记属主', async () => {
   let spawnCalls = 0
   const followups = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: agentsMock,
     startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
     subagentsExtra: {
-      followup: async (parent, childId, blocks) => { followups.push({ parentId: parent.id, childId }); return 'msg-x' },
+      followup: async (parent, childId) => { followups.push({ parentId: parent.id, childId }); return 'msg-x' },
     },
   })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
@@ -176,12 +176,12 @@ test('continue 先查调用方实例再全局扫描：复活已完工子代理�
   assert.equal(snapA.currentRecords?.length ?? 0, 0)
 })
 
-test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作，属主消亡才允许收养（棒2-L2）', async () => {
+test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作，属主消亡才允许收养', async () => {
   // 可变注册表：模拟 A 会话中途消亡（冷恢复/legacy 收养路径的前提）
   let parentALive = true
   const registry = { get: (id) => (id === 'parent-A' ? (parentALive ? parentA : undefined) : parentB) }
   const followups = []
-  const { ctx, listeners, dispatch, tools } = mockCtxFull({
+  const { ctx, dispatch, tools } = mockCtxFull({
     agents: registry,
     startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
     subagentsExtra: {

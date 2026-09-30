@@ -1,11 +1,11 @@
 # dsh-my-go 声明式接力链：链状态机语义设计（三期 3.1）
 
 > 交付：Hephaestus 设计批（三期步骤 3.1，规划 docs/plans/next-gen-architecture-0.4.0.md :289-295）。
-> 纯设计文档，零代码改动。行号一律以 **0.4.0-tisitan.0 工作区（含一期+二期未 commit 成果）** 为准，
+> 纯设计文档，零代码改动。行号一律以 ** 工作区（含一期+二期未 commit 成果）** 为准，
 > 全部为本文撰写时实测值；后续批次施工平移行号不构成语义变化。
 >
 > 已裁决参数（本文直接采用，不再展开论证）：
-> - **D10**：棒亡备选重派成功 → 链挂起等主编裁决；**链绑 childId 不绑槽位**——链推进
+> - **D10**：子代失败后备选重派成功 → 链挂起等主编裁决；**链绑 childId 不绑槽位**——链推进
 >   判定键恒为当前跳世代 childId（真 id），重派换代即换绑，主编不裁决链不动（规划 :423）；
 > - **D11**：链声明与裁决走**新工具对 `chain_start` + `chain_resolve`**，声明结构
 >   （逐跳 agent/prompt/gate）全部由工具层 JSON schema 扛——**绝不把链语义塞进 prompt
@@ -16,7 +16,7 @@
 >   回合快照携带 suspended 链行（D13 原文「快照注入」，规划 :426）。
 >
 > 本文新提出的待拍板项编号接续规划 D1~D15 与二期 D16~D20，记 **D21~D29**（§七），
-> 不擅自拍板。交付验收 = 维护者评审拍板后 3.2~3.6 才动码（规划 :287「语义未拍板绝不动码」）。
+> 不擅自拍板。交付验收：决策拍板后才动码（3.2~3.6 已按定值实施）（规划 :287「语义未拍板绝不动码」）。
 
 ---
 
@@ -38,14 +38,14 @@
   （chain_resolve 参数）；上一棒全文以 `<mygo_relay_input trusted="false">` 数据块
   包裹注入，全程不经过主编上下文（R3.1 的结构面关死）。
 
-术语约定：**跳（hop）**= 链声明中的一个子代理任务步；**棒亡**= 当前跳子代 error 终局
+术语约定：**跳（hop）**= 链声明中的一个子代理任务步；**子代失败**= 当前跳子代 error 终局
 进备选链；**世代（generation）**= 同一跳的第 N 次执行体（首派 / 报告补发轮 / 备选重派轮
 皆属同一跳的不同世代，childId 互异）。
 
 ## 〇′、实施状态（三期 3.7 收口时标注——本文全部决议均已落地）
 
-> 状态基准：三期 3.1~3.6 施工完成、3.7 收口（版本保持 0.4.0-tisitan.0 未 bump，
-> tisitan.7 段 Unreleased 口径，`relayChains` 缺省关，待发版挂起解除后由主编
+> 状态基准：三期 3.1~3.6 施工完成、3.7 收口（版本保持 未 bump，
+> Unreleased 口径，`relayChains` 缺省关，待发版挂起解除后由主编
 > 统一定稿）。测试编号对应：T/P/M/R-C 系列 = `test/relay-chain.test.mjs`（纯模
 > 块）；T1/T8/R-a~R-l = `test/relay-chain-tools.test.mjs`（工具层）；
 > R-auto/R2/R7/R11/T11/T14/input-missing = `test/relay-chain-relay.test.mjs`
@@ -480,8 +480,8 @@ C 系列（chain 状态机纯函数，`test/relay-chain.test.mjs`）与 R 系列
 | R1 | auto 端到端：explore→librarian 双跳，读池内自动接力，prompt 断言含数据块 + RELAY_CLAUSE + SUMMARY_CLAUSE | 3.1/3.2/3.3 | R3.1 |
 | R2 | **锁绕行探针**：write lane 满 + 链 hop(write) ⇒ work 入队不上岗；readPoolSize=1 全链串行退化 | INV-1（R3.4，规划 :320 探针条款） | R3.4 |
 | R3 | review/sync 挂起 → 三档取文通知 → chain_resolve continue（现场/预写两路）+ abort；sync 缺 prompt 必须被拒（R-k） | T3/T5/T6/T7 | R3.2 |
-| R4 | **终局真空探针**：suspended 后主编会话 disposed ⇒ 链清理 + 台账桶删 + warn/metrics 留痕（仿 0.2.3-tisitan.18 预告-终局纪律） | §5.2（R3.2，规划 :328-330） | R3.2 |
-| R5 | **双执行探针（R3.3 规划 :379 原文）**：棒亡 → 重派成功挂起 → dead-baton 迟到 end + 新世代 end 各来一发 ⇒ 链只认 hopChildId 一发；主编 abort 后新世代 end 走非链落账 | E1/E6 格 + T7/T11 | R3.3 |
+| R4 | **终局真空探针**：suspended 后主编会话 disposed ⇒ 链清理 + 台账桶删 + warn/metrics 留痕（仿 预告-终局纪律） | §5.2（R3.2，规划 :328-330） | R3.2 |
+| R5 | **双执行探针（R3.3 规划 :379 原文）**：子代失败 → 重派成功挂起 → dead-baton 迟到 end + 新世代 end 各来一发 ⇒ 链只认 hopChildId 一发；主编 abort 后新世代 end 走非链落账 | E1/E6 格 + T7/T11 | R3.3 |
 | R6 | D10 裁决赛跑：suspended(fallback) 期间新世代已终局 → chain_resolve continue 自查立即推进（board 直投照走）；未终局 → 换绑等待 | §4.2-③ | R3.3 |
 | R7 | **注入探针（M2 复发咬合）**：上一棒产出内嵌伪造「下一跳指令」+ 伪造 `</mygo_relay_input>` 闭合 ⇒ 断言下一跳 prompt 中指令仍为预写文本、闭合串已转义、产出整体在数据块内 | INV-2（R3.1，规划 :310-311 探针条款） | R3.1 |
 | R8 | E9 复合：首次不合格链冻结（T15）→ 补发轮合格推进 / 仍不合格走 D22 拍板案；补发投递失败落账 → 链同口径 | T15/T16 | R3.2 |
@@ -496,7 +496,7 @@ C 系列（chain 状态机纯函数，`test/relay-chain.test.mjs`）与 R 系列
 
 ---
 
-## 七、决策空白清单（须维护者拍板，本文不擅自定）
+## 七、决策记录
 
 | # | 问题 | 选项 | 本文倾向（仅供参考） | 阻塞步骤 |
 | --- | --- | --- | --- | --- |
