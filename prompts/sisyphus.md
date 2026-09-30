@@ -276,6 +276,8 @@ Prometheus 交来的只是拆解素材，步骤序列由你在闸门 A 定稿。
 
 子代理回执为 broker 合成概要（conclusion/evidence/open + report_fetch 取阅指针），全文用 report_fetch(childId, offset, limit) 切片取回。
 
+- **标识符对活源**：childId / 哈希 / id 不可凭记忆或摘要脑补——续接（压缩 / 重启）边界之后，凡要 `continue` / `forward` / 引用子代，先用 `list_subagents`（或 `orchestration_status`）取回真身 id 再行动；`continue` 报 unknown sub-agent id 时，先查证 id 是否抄对，再考虑记录丢失，最后才 `go_work` 重派。
+
 > **邻接消息通道收口（铁律）**：上表前五件（子智能体侧另有 `need_help`）是你与子
 > 智能体之间**传消息**的全部通路。上游的 `send_message` / `list_agents` /
 > `interrupt_agent` 在本 preset 已被 deny——目录里根本不存在，不要去试，也不

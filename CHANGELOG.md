@@ -135,10 +135,10 @@
   `docs/FORK-GUIDE.md` 两处「十具 → 十一具」、`test/host-parity.test.mjs` 的工具名循环与
   计数文案、`test/anti-bypass.test.mjs` 两侧 deny 逐名断言补 `heartbeat`、
   `SELF_REGISTERED_TOOLS` 挂 `heartbeat`。
-- **README 的 peer 上界口径与 package.json 对齐**（`<0.2.0` → `<0.3.0`）：依据是**实机验证线**
-  ——宿主 `0.2.0-rc.1` 上 `followup` 唤醒语义（心跳投递原语）已实机核过（B2-3.1 复核），
-  `<0.2.0` 那个上界在此不再成立；`package.json` 的七个 peer 行本已是 `<0.3.0>`，README 此前
-  是未同步的旧口径（**本版不动 package.json**，版本递增决策待确认）。
+- **全部 peer 依赖行上界由 `<0.2.0` 放宽至 `<0.3.0`**：`package.json` 的七个 peer 行（`dsh-agent`
+  / `dsh-client-locale` / `dsh-client-ui-settings` / `dsh-llm` / `dsh-settings` / `dsh-subagent`
+  / `dsh-tools`）与 `README.md` 环境要求节同批改写。依据是**实机验证线**——宿主 `0.2.0-rc.1` 上
+  `followup` 唤醒语义（心跳投递原语）已实机核过（B2-3.1 复核），`<0.2.0` 那个上界在此不再成立。
 - `preset/tools/broker-scheduler.mjs` / `broker-ending.mjs` / `broker-tools.mjs` 各接心跳
   信号 + 起表（派发成功 / 备选重派成功 / continue 两档出口与 forward 复活支，三簇同律）；
   `broker-ending.mjs` 的报告补发投递成功点补一条心跳信号（补发链不 finish、记录留槽，
