@@ -6,7 +6,7 @@
 // （pending → promote 的优先级回退）、复活重建的守卫。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createChildRegistry, DISPOSED_TYPES_CAP, REPORT_SUBMITTED_CAP } from '../preset/shared/child-registry.mjs'
+import { createChildRegistry, DISPOSED_TYPES_CAP, REPORT_SUBMITTED_CAP, STAGED_REPORTS_CAP } from '../preset/shared/child-registry.mjs'
 
 const newRegistry = (cap) => createChildRegistry(cap === undefined ? {} : { disposedTypesCap: cap })
 
@@ -75,15 +75,41 @@ test('retireChild 与 retireTypeRecords 的分工：后者故意保留属主路�
 // 回灌，于是 continue/forward 复活轮只要不重交报告，闸门就判「从未提交」并发射
 // 补发（历史竞态现场）。现在这张表跨终局保留，唯一的收缩手段是
 // 有界 FIFO 容量——下面两例钉住「保留」与「有界」两端。
-test('提交登记跨终局仍在：retireChild 后 rearmChild 复活，闸门读到的一直是已交付', () => {
+test('提交登记代际语义：终局不清（双发窗口兜底），复活开新一轮才清', () => {
   const r = newRegistry()
   r.markSubmitted('c1', { conclusion: '一轮结论', evidence: ['src/a.ts:1'], open: '无' })
   r.sessionTypes.set('c1', 'hermes')
   r.retireChild('c1')
-  assert.equal(r.reportSubmitted.get('c1').conclusion, '一轮结论', '终局只翻类型侧四表，登记原样在')
+  assert.equal(r.reportSubmitted.get('c1').conclusion, '一轮结论', '终局只翻类型侧四表，登记原样在（双发残余窗口里终局后再来的 end 不该被判从未提交）')
   r.rearmChild('c1', { agentType: 'hermes' }, 'parent-1')
-  assert.equal(r.reportSubmitted.has('c1'), true, '复活不需要回灌——条目从未离开')
-  assert.equal(r.reportSubmitted.get('c1').conclusion, '一轮结论', '复活轮读到的仍是上一代交过的那份')
+  assert.equal(r.reportSubmitted.has('c1'), false, '复活即新世代：上一代际的提交不算本轮已交付（否则复活轮不交报告也被误判直通）')
+})
+
+test('长正文暂存池：stage/take/drop 三件（有界 FIFO + 复活 / 终局两处自动清）', () => {
+  const r = newRegistry()
+  assert.equal(r.stageReport('c1', '# 长报告'), true)
+  assert.equal(r.takeStagedReport('c1'), '# 长报告', '取回原稿')
+  assert.equal(r.stageReport('c1', ''), false, '空串不入池')
+  r.stageReport('c2', '第二稿')
+  assert.equal(r.takeStagedReport('c1'), '# 长报告', 'take 不清（成功提交才由调用方 drop）')
+  r.markSubmitted('c1', { conclusion: 'c', evidence: [], open: '无' })
+  assert.equal(r.dropStagedReport('c1'), true, '成功提交后清理')
+  assert.equal(r.takeStagedReport('c1'), undefined)
+  assert.equal(r.dropStagedReport('c1'), false, '幂等')
+  // 复活即新世代 / 终局翻篇同点清暂存（子代已离场，没有重调会来取）
+  r.stageReport('c2', '第二稿')
+  r.rearmChild('c2', { agentType: 'hermes' }, 'parent-1')
+  assert.equal(r.takeStagedReport('c2'), undefined, 'rearmChild 清暂存')
+  r.stageReport('c3', '第三稿')
+  r.retireChild('c3')
+  assert.equal(r.takeStagedReport('c3'), undefined, 'retireChild 清暂存')
+  r.stageReport('c4', '第四稿')
+  r.retireTypeRecords('c4')
+  assert.equal(r.takeStagedReport('c4'), undefined, 'retireTypeRecords 清暂存')
+  // 有界：超容驱逐最旧
+  for (let i = 0; i < STAGED_REPORTS_CAP + 3; i++) r.stageReport(`s${i}`, `稿${i}`)
+  assert.equal(r.stagedReports.size, STAGED_REPORTS_CAP, '表长恒不越 CAP')
+  assert.equal(r.takeStagedReport('s0'), undefined, '最旧者被驱逐')
 })
 
 test('提交登记有界 FIFO：超 REPORT_SUBMITTED_CAP 驱逐最旧；重交刷新最近性', () => {
@@ -166,9 +192,10 @@ test('复活即新世代：rearmChild 清备选 once-guard 与 abort 护航，�
 // 1.5 方案甲裁决：repairRetried 的清理双点各司其职——retireChild 是防无限循环的
 // 关键（补发链不走 rearmChild，guard 存续到补发轮 end 的转裁决），rearmChild 防
 // 主编复活做新任务被旧 guard 误吞补发资格。两处都只清自己。
-// 对照面（复活轮误判）：同两个清理点上 reportSubmitted **一律不跟着翻篇**——
-// 授权是「本代际还能不能再补发」（一次性），提交是「它历史上交过报告」（永久事实），
-// 两者语义相反，曾经被写在同一处正是误判的源头。
+// 对照面（代际语义）：reportSubmitted 在 retireChild（终局）**不翻篇**——终局落账后
+// 若还有一条 end 到来（双发残余窗口），清掉会把它判成「从未提交」而二次补发；
+// 真正的代际翻篇点是 rearmChild（主编主动复活开新一轮），那时旧登记必须清——
+// 否则复活轮不交报告也被判已交付，主编读到的是上一代的旧结论。
 test('repairRetried（报告补发 once-guard）：retireChild 终局清 + rearmChild 复活清，且只清自己', () => {
   const r = newRegistry()
   r.repairRetried.add('c1')
@@ -178,8 +205,8 @@ test('repairRetried（报告补发 once-guard）：retireChild 终局清 + rearm
   r.retireChild('c1')
   assert.equal(r.repairRetried.has('c1'), false, '终局翻篇：授权随任何终局落账清零（转裁决后主编复活不误吞新任务）')
   assert.equal(r.repairRetried.has('c-other'), true, '他人授权不受牵连')
-  assert.equal(r.reportSubmitted.has('c1'), true, '同一清理点：提交登记不随授权翻篇')
+  assert.equal(r.reportSubmitted.has('c1'), true, '同一清理点：提交登记不随终局翻篇（双发窗口兜底）')
   r.rearmChild('c-other', { agentType: 'hermes' }, 'parent-1')
   assert.equal(r.repairRetried.has('c-other'), false, '复活即新世代同点清（规格字面；补发链不走此处，不构成死循环回路）')
-  assert.equal(r.reportSubmitted.get('c-other').conclusion, 'c-other 交过', '复活点同样不清提交登记')
+  assert.equal(r.reportSubmitted.has('c-other'), false, '复活点清提交登记（上一代际的交付不算本轮）')
 })

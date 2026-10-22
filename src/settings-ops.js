@@ -19,7 +19,7 @@ import { KEEP_ALIVE_DEFAULTS } from '../preset/shared/constants.mjs'
 import { ROLE_KEY_PATTERN } from './roster-rows.js'
 import { PRICE_KEY_PATTERN, sanitizePriceRow } from './usage-price-rows.js'
 
-/** The five per-role binding fields the page edits (persona/toolFilter are role-only). */
+/** The five per-role binding fields the page edits (persona is role-only). */
 export const BINDING_FIELDS = ['provider', 'model', 'reasoningEffort', 'fallbacks']
 
 /** 心跳四字段（写面显式携带口径与 BINDING_FIELDS 同款）。 */
@@ -186,10 +186,6 @@ function normalizeForCompare(draft, baseline) {
         : text(entry[field]).trim()
     }
     normalized.persona = text(entry.persona)
-    normalized.toolFilter = {
-      allow: (Array.isArray(record(entry.toolFilter).allow) ? entry.toolFilter.allow : []).map(String).filter((n) => n !== ''),
-      deny: (Array.isArray(record(entry.toolFilter).deny) ? entry.toolFilter.deny : []).map(String).filter((n) => n !== ''),
-    }
     out.roles[key] = normalized
   }
   const prices = {}
@@ -314,27 +310,21 @@ export function buildSettingsOps(draft, stored = {}) {
       if (!(field in src)) continue
       collect(['roles', key, field], cleanValue(field, src[field]))
     }
-    // persona / toolFilter only ever come from the roles dict row: the promoted
+    // persona only ever comes from the roles dict row: the promoted
     // top-level shape has no consumer for them.
     if (carried && typeof carried === 'object') {
       if ('persona' in carried) collect(['roles', key, 'persona'], text(carried.persona))
-      const filter = record(carried.toolFilter)
-      for (const side of ['allow', 'deny']) {
-        if (!Array.isArray(filter[side])) continue
-        collect(['roles', key, 'toolFilter', side], filter[side].map(String).filter((name) => name !== ''))
-      }
     }
     // 名册里还没有这一行、而草稿这行全是空值：一条 set 都没有，宿主不会凭空长出
     // 对象——「新建一个还没填完的角色」保存后静默消失（连读回都没有：宿主回
     // ok:true 就算「已保存」）。整行 set 让新建立刻可见；已有行或填了值的行照走字段
     // 级显式携带，不会因为「新建」就把没碰过的字段一并改写。
     // 「新建」的判据取行形状而非「有没有值」：页面建角色时写的是完整一行
-    // （fallbacks 数组 + toolFilter 对象都在），而只带 persona 的部分行是
+    // （携带 fallbacks 数组），而只带 persona 的部分行是
     // 「清掉某个可能不存在的覆盖」——后者必须仍按 unset 走（空=不落地），
     // 否则改一次人设默认会给不存在的角色凭空造出一行。
     const looksLikeNewRow = carried !== null && typeof carried === 'object'
       && Array.isArray(carried.fallbacks)
-      && carried.toolFilter !== null && typeof carried.toolFilter === 'object'
     if (!(key in storedRoles) && looksLikeNewRow && !fieldOps.some((op) => op.op === 'set')) {
       ops.push({ op: 'set', path: ['roles', key], value: canonicalRole(src, carried) })
       continue
@@ -434,11 +424,6 @@ function canonicalRole(src, carried) {
   }
   const from = record(carried)
   out.persona = text(from.persona)
-  const filter = record(from.toolFilter)
-  out.toolFilter = {
-    allow: (Array.isArray(filter.allow) ? filter.allow : []).map(String).filter((name) => name !== ''),
-    deny: (Array.isArray(filter.deny) ? filter.deny : []).map(String).filter((name) => name !== ''),
-  }
   return out
 }
 

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 /**
  * dsh-my-go — board 存储层（报告外部化的读写唯一出处）。
  *
@@ -44,7 +45,7 @@
  * metrics 模块零改动。
  */
 
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { encodeSegment } from './archive.mjs'
@@ -73,34 +74,81 @@ function splitLines(raw) {
 // 写入报告全文（覆盖语义：同 (sessionId, childId) 重写即替换）。
 // tmp+rename 原子范式（broker.mjs writeLedgerSync 同款）：撕裂的只会是 .tmp，
 // 残骸尽力清理后把原错误抛给调用方处置。
-// 覆盖留痕（报告板覆盖卫生）：正板已存在时，先把旧板改名 <childId>.prev.md 再写
-// 新板——被顶掉的上一版不至于无声蒸发（取证现场：一次落板把 4993B 原文压成
+// 覆盖留痕：正板已存在时复制旧板到独立临时文件，原子替换 .prev 后再替换正板
+// （失败始终保留原正板，同路径写入串行化）——被顶掉的上一版不至于无声蒸发（取证现场：一次落板把 4993B 原文压成
 // 777B 摘要，无从对照）。只保留最近一版（同名 .prev 直接被覆盖），且刻意不参与
 // 任何读取路径：hasBoardEntry / readBoardSlice 都只认正板 <childId>.md。
+const boardWrites = new Map()
 export async function writeBoard(sessionId, childId, content) {
+  const key = boardPath(sessionId, childId)
+  const previous = boardWrites.get(key) ?? Promise.resolve()
+  const result = previous.then(() => replaceBoard(sessionId, childId, content))
+  const tail = result.catch(() => {})
+  boardWrites.set(key, tail)
+  void tail.then(() => { if (boardWrites.get(key) === tail) boardWrites.delete(key) })
+  return result
+}
+
+async function replaceBoard(sessionId, childId, content) {
   if (typeof content !== 'string') {
     throw new TypeError(`writeBoard: content must be a string, got ${typeof content}`)
   }
   const path = boardPath(sessionId, childId)
   const prevPath = boardPath(sessionId, childId, '.prev.md')
-  const tmpPath = `${path}.tmp`
+  const tmpPath = `${path}.${randomUUID()}.tmp`
+  const prevTmpPath = `${prevPath}.${randomUUID()}.tmp`
   try {
     await mkdir(dirname(path), { recursive: true })
     // 只让位给「确实是文件」的旧板：路径被目录等异常形态占住时不碰它，
     // 让下面真正的 rename 去暴露冲突（失败语义与既有实现一致）。
     const existing = await stat(path).catch(() => null)
-    if (existing?.isFile()) await rename(path, prevPath)
-    await writeFile(tmpPath, content, 'utf-8')
+    await writeFile(tmpPath, content, { encoding: 'utf-8', flag: 'wx' })
+    if (existing?.isFile()) {
+      await copyFile(path, prevTmpPath)
+      await rename(prevTmpPath, prevPath)
+    }
     await rename(tmpPath, path)
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => { /* 残骸本就不在 */ })
     throw error
+  } finally {
+    await rm(prevTmpPath, { force: true }).catch(() => {})
   }
   // bytes = UTF-8 真实字节数（R1.5/D14 容量观测的原料，见文件头注释）。
   return { path, bytes: Buffer.byteLength(content, 'utf-8') }
 }
 
-// 板上是否已有该儿童的报告（报告闸门的兜底判定——「含历史轮」口径的落点）。
+// 代际归档（复活开新一轮时消费）：正板 <childId>.md 原子挪到留痕位
+// <childId>.prev.md（覆盖旧留痕，与 writeBoard 只留最近一版的纪律一致）。
+// 正板缺席 = 无事可做（返回 { archived: false }，不抛——没交过报告的子代被
+// continue 复活是常态）。与 writeBoard 共用同一张串行队列：归档与落板同键时
+// 按到达序执行，不会出现「归档读到半张板」。
+// 效果：新一轮执行期间 report_fetch / 终局闸门 / 链直投读到的都是「本轮未提交」，
+// 上一代际的报告只留在 .prev.md 里可对照。
+const boardArchives = new Map()
+export async function archiveBoardEntry(sessionId, childId) {
+  const key = boardPath(sessionId, childId)
+  const previous = boardArchives.get(key) ?? boardWrites.get(key) ?? Promise.resolve()
+  const result = previous.catch(() => {}).then(() => moveBoardToPrev(sessionId, childId))
+  const tail = result.catch(() => {})
+  boardArchives.set(key, tail)
+  void tail.then(() => { if (boardArchives.get(key) === tail) boardArchives.delete(key) })
+  return result
+}
+
+async function moveBoardToPrev(sessionId, childId) {
+  const path = boardPath(sessionId, childId)
+  const prevPath = boardPath(sessionId, childId, '.prev.md')
+  const existing = await stat(path).catch(() => null)
+  if (!existing?.isFile()) return { archived: false, path, prevPath }
+  await mkdir(dirname(prevPath), { recursive: true })
+  await rename(path, prevPath)
+  return { archived: true, path, prevPath }
+}
+
+// 板上是否已有该儿童的报告（报告闸门的兜底判定：内存登记缺席时的「板为准」路径）。
+// 复活开新一轮时旧正板已被 archiveBoardEntry 挪成 .prev.md，故本判定只对
+// 「本代际的板」为真——上一代际的旧报告不会在这里替新一轮放行。
 // 同步 fs：本函数被 end 归因的同步段消费（协议第 1 条「同步段零 await」），
 // 一枚 existsSync 的代价即一次 stat——archive.mjs 的附因兜底读档早有同步先例。
 // 拼路径恒过 boardPath（穿越面与读侧同一道闸）；段名畸形（空段）时按「无货」

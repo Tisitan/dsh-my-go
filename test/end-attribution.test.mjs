@@ -449,7 +449,8 @@ test('闸门·从未提交首次 → 第九出口：guard op 同步随行、固�
   for (const key of ['deviation', 'unverified']) {
     assert.ok(r.facts.repairPrompt.includes(key), `补发 prompt 点名两尾字段：${key}`)
   }
-  assert.ok(r.facts.repairPrompt.includes('别往 report 正文里塞节标'), '补发 prompt 重申节标已退役')
+  assert.ok(r.facts.repairPrompt.includes('重调传「（已暂存）」'), '补发 prompt 交代暂存复用（免重吐全文）')
+  assert.ok(!r.facts.repairPrompt.includes('禁止任何前后缀描述'), '旧 evidence 紧箍咒零残留')
   assert.ok(r.facts.repairPrompt.includes('只补交报告'), '补发 prompt 明示无需重做任务')
   assert.ok(ownerNotices(r)[0].includes('报告未提交'), '同步预告在 facts 组装期入列')
   assert.equal('repairErrors' in r.facts, false, '提交制无格式错误清单（判定源是登记表）')

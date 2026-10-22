@@ -36,22 +36,14 @@ export const LEDGER_PARENTS_CAP = 200
 // 账本同口径，orchestration 自截断 + broker 读写两侧共用）
 export const HISTORY_CAP = 200
 
-// Code Mode 保留传输名：不进 schemas() 视图、服务端过滤不可屏蔽，也不是可
-// 派生的编排对象——花名册与角色工具过滤清单都按名剔除（lib 半与 broker 半同源）。
+// Code Mode 的 run_code 是保留传输名，不进普通工具花名册。
 export const RUN_CODE_TOOL = 'run_code'
 
-// 本插件注册的编排工具名：schemas() 无参只返回全局层视图（内建 + MCP），
-// preset 层的自产工具不在其中——toolFilter 合法引用它们时不能误杀。
-// 名单允许「先行登记」：工具本体稍后注册也无实害——report_submit /
-// report_fetch / chain_start / chain_resolve 都按这一口径入册，两处消费点
-// （roles 过滤 / liveToolNames）只把它当「允许 toolFilter 合法引用的名字」。
-// **漏挂的代价**：不在名单里的自产工具会被 roster 的工具过滤当未知名剔除
-//（roles.mjs 的 resolveRoleToolFilter），用户写 toolFilter 引用它时静默失效；
-// heartbeat 是无条件注册的主编自助闸，同样按此入册。
+// 补齐 schemas() 全局视图中看不到的 preset 编排工具，供拓扑闸按在册状态收口。
 export const SELF_REGISTERED_TOOLS = ['go_work', 'continue', 'need_help', 'forward', 'orchestration_status', 'list_subagents', 'heartbeat', 'report_submit', 'report_fetch', 'chain_start', 'chain_resolve']
 
 // 上游邻接消息三件套（dsh-tool-subagent-control 注册）：绕过 broker 台账与
-// 单线锁的旁路面，MyGO 会话的 Sisyphus 与子代理两侧都在 agent/created 里
+// 泳道容量闸的旁路面，MyGO 会话的 Sisyphus 与子代理两侧都在 agent/created 里
 // deny 掉（防旁路加固 R1/R2/R3）。need_help 的上报走运行时 API
 // （ctx.subagents.sendMessage / internal 队列符号），与模型可见工具名无关，
 // deny 不影响它。

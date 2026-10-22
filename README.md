@@ -1,7 +1,7 @@
 <!-- deepseek-harness-meta
 {
   "name": "MyGO 编排器",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "tags": ["preset", "模式预设"],
   "description": "把每一步路由到最合适模型的智能体编排器"
 }
@@ -13,27 +13,27 @@
 
 dsh-my-go 是构建在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) 之上的**智能体编排系统**（个人维护项目）。
 
-它以星型 + 单线嵌套拓扑把 DSH 主会话（Sisyphus）与 8 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。参考了 [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)（前身 oh-my-openagent） 的编排设计，针对 DSH 进行了优化调整。
+它以星型嵌套 + 双泳道池化编排把 DSH 主会话（Sisyphus）与 8 个专业子智能体组织起来：Sisyphus 负责调度、审查与驳回，子智能体负责执行与汇报。参考了 [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)（前身 oh-my-openagent） 的编排设计，针对 DSH 进行了优化调整。
 
 ## 一眼看懂
 
 给 DSH 主会话装上**多智能体编排大脑**：主编 Sisyphus 负责调度与质检，按任务难度把每一步路由到不同价位的内置工种模型，子代的报告落进报告板、不占主编上下文。
 
-![编排面板星图（设计基准稿）：主编 Sisyphus 居中，读泳道 Explore / Librarian 并行、写泳道 Hermes 单线](docs/design/graph-running.png)
+![编排面板星图：主编 Sisyphus 居中，读泳道 Explore / Librarian、写泳道多槽](docs/design/graph-running.png)
 
-_上图为面板星图的设计基准稿（`docs/design/graph-running.png`，与实际面板同构）。_
+_上图为面板星图的**设计基准旧稿**（`docs/design/graph-running.png`）。面板实现已支持写泳道多槽（`writePoolSize` 容量驱动，见「特性 → 泳道双池」），但**图示仍是旧版单写槽设计稿**——重出基准图另行报备。_
 
-- **星型拓扑，单线可观测**：子代互不直连，都经主编中转。
+- **星型拓扑，泳道可观测**：子代互不直连，都经主编中转。
 - **按工种分模型，按量付费**：快活便宜、重活强模型。
 - **报告落板**：子代全文进板，不占主编上下文。
-- **泳道读池，读面并行**：写平面恒单线，读平面按池并行。
+- **泳道双池，双面并行**：写平面按 `writePoolSize` 并行（装机 3）、读平面按 `readPoolSize` 并行（装机 3），双车道各 3、峰值 6。
 - **配置全在 WebUI**：模型/档位/备选链/单价。
 
 ## 特性
 
 ### 编排拓扑
 
-- **星型 + 单线嵌套**：子智能体（叶子）互不通信，全部经主编 Sisyphus 中转；同一编排会话同时段只有一个子代在运行，便于审查与观测。
+- **星型嵌套 + 双泳道池化**：子智能体（叶子）互不通信，全部经主编 Sisyphus 中转；同一编排会话内的并发受泳道容量约束（装机双车道各 3、峰值 6 并行），便于审查与观测。
 - **步骤级调度 + 质检**：Prometheus 只交素材（现状拆解 / 候选方向 / 风险清单），决断留在主编；结论不达标驳回重做，被驳回的子代保留上下文继续。
 - **11 具编排 / 通信 / 报告 / 接力链工具**：`go_work` / `continue` / `need_help` / `relay` / `report_submit` 等。
 - 拓扑与不变量见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §1、§2.1。
@@ -44,9 +44,11 @@ _上图为面板星图的设计基准稿（`docs/design/graph-running.png`，与
 - 内置角色（除 Sisyphus）可在配置卡覆盖 persona；角色卡可导出 / 导入全字段 JSON；面板底部常驻花名册。
 - 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §2.3。
 
-### 泳道读池
+### 泳道双池
 
-- **读平面并行池（`readPoolSize`）**：读平面（explore / librarian）按池并行，写平面（其余工种）恒单线。
+- **写平面并行池（`writePoolSize`）**：写平面（hermes / hephaestus / prometheus / oracle / looker 与自定义角色）按池并行，默认 1（=关闭=写平面串行）、钳 [1,3]、挂载期读一次不可热更。
+- **读平面并行池（`readPoolSize`）**：读平面（explore / librarian）按池并行，默认 1、钳 [1,3]、挂载期读一次不可热更。
+- **双车道各 3、峰值 6 并行**：两池各自独立计数，lane 内 FIFO；读池满不挡写任务、写池满不挡读任务。**两池皆 1 才退化为全局单线**（与旧行为逐字节等价）。并发投放写任务前须确认写集不相交且无数据依赖。
 - 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §2.8。
 
 ### 接力链
@@ -80,7 +82,7 @@ _上图为面板星图的设计基准稿（`docs/design/graph-running.png`，与
 ### 防旁路
 
 - **拓扑防线**：DSH 原生邻接消息三件套（`send_message` / `list_agents` / `interrupt_agent`）对主编与子代硬 deny；`subagent` / `subagent_fork` / `workflow` / `ralph` 仅在主编顶层保留。
-- **角色级工具过滤**：`toolFilter`（allow / deny）随 roles 走，与拓扑防线正交——见「[自定义角色（roles）](#自定义角色roles)」。
+- **工具继承**：各工种继承宿主工具权限；旧 `toolFilter` 配置可读取但明确忽略。防递归与邻接通信拓扑约束独立保留。
 
 _真正实现 "按量付费"_
 ## 产品术语
@@ -88,7 +90,8 @@ _真正实现 "按量付费"_
 - **主编（Sisyphus）**：编排会话的顶层角色——派工、验收与裁决都在它这一层；模型随对话框所选，`roles.sisyphus` 恒为名册顶级键。
 - **工种**：子代理的角色类型（`hermes` / `explore` / `librarian` / `looker` / `hephaestus` / `prometheus` / `oracle` / `apelles`），决定人设、模型绑定与工具面；聚合面上也叫「内置工种」。
 - **子代理**：主编按需派生的一次任务执行单元；它的 `subagent/end` 是归因、落账与队列推进的驱动事件。
-- **泳道（lane）**：并发槽位的分组——写平面恒单线，读平面（`explore` / `librarian`）按 `readPoolSize` 并发。
+- **泳道（lane）**：并发槽位的分组——写平面（其余工种）按 `writePoolSize` 并发、读平面（`explore` / `librarian`）按 `readPoolSize` 并发，两者皆默认 1、钳 [1,3]、挂载期读一次。
+- **退化语义**：仅当两池皆 1（`readPoolSize=1` 且 `writePoolSize=1`）才退化为全局单线，与旧行为逐字节等价。
 - **花名册（roster）**：角色名册的单一真源（`preset/shared/roles.mjs` 的 `rosterEntries`）；面板常驻区与系统提示简报共用同一份投影。
 - **拍距**：主编心跳的唤醒间隔（`keepAlive.orchestratorIntervalMs`，出厂 250 秒 = 5 分钟缓存 TTL × 5/6）。
 - **前瞻窗口 H**：`(输入价 ÷ 缓存命中价 − 1) × 拍距`——子代理剩余等待超过 H 时它已经不值得再等一拍（缓存届时已凉），低于 H 则继续。
@@ -250,7 +253,7 @@ dsh web   # 启动 Web GUI，新会话选择 MyGO!!!!! 模式
 ```
 用户 ──► Sisyphus（调度+质检）──► Hermes / Explore / Librarian / Looker
             │                        Hephaestus / Prometheus / Oracle
-            └── 单线阻塞队列 ◄── 所有子智能体结论回流
+            └── 泳道阻塞队列 ◄── 所有子智能体结论回流
 ```
 
 - 子智能体 = DSH **continuable subagent**，持久化独立 Session，支持后续邻接投递
@@ -260,8 +263,9 @@ dsh web   # 启动 Web GUI，新会话选择 MyGO!!!!! 模式
 - 模型绑定 = 创建时 `agentOptions` + `agent/request` waterfall 覆盖
   `reasoningEffort`（**跟随 DSH 模型目录**：只设置该模型实际支持的思考档位；
   模型无思考选项或档位不支持时不设置，走模型默认）。
-- 单线阻塞 = broker 编排状态机按编排会话分桶（各会话各持一份 当前运行 / 队列 /
-  求助 / 历史）；读平面并行池按泳道放宽写平面不变（见「特性 → 泳道读池」）。
+- 泳道阻塞 = broker 编排状态机按编排会话分桶（各会话各持一份 当前运行 / 队列 /
+  求助 / 历史）；读写两车道各自独立计数（`readPoolSize` / `writePoolSize`），
+  两池皆 1 才退化为全局单线（见「特性 → 泳道双池」）。
 - 面板通道 = host 半自行注册 `/dsh-my-go` 前缀路由，单通道 + 端点分发（快照 /
   工具清单 / 内置人设 / 用量四枚），统一信封 `{ok:true,value}` /
   `{ok:false,error:{code,message,details}}`；宿主 web 服务缺席即留痕跳过注册
@@ -292,7 +296,7 @@ dsh-my-go → 配置区），broker 半只读取：
 | `<type>.model`                  | 不指定（继承） | 该工种的模型；缺省时继承父会话模型 |
 | `<type>.reasoningEffort`        | 不指定         | 期望思考档位（如 high/max）；**只在模型实际支持时应用**，否则走模型默认 |
 | `<type>.fallbacks`              | 空（不启用）   | 备选链 [{provider, model}]，主绑定失败时按序重派 |
-| `roles`                         | 空（仅内置工种）| 自定义角色名册 dict：`roles.<role>` 键名须 `^[a-z][a-z-]*$`，绑定字段同 `<type>.*`，另加 persona / toolFilter（见下方「自定义角色」） |
+| `roles`                         | 空（仅内置工种）| 自定义角色名册 dict：`roles.<role>` 键名须 `^[a-z][a-z-]*$`，绑定字段同 `<type>.*`，另加 persona（见下方「自定义角色」） |
 | `usagePrices`                   | 空（不计成本）  | 用量单价表 dict：键为 `{provider}/{model}`（在**第一个** `/` 处切分，OpenRouter 式 `openrouter/deepseek/deepseek-chat` 无歧义），每行四桶单价——`input` / `output` 必填（缺一整行丢弃），`cacheRead` / `cacheWrite` 可选（未定价 = 该桶只记 token 不计成本），单位随 `usageCurrency` 币种 / 1M tokens；空表 = 只记 token 不算钱 |
 | `usageCurrency`                 | USD             | 单价表全局币种，`USD` \| `CNY` 单选（整表一个币种，不按行混币——混币种合计随汇率漂移无意义）；面板用量统计的成本列按它渲染符号 |
 | `keepAlive`                     | 关（enabled=false）| 主编缓存心跳四子项：`enabled`（默认**关**，须显式打开）/ `orchestratorIntervalMs` 主编拍距（250000 ms = 5 分钟档 TTL × 5/6）/ `childPingAfterMs` 子代静默多久算「该探活」（1800000 ms = 30 分钟）/ `escalateAfterPings` 连续几轮建议 ping 仍无信号就升红（3）；**界面按秒示人、存量仍是毫秒**，把某项改回默认值保存 = 撤销该项覆盖（机制见下） |
@@ -367,8 +371,8 @@ Librarian / Looker 用便宜轻量模型，Prometheus / Oracle / Apelles 用最�
 
 内置工种之外，可在 `roles` dict 定义自己的角色——每个角色拥有与内置
 工种相同的绑定字段（provider / model / reasoningEffort /
-fallbacks），另可加 `persona`（人设文本，经 spawn 官方通道注入子代理）
-与 `toolFilter`（`allow` / `deny` 工具名清单）。角色键名强制
+fallbacks），另可加 `persona`（人设文本，由继承的动态系统提示段注入子代理，
+支持 rc.2 首次派发与冷恢复）。角色键名强制
 `^[a-z][a-z-]*$`：
 
 ```yaml
@@ -379,21 +383,20 @@ dsh-my-go:
       model: your-model
       reasoningEffort: high
       persona: 你是严谨的代码评审员，只查逻辑硬伤。
-      toolFilter:
-        allow: [read, glob, grep]   # 只放行名单内工具；只宜写核心稳定工具名
 ```
 
 - **派发**：`go_work` / `forward` 的 `agent` / `target` 参数接受名册内
   任意角色名（未注册名结构化报错并附当前可用清单）；
   `orchestration_status` 尾部展示活花名册。
-- **迁移**：旧顶级内置工种键在装载与热更时自动无损搬入 `roles`（幂等；
-  失败保留原配置仅 warn），YAML 手写的旧形状无需立即改写。
-- **注意**：`toolFilter` 随子代理档案持久化、冷恢复按原样重放——
-  只宜写核心稳定工具名，重启后工具集变化（如 MCP 未连接）会导致
-  冷恢复失败。
+- **迁移**：缺少同名 `roles` 行时自动补写旧顶级绑定；显式 `roles` 行优先。
+  保留旧键且不向宿主提交非法 unset；写入失败仍可从旧键读取。
+- **工具权限**：工种 allow/deny 功能已移除；旧配置中的 `toolFilter` 明确忽略。
+  各工种继承宿主工具权限，宿主沙箱与审批边界、MyGO 防递归和邻接通信约束保留。
+  历史子会话若已由旧宿主持久化过滤 descriptor，恢复时仍由宿主重放；本次不改写
+  会话档案，需要完整继承新行为时请新派子会话。
 
 配置卡「模型与角色」的左列清单里，内置工种之外都是自定义角色：新建/删除/改名、
-模型优先级列表（主选 + 备选链合并编辑）、persona 与 toolFilter 白黑名单、
+模型优先级列表（主选 + 备选链合并编辑）、persona、
 单角色 JSON 导出/导入，键名即时校验，与 YAML 手工编辑等价。
 
 ### 备选链（fallbacks，自动重派）
@@ -419,7 +422,7 @@ dsh-my-go:
   超时在 DSH 内建重试耗尽后）且错误分类器放行。用户中断/abort 类绝不切换；
   附因读不到（档案缺失）但有链时保守切换，日志注明「未读到附因，保守切换」。
 - **动作**：同 prompt、同父会话、同工种自动重派，`agentOptions` 覆盖为备选
-  条目；不入队、不占新槽位（原槽位语义内换键），不与单线阻塞/队列交互。
+  条目；不入队、不占新槽位（原槽位语义内换键），不与泳道阻塞/队列交互。
 - **预检**：备选条目同样经 `llm.listModels` 校验，无效条目 warn 跳过并尝试
   下一条；链尽即止（attempt 严格递增，绝无无限循环），全部失败落既有失败
   历史并保留失败附因。
@@ -470,7 +473,7 @@ model、#2..N→fallbacks，存储形状零变更）。
 
 - broker 的 `agent/created` 闸（星型拓扑七件套 + 邻接消息三件套 + Agent Teams
   实验面的 agent 子作用域 deny）；
-- 角色级 `toolFilter`（allow/deny，随 roles 走，见「自定义角色」）。
+- 各工种继承宿主工具权限；旧 `toolFilter` 配置忽略，见「自定义角色」。
 
 ### 插件 config 键（broker 行为调参）
 
@@ -491,7 +494,8 @@ settings 命名空间正交；默认值即插件内置口径：
 | `subagentPromptMax`     | 200    | `list_subagents` prompt 摘要及会话 label 的 prompt 摘要截断长度 |
 | `metrics`               | true   | 观测埋点：编排动作追加写 `<DSH_HOME>/dsh-my-go/metrics/events.jsonl`（JSONL，10 万行 cap 超限截头）；`false` 零写盘 |
 | `reportExternalization` | true   | 报告外部化总闸：关 → `report_submit`/`report_fetch` 不注册、报告格式条款不注入、完工收尾不落板不闸门，编排退回无报告板形态。**显式配置优先于代码默认**：出厂 `preset/agent.patch.yml` 显式 `true`（一致性 pin 站岗，误关回 `false` 即红）；删除该行回落代码默认（同为 `true`，但失去显式哨兵锚点） |
-| `readPoolSize`          | 1      | 读平面并行池：读平面 = explore/librarian，写平面恒单线。`1` = 关闭 = 全局单线；`2~3` = 读平面并发上限；`>3` 钳制 3，非法值回落 1。挂载期读一次，不做运行时切换。出厂 `preset/agent.patch.yml` 显式 `3`（一致性 pin 站岗，改回 `2`/`1` 即红） |
+| `readPoolSize`          | 1      | 读平面并行池：读平面 = explore/librarian。`1` = 关闭（读池退化为串行）；`2~3` = 读平面并发上限；`>3` 钳制 3，非法值回落 1。挂载期读一次，不做运行时切换。**与 `writePoolSize` 皆 1 才退化为全局单线**。出厂 `preset/agent.patch.yml` 显式 `3`（一致性 pin 站岗，改回 `2`/`1` 即红） |
+| `writePoolSize`         | 1      | 写平面并行池（与读池对称）：写平面 = hermes/hephaestus/prometheus/oracle/looker/apelles/自定义角色。`1` = 关闭（写池退化为串行）；`2~3` = 写平面并发上限；`>3` 钳制 3，非法值回落 1。挂载期读一次，不做运行时切换；退化语义见 `readPoolSize` 行（两池皆 1 才全局串行）。出厂 `preset/agent.patch.yml` 显式 `3`（一致性 pin 站岗，改回 `2`/`1` 即红） |
 | `spawnEndGraceMs`       | 2000   | end 缓冲宽限：`subagent/end` 抢在 spawn resolve 登记之前到达时暂存缓冲，等待登记追上后按真 id 精确认领重放全量归因管线；超此宽限未认领则按「无从归属」落档，并对滞留超时的「启动中」占位记录按失败落账回收（防泳道槽泄漏）。等的是 spawn 网络窗口，慢网络部署可调大 |
 | `relayChains`           | false  | 接力链总闸：关 → `chain_start`/`chain_resolve` 不注册，编排退回无链现状；开 → **依赖 `reportExternalization=true`**（链的数据面从 board 直投上一环节全文，总闸关则 `chain_start` 直接报错指路，绝不静默降级）。挂载期读一次，不做运行时切换。出厂 `preset/agent.patch.yml` 显式 `true`（依赖满足） |
 
@@ -715,7 +719,7 @@ npm test                  # 构建 bundle → dist 新鲜度冒烟 → node --te
   - 结论注入依赖 `subagent/end` 事件（完工通知自带 closing message）；
     子→父的补充通道只有 `need_help`（运行时 API 投递），DSH 原生邻接消息工具
     （`send_message` 等）在 MyGO 会话已被 deny。
-  - 单线阻塞由 broker 状态机执行；Sisyphus 需遵守编排规则（由 system-prompt section 约束）。
+  - 泳道阻塞由 broker 状态机执行（读写两车道各自计数）；Sisyphus 需遵守编排规则（由 system-prompt section 约束）。
 
 ## 致谢
 

@@ -121,10 +121,10 @@ test('写面：fallbacks 空数组转 unset，非空数组原样 set', () => {
 test('写面：新建但还没填完的角色整行 set（只发 unset 会保存后静默消失）', () => {
   // 页面的「新建角色」写的是完整一行（含 fallbacks 数组与 toolFilter 对象），
   // 这就是「新建」与「只改人设的部分行」的唯一可分标志。
-  const blank = { ...row(), persona: '', toolFilter: { allow: [], deny: [] } }
+  const blank = { ...row(), persona: '' }
   const ops = buildSettingsOps({ roles: { 'brand-new': blank } }, layers({}))
   assert.deepEqual(ops.filter((op) => op.path[1] === 'brand-new'),
-    [{ op: 'set', path: ['roles', 'brand-new'], value: { ...row(), persona: '', toolFilter: { allow: [], deny: [] } } }], '整行落地，名册里立刻看得见')
+    [{ op: 'set', path: ['roles', 'brand-new'], value: { ...row(), persona: '' } }], '整行落地，名册里立刻看得见')
   const typed = buildSettingsOps({ roles: { 'brand-new': row({ model: 'x' }) } }, layers({}))
   assert.ok(typed.some((op) => op.op === 'set' && op.path[1] === 'brand-new' && op.path[2] === 'model'), '填了值的新行走字段级 set（宿主 applyPathOp 自建中间对象）')
   assert.equal(typed.filter((op) => op.path.length === 2 && op.path[1] === 'brand-new').length, 0, '有 set 时不再整行覆写，免得把没碰的字段一并钉住')

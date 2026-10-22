@@ -671,7 +671,7 @@ test('modelCache：列举成功但绑定的模型不在（含空清单）是结�
     const second = await askWaterfall(dispatch)
     assert.equal(listCalls, 1, '列举成功=确定结论：空集也入缓存（修复前坏 provider 每请求被重拉一遍）')
     assert.equal(second.model, 'seed-model')
-    assert.equal(warnings.filter((l) => l.includes('not found on provider')).length, 2, '每发仍各自留痕')
+    assert.equal(warnings.filter((l) => l.includes('configured route') && l.includes('unavailable')).length, 2, '每发仍各自留痕')
   } finally {
     console.warn = origWarn
   }

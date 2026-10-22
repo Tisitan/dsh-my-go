@@ -347,7 +347,7 @@ test('hitTest 归一：宿主 border-box 压缩时按 rect.width/296 换算，�
     rec('p1', 'child-L', 'running', 1),
     rec('p1', 'child-M', 'running', 2),
     rec('p1', 'child-R', 'running', 3),
-  ], [], [])
+  ], [], [], { read: { capacity: 3 }, write: { capacity: 1 } })
   const rect = { left: 630, top: 56, width: 279, height: 283 }
   const k = rect.width / 296
   const hit = toCanvasPoint(rect, rect.left + 222 * k, rect.top + 76 * k)
@@ -418,5 +418,47 @@ test('D3 waiting 字形矢量化：不再 fillText("?")，改两条线 + 一点'
   assert.ok(drewPath(probe.calls, -0.9, -3.9), '钩形折线在场')
   assert.ok(drewPath(probe.calls, 0.1, 0.4), '下延笔画在场')
   assert.ok(probe.calls.some((c) => c.k === 'arc' && c.args[0] === 0.1 && c.args[1] === 3.6 && c.args[2] === 1.1), '点在场')
+  engine.destroy()
+})
+
+test('写泳道容量化：write.capacity=3 → 三槽铺开（弧心优先）+ 标签内插；缺省/坏值回落 1', () => {
+  const slotsOf = (calls) => calls.filter((c) => c.k === 'translate').map((c) => [c.args[0], c.args[1]])
+  const { engine, probe } = newEngine(true)
+  engine.start()
+  engine.applySnapshot(
+    [rec('p1', 'w1', 'running', 1, 'hermes'), rec('p1', 'w2', 'running', 2, 'prometheus'), rec('p1', 'w3', 'running', 3, 'hephaestus')],
+    [], [], { read: { capacity: 1 }, write: { capacity: 3 } },
+  )
+  const slots = slotsOf(probe.calls)
+  assert.deepEqual(slots, [[148, 255], [74, 224], [222, 224]], '三条写任务各占一槽（容量 3：弧心 + 镜像弧两侧）')
+  assert.ok(texts(probe.calls).includes('写泳道 · 3 并行'), '标签按快照容量内插，不写死')
+  assert.ok(!texts(probe.calls).some((t) => t.includes('单线')), '旧「单线」标签已退役')
+  engine.destroy()
+
+  // 缺省（旧宿主 / lib-only 降级）与坏值：容量回落 1 = 改造前单写槽形态
+  const fallback = newEngine(true)
+  fallback.engine.start()
+  fallback.engine.applySnapshot([rec('p1', 'w1', 'running', 1, 'hermes'), rec('p1', 'w2', 'running', 2, 'hermes')], [], [])
+  assert.deepEqual(slotsOf(fallback.probe.calls), [[148, 255], [148, 255]], '容量缺省 1：两条写任务回落同一槽（视觉兜底，真闸在 broker）')
+  assert.ok(texts(fallback.probe.calls).includes('写泳道 · 1 并行'))
+  fallback.engine.destroy()
+
+  const bad = newEngine(true)
+  bad.engine.start()
+  bad.engine.applySnapshot([rec('p1', 'w1', 'running', 1, 'hermes')], [], [], { read: { capacity: 'x' }, write: { capacity: 99 } })
+  assert.deepEqual(slotsOf(bad.probe.calls), [[148, 255]], '坏值/超上限回落 1 与池长上限')
+  bad.engine.destroy()
+})
+
+test('读泳道容量化（与写泳道同构）：read.capacity=2 → 取前两槽 + 标签内插', () => {
+  const slotsOf = (calls) => calls.filter((c) => c.k === 'translate').map((c) => [c.args[0], c.args[1]])
+  const { engine, probe } = newEngine(true)
+  engine.start()
+  engine.applySnapshot(
+    [rec('p1', 'r1', 'running', 1, 'explore'), rec('p1', 'r2', 'running', 2, 'librarian')],
+    [], [], { read: { capacity: 2 }, write: { capacity: 1 } },
+  )
+  assert.deepEqual(slotsOf(probe.calls), [[74, 76], [148, 45]], '读池容量 2：占前两槽，第三槽不分配')
+  assert.ok(texts(probe.calls).includes('读泳道 · 2 并行'), '读泳道标签同样按容量内插（旧「≤3 并行」硬编码退役）')
   engine.destroy()
 })

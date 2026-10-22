@@ -14,6 +14,15 @@
  *   ③ 复籍（revive/rearmChild）只在投递成功后发生——投递失败留下假 running
  *      比留下假 finished 更难收拾。
  *
+ * **复活槽位交接（revive 支，改动前必读）**：复活一条已完工子代是**消耗**一个槽位，
+ * 不是释放。链路是「reserveRevival 预占 1 槽 → orch.revive 把它放回 currentMap
+ * （占 1 运行槽）→ 归还预占」，交接完成时该 childId 恰占 1 槽。因此：
+ *   - 成功出口的 advanceAfterRevival 先归还预占再推进队列，排队 work 看到的
+ *     是真实占用（违反即撞「记录 running 却没人跑」的死槽或漏派）；
+ *   - 投递失败/中断时预占由 finally 兜底归还，绝不留幽灵槽；
+ *   - laneCount 对「已在 currentMap 的 childId」跳过其预占计数（同一子代跨两处
+ *     只算一次）——这是交接窗口内快照/批量推进读到的口径，不是放宽容量。
+ *
  * 放 preset/tools/ 扁平文件而不进 shared/（对齐 metrics.mjs 先例）：本簇是「准模块」
  * 形态——决策逻辑自洽，但每件事都要碰编排会话的活状态与兄弟簇产物。依赖全部显式
  * 注入，本模块自身零 ctx、零服务解析：
@@ -22,7 +31,11 @@
  *     必须看到当下那枚对象）；
  *   - orchestrations / abortExpected / childRegistry：broker.mjs 持有的活状态句柄
  *     （Map / Set 本体不复制，abortExpected 与 childRegistry 是同一枚登记表的引用，
- *     childRegistry 只取 rearmChild 一件事）；
+ *     childRegistry 取 rearmChild 一件——暂存正文的清理在它内部，本模块不再直取
+ *     dropStagedReport）；
+ *   - archiveBoardEntry：shared/board.mjs 的代际归档（旧正板 → <childId>.prev.md）。
+ *     复活即新世代时与 rearmChild 同点调用，本轮旧报告不得留在正板位上被
+ *     report_fetch / 终局闸门当成本代际的交付；
  *   - findRecordWithLedgerFallback / resolveParentAgent / notifyParent：兄弟簇实例
  *     （./broker-ledger.mjs 与 ./broker-notify.mjs 的工厂产物）。它们是工厂产物而非
  *     模块级导出，跨模块 import 拿不到（要 ledgerPath / getAgents 才能构造），故由
@@ -32,7 +45,8 @@
  * ../shared/，与 broker 半同一份实现，不复制第二份判定。
  *
  * 形态：createDeliveryOps({ getAgents, getSubagents, orchestrations, abortExpected,
- * childRegistry, findRecordWithLedgerFallback, resolveParentAgent, notifyParent })
+ * childRegistry, findRecordWithLedgerFallback, resolveParentAgent, notifyParent,
+ * archiveBoardEntry })
  * → { resolveContinueTarget, tryFacadeSteer, interruptForAbort,
  * deliverWithQueueFallback, rearmAfterDelivery }。
  */
@@ -40,6 +54,7 @@
 import { HISTORY_CAP } from '../shared/constants.mjs'
 import { laneOf } from '../shared/orchestration.mjs'
 import { deliverToAdjacent, canQueueAdjacent } from '../shared/adjacent.mjs'
+import { archiveBoardEntry as defaultArchiveBoardEntry } from '../shared/board.mjs'
 
 export function createDeliveryOps({
   getAgents,
@@ -50,6 +65,8 @@ export function createDeliveryOps({
   findRecordWithLedgerFallback,
   resolveParentAgent,
   notifyParent,
+  advanceQueue = () => {},
+  archiveBoardEntry = defaultArchiveBoardEntry,
 }) {
   const coordinatorSource = (parent) => ({ kind: 'plugin:dsh-my-go', form: 'relay', senderSessionId: parent.id })
 
@@ -72,20 +89,30 @@ export function createDeliveryOps({
     }
     const { orch, parentId: ownerPid, record } = found
     // 跨会话抢属主防线：记录属主仍是活会话时拒绝跨会话操作——复活/续聊
-    // 会落进属主流水线（结论落账与单线阻塞都归属主），调用方却拿到 accepted。
+    // 会落进属主流水线（结论落账与泳道槽位都归属主），调用方却拿到 accepted。
     // 属主已不在注册表（进程重启后的台账桶 / legacy 桶）才允许现调用方收养。
     if (ownerPid !== parent.id && resolveParentAgent(ownerPid)) {
       throw new Error(`sub-agent ${id} belongs to another live orchestration session (${String(ownerPid)}); ${verb} it from that session`)
     }
     const isFinished = !orch.currentMap.has(id)
-    // 复活闸泳道化（按 lane 判定，不再看 isBusy）：复活/转发把记录放回其 lane
-    // 的槽，判定「目标 lane 有没有空位」而非「实例是否全忙」——容量 ≥2 时一条
-    // explore 的复活不再被在飞的写平面任务挡住，也不得挤爆已满的读池。
-    // readPoolSize=1 时退化口径 = 全局空，与旧判定逐字节等价。
-    if (isFinished && !orch.isLaneFree(laneOf(record.agentType))) {
-      const lane = laneOf(record.agentType)
-      throw new Error(`no free slot in the ${lane} lane (capacity ${orch.capacityOf(lane)}); wait for a slot before ${verb === 'continue' ? 'reviving' : 'forwarding to'} a completed sub-agent`)
+    const lane = laneOf(record.agentType)
+    // 复活闸 + 预占**合成一次原子操作**（reserveRevival 先占后断言）：先 isLaneFree
+    // 再 set 的「查-占」两步在同一 tick 内能被并发另一条复活插空，双双拿到最后
+    // 一个空位。合成后只余一个判空理由：lane 已满（含另一条复活刚落的预占）或
+    // 同一 childId 仍在复活中；错误文案按两种现场分开，调用方看到的指引不变。
+    // 泳道口径不变（按 lane 判定，不再看 isBusy）：容量 ≥2 时一条 explore 的复活
+    // 不被在飞的写平面任务挡住，也不得挤爆已满的读池；readPoolSize=1 时退化口径 =
+    // 全局空，与旧判定逐字节等价。
+    const freeReservation = isFinished ? orch.reserveRevival(id, lane) : () => {}
+    if (!freeReservation) {
+      if (!orch.isLaneFree(lane)) {
+        throw new Error(`no free slot in the ${lane} lane (capacity ${orch.capacityOf(lane)}); wait for a slot before ${verb === 'continue' ? 'reviving' : 'forwarding to'} a completed sub-agent`)
+      }
+      throw new Error(`sub-agent ${id}: no free slot or another revival is in progress`)
     }
+    // 预留句柄的成功出口（与 finally 的兜底释放同一枚函数，幂等）：复活成功后
+    // currentMap 已接管槽位，预占的使命到此为止——见 rearmAfterDelivery 的同点调用。
+    const freeSlot = () => { freeReservation() }
     // spawning 占位记录友好闸：record 在册而 childId 还是
     // beginSpawning 造的占位（真身未 resolve），此时既无 turn 可 steer/abort，投递
     // 目标也不是任何存在的会话——旧路径会一路走完并回 accepted:true，把主流程的
@@ -93,7 +120,27 @@ export function createDeliveryOps({
     if (spawningGate && record.status === 'spawning') {
       throw new Error(`sub-agent ${id} is still spawning (placeholder id, no live child session yet) — wait for the dispatch to resolve, then use its real childId (see orchestration_status)`)
     }
-    return { orch, ownerPid, record, id, isFinished, isRunning: !isFinished && record.status === 'running' }
+    // ── 两枚槽位动作，分两口但**同一枚幂等函数**：releaseSlot 是「归还预占」的
+    // 唯一实现，成功出口（rearmAfterDelivery 的 orch.revive 之后）与 finally 兜底
+    // 调的是同一个 freeSlot——重复调用只是 Map.delete 一次不存在的键。
+    // 撤销预占与推进队列**也分两口**：调用方在 finally 里只调 releaseSlot；
+    // 推进留在本次调用的成功出口——投递失败时子代理仍 idle，提前推进
+    // 会把下一条任务派进「记录 running 却没人跑」的死槽。
+    // 历史病灶：原先两口合成一个 release，调用方却从未调用它，投递失败（门面
+    // 抛错/abort 中断）后预占永挂在 revivalReservations 里——同一 childId 再次
+    // continue 恒报「another revival is in progress」，写池容量 3 时残留三条即
+    // 全局满、整条流水线停摆。拆成句柄方法 + try/finally 后，漏接即测试可观测。
+    const releaseSlot = freeSlot
+    // advanceAfterRevival 必须在**预占已释放之后**才调（调用序收在 helper 里，
+    // 不留给调用方记）：revive 后 currentMap 已占该 lane 的槽，预占若还挂着就是
+    // 同一 childId 的重复计槽；且 advanceQueue 看到的是「已完工子代被捞回 = 该
+    // lane 又占回 1 槽」的**真实占用**，排队 work 不会被打进还没人跑的槽。
+    const advanceAfterRevival = () => {
+      if (!isFinished) return
+      releaseSlot()
+      advanceQueue(orch, parent)
+    }
+    return { orch, ownerPid, record, id, isFinished, isRunning: !isFinished && record.status === 'running', releaseSlot, advanceAfterRevival }
   }
 
   // M2：steer 档尝试。返回 messageId（调用方自己记账），undefined = 未走成 steer
@@ -182,7 +229,14 @@ export function createDeliveryOps({
   // forward 先记账再复籍（ledgerFirst=true）。两处的 followupPrompt 都是按
   // childId 找活记录，而复籍（revive）恰好就是把记录放回活槽——顺序换过来会
   // 让其中一侧的台账照记落空，故只合并不分叉的部分，分叉点走 ledgerFirst 参数。
-  function rearmAfterDelivery({ orch, record, targetId, ownerPid, isFinished, prompt, urgency, resolvePendingHelp = false, ledgerFirst = false }) {
+  //
+  // **复活即新世代（isFinished 支）**：台账复籍三步 + 报告代际重置同点完成——
+  // rearmChild 清掉上一代际的提交登记与暂存正文（闸门不再把老报告当本轮交付），
+  // 旧正板归档成 <childId>.prev.md（report_fetch / 闸门 / 链直投读到的正板位在
+  // 本轮提交前恒为空）。归档是异步 fs 操作（M5 唯一允许 await 的一处：它发生在
+  // 复籍之后、台账照记之后，不在任何「掐断 → 投递」的同步段中间），失败只 warn
+  // ——归档不成功绝不阻断续派投递（最坏后果退化成旧行为，不是丢指令）。
+  async function rearmAfterDelivery({ orch, record, targetId, ownerPid, isFinished, prompt, urgency, resolvePendingHelp = false, ledgerFirst = false }) {
     const writeLedger = () => orch.followupPrompt(targetId, prompt, urgency)
     if (ledgerFirst) writeLedger()
     if (record.status === 'waiting') {
@@ -194,13 +248,30 @@ export function createDeliveryOps({
       }
       orch.resume(targetId)
     } else if (isFinished) {
-      // 已结束的子智能体重新入册并恢复类型登记，否则它游离在单线阻塞之外、
+      // 已结束的子智能体重新入册并恢复类型登记，否则它游离在泳道槽位之外、
       // 再次结束时结论会被静默丢弃；三张表与 continue 复活路径同一实现
       // （漏一张就是「复活后 conclusion 静默丢失」或「备选回跳主模型」）
       orch.revive(targetId)
+      // 暂存正文只清一处：rearmChild 内部已 `stagedReports.delete(childId)`
+      // （复活即新世代，与 reportSubmitted / repairRetried 同点翻篇）。此前在
+      // 这里再补一次 dropStagedReport 是第二个消费方——两处只会漂移，不会更安全。
       childRegistry.rearmChild(targetId, record, ownerPid)
+      await archiveGenerationBoard(ownerPid, targetId)
     }
     if (!ledgerFirst) writeLedger()
+  }
+
+  // 旧正板 → <childId>.prev.md（覆盖旧留痕）。正板缺席是常态（子代从未交过
+  // 报告就被复活），archiveBoardEntry 自会返回 archived=false；异常只 warn。
+  async function archiveGenerationBoard(ownerPid, childId) {
+    if (typeof ownerPid !== 'string' || ownerPid === '') return false
+    try {
+      const result = await archiveBoardEntry(ownerPid, childId)
+      return result?.archived === true
+    } catch (error) {
+      console.warn(`[dsh-my-go] 复活归档旧报告板失败 (${ownerPid}/${childId}): ${String(error)}`)
+      return false
+    }
   }
 
   return { resolveContinueTarget, tryFacadeSteer, interruptForAbort, deliverWithQueueFallback, rearmAfterDelivery }

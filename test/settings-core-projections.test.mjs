@@ -38,7 +38,7 @@ import { AGENT_TYPES } from '../src/client-constants.js'
 test('emptyDraft/blankRole/blankPriceRow：种子形状逐字钉住', () => {
   assert.deepEqual(blankRole(), {
     provider: '', model: '', reasoningEffort: '',
-    fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] },
+    fallbacks: [], persona: '',
   }, '新建自定义角色的整行种子（含嵌套 toolFilter）')
   assert.deepEqual(blankPriceRow(), { input: '', output: '', cacheRead: '', cacheWrite: '' }, '新建计价行的四桶空串种子')
   const draft = emptyDraft()
@@ -62,7 +62,6 @@ test('parseRoleText：合法卡白名单收窄入册（key 在顶层、行本体
   assert.deepEqual(parsed.row, {
     provider: 'p9', model: 'm9', reasoningEffort: 'high',
     fallbacks: [{ provider: 'p8', model: 'm8' }], persona: 'X 人设',
-    toolFilter: { allow: ['read', 'read', '42'], deny: ['write'] },
   }, '宽松语义实锤：多余字段剥离，但 allow 只 map(String)+剔空串——重复条目保留、非串强转，不去重')
 })
 
@@ -85,7 +84,7 @@ test('parseRoleText：宽松边界——空 key 放行、标量收窄、fallback
   assert.equal(emptyKey.key, '')
   assert.deepEqual(emptyKey.row, {
     provider: 'p', model: '', reasoningEffort: '',
-    fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] },
+    fallbacks: [], persona: '',
   })
   const coerced = parseRoleText(JSON.stringify({
     key: 'k', provider: 42, model: null, reasoningEffort: {},
@@ -93,12 +92,12 @@ test('parseRoleText：宽松边界——空 key 放行、标量收窄、fallback
   }))
   assert.deepEqual(coerced.row, {
     provider: '', model: '', reasoningEffort: '',
-    fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] },
+    fallbacks: [], persona: '',
   }, '非字符串标量归空、非数组列表与 toolFilter 归空')
   const keptChain = parseRoleText(JSON.stringify({ key: 'k', fallbacks: [{ provider: 'p8' }, 'junk', null] }))
   assert.deepEqual(keptChain.row.fallbacks, [{ provider: 'p8' }, 'junk', null], 'fallbacks 元素宽松透传（脏条目写回时由 decomposeChain 归一，导入时不洗）')
   const stringified = parseRoleText(JSON.stringify({ key: 'k', toolFilter: { allow: [null, 'ok'], deny: [7, ''] } }))
-  assert.deepEqual(stringified.row.toolFilter, { allow: ['null', 'ok'], deny: ['7'] }, 'tool 条目 String() 强转后剔空串')
+  assert.equal(stringified.row.toolFilter, undefined, '导入忽略旧工种工具限制')
 })
 
 // ── 键校验：与 shared 同则的新语义 ─────────────────────────────────────────
@@ -174,7 +173,7 @@ test('roleDetailText：内置/自定义/sisyphus 特例/未选中四种面', () 
   assert.equal(/工具面/.test(hermesDetail), false, '内置行无工具面行')
   const customDetail = roleDetailText('custom-x', current)
   assert.match(customDetail, /^custom-x（custom-x）· 自定义角色$/m)
-  assert.match(customDetail, /^工具面：白名单 1 条（read）；黑名单 1 条（write）$/m)
+  assert.match(customDetail, /工具权限继承宿主；旧工种 toolFilter 已忽略。/)
   assert.match(customDetail, /^派发时 go_work 用键名点名该角色；删除后下次保存整键从 roles 字典移除。$/m)
   const sisyphusDetail = roleDetailText('sisyphus', { sisyphus: {} })
   assert.equal(/人设来源/.test(sisyphusDetail), false, 'sisyphus 不提供人设覆盖行（编排纪律人设不开放面板覆盖）')

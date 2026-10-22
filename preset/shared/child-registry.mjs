@@ -1,7 +1,7 @@
 /**
- * dsh-my-go — 子代理进程内登记表（十一张桥接表 + 跨表不变量）。
+ * dsh-my-go — 子代理进程内登记表（十二张桥接表 + 跨表不变量）。
  *
- * 八张表都是「派生事件之间的桥接状态」，不是编排事实本体（事实在
+ * 各表都是「派生事件之间的桥接状态」，不是编排事实本体（事实在
  * shared/orchestration.mjs 的流水线与台账里）：
  *  sessionTypes      childId → 工种（活登记；不持久化，冷恢复后靠 label 兜底）
  *  disposedTypes     墓碑：agent/disposed 恒先于 subagent/end，晚到的 end 靠它认工种
@@ -15,12 +15,17 @@
  *             ——防无限循环；终局 retireChild 与复活 rearmChild 双点清）
  *  reportSubmitted    报告提交成功事实（提交制）：
  *             childId → 已校验的 { conclusion, evidence, open }，
- *             report_submit 落板成功即登记，供终局合成回执消费；
- *             「含历史轮」口径的**实现手段**：有界 FIFO（容量
- *             REPORT_SUBMITTED_CAP，超容驱逐最旧）跨终局保留——
- *             retireChild / retireTypeRecords 都**不清**它，故复活轮
- *             不重交也视为已交付；无界增长由 CAP 兜住，childId 全局
- *             唯一（uuid），保留条目不会与后世代际串号
+ *             report_submit 落板成功即登记，供终局合成回执与报告闸门消费；
+ *             代际语义：条目**跨终局保留**（retireChild / retireTypeRecords
+ *             都不清——双发残余窗口里终局后再来的 end 不该被判「从未提交」），
+ *             只在**复活开新一轮**（rearmChild：continue/forward 命中已结束
+ *             子代）时清除——上一代际的提交不算本代际已交付，否则新一轮不交
+ *             报告也会被闸门误判直通。有界 FIFO 容量 REPORT_SUBMITTED_CAP 兜
+ *             无界增长；childId 全局唯一（uuid），条目不会与后世代际串号
+ *  stagedReports      长正文暂存（提交制防重吐）：childId → report 全文。
+ *             report_submit 因其他字段校验失败时把已传入的 report 正文存进
+ *             这里，重调传「（已暂存）」或省略 report 即回填；成功提交、
+ *             复活开新一轮、终局翻篇三处清理；容量 STAGED_REPORTS_CAP 兜底
  *  modelCache       provider → 模型 id 集合（只缓存「列举成功」的清单，含空集）
  *  heartbeats       childId → { roundStartAt, lastSignalAt, pingsUnanswered }
  *             （主编缓存心跳的「本轮起始 / 上次信号 / 未回应 ping 数」；
@@ -45,10 +50,14 @@
 // 墓碑有界 FIFO 上限：end 事件永久缺席时也不致无限增长；正常路径自会消费清除。
 export const DISPOSED_TYPES_CAP = 50
 
-// 成功提交登记的有界 FIFO 上限：这张表**刻意不随终局清空**
-// （「含历史轮」口径，见文件头），跨终局保留的代价是无界增长，故容量即它唯一的
-// 收缩手段。200 枚 = 远大于任何单进程的存活儿童数，驱逐只在长跑/常驻宿主上发生。
+// 成功提交登记的有界 FIFO 上限：这张表只在复活开新一轮时清（见 rearmChild），
+// 终局落账不清——跨终局的代价是无界增长，故容量即它唯一的收缩手段。200 枚 =
+// 远大于任何单进程的存活儿童数，驱逐只在长跑/常驻宿主上发生。
 export const REPORT_SUBMITTED_CAP = 200
+
+// 长正文暂存池容量：一次校验失败只暂存一份（同 childId 重存即覆盖），条目随
+// 成功提交 / 复活 / 终局三处清理；容量只是「异常路径漏清」时的兜底。
+export const STAGED_REPORTS_CAP = 100
 
 /**
  * @param options.disposedTypesCap 墓碑表容量（测试可缩小以验证驱逐路径）
@@ -64,6 +73,7 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   const fallbackDecided = new Set()
   const repairRetried = new Set()
   const reportSubmitted = new Map()
+  const stagedReports = new Map()
   const modelCache = new Map()
   const heartbeats = new Map()
 
@@ -100,6 +110,30 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     }
   }
 
+  /**
+   * 长正文暂存（report_submit 校验失败时落，成功提交/复活/终局三处清）：
+   * delete→set 刷新最近性、超容驱逐最旧，与 markSubmitted 同款有界范式。
+   */
+  function stageReport(id, text) {
+    if (typeof text !== 'string' || text === '') return false
+    stagedReports.delete(id)
+    stagedReports.set(id, text)
+    if (stagedReports.size > STAGED_REPORTS_CAP) {
+      stagedReports.delete(stagedReports.keys().next().value)
+    }
+    return true
+  }
+
+  /** 取回暂存正文（成功重调后由调用方 dropStagedReport 清理）。 */
+  function takeStagedReport(id) {
+    return stagedReports.get(id)
+  }
+
+  /** 清理暂存（成功提交 / 复活开新一轮 / 终局翻篇统一走这里，幂等）。 */
+  function dropStagedReport(id) {
+    return stagedReports.delete(id)
+  }
+
   /** end 收尾 / 重派换键：工种 + 墓碑 + 备选覆盖 + 属主路由四张表一起翻篇。 */
   function retireChild(id) {
     sessionTypes.delete(id)
@@ -114,10 +148,12 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   // guard 必须随终局翻篇——补发链本身不走 rearmChild，若这里不清，授权状态
   // 会随 childId 永挂（childId 全局唯一，无别的清理时机）。
     repairRetried.delete(id)
-  // reportSubmitted 这里**不清**：清掉会让「含历史轮」承诺成为假话——终局清空
-  // 后，任何 continue/forward 复活轮只要不重交报告，就被闸门判成「从未提交」并
-  // 发射补发（儿童已交报告后终局落账、主编再 continue/forward 的序即命中）。
-  // 提交过是永久事实，收缩只由 markSubmitted 的 FIFO 容量承担。
+  // reportSubmitted 这里**不清**：终局不等于新时代——子代交过报告、终局落账后
+  // 闸门若再一次看到它的 end（双发残余窗口/补交轮终局），清掉会把它判成「从未
+  // 提交」而发射第二次补发。代际翻篇的唯一时点是 rearmChild（主动复活开新一轮）。
+  // 收缩由 markSubmitted 的 FIFO 容量承担。
+  // 暂存正文随终局丢：子代已离场，不会再有重调来取它。
+    stagedReports.delete(id)
   }
 
   /**
@@ -131,7 +167,9 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     activeFallback.delete(id)
   // 心跳表同点删（与 retireChild 同律：类型侧翻篇即本代际事实作废）
     heartbeats.delete(id)
-  // 与 retireChild 同理：reportSubmitted 不随任何终局形态清空。
+  // 与 retireChild 同理：reportSubmitted 不随任何终局形态清空（只随 rearmChild 翻篇）；
+  // 暂存正文同样没有消费方了，同点丢。
+    stagedReports.delete(id)
   }
 
  // ── 心跳字段（主编缓存心跳的信号面；定时器与决策在 broker-heartbeat.mjs）──────
@@ -224,11 +262,12 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   // 不走 rearmChild**（repair-gate-repair 不 finish，记录留在 currentMap，补发
   // 只投 followup）——故此处清理不构成死循环回路，两处清理各司其职。
     repairRetried.delete(childId)
-  // reportSubmitted 刻意**不清**（提交制「含历史轮」口径）：交过就是交过，
-  // 复活轮不重交也视为已交付。实现手段是有界 FIFO 跨终局保留（见 markSubmitted
-  // 与文件头该表注释）：条目不随终局 retireChild / retireTypeRecords 翻篇，
-  // 只按 REPORT_SUBMITTED_CAP 驱逐最旧者——终局清空会让这条注释成为假话，
-  // 复活轮随即被闸门误判「从未提交」而吃下不该吃的补发。
+  // reportSubmitted 同点清（复活即新世代的报告面）：上一代际的提交登记若留着，
+    // 新一轮的终局闸门会把「本代际还没交」误判成「已交付」而直通——报告则永远停在
+    // 上一代的旧板上。清掉后，新一轮要么真交报告才直通，要么正常触发补发；旧板
+    // 文件由工具簇/rearmAfterDelivery 同点归档成 <childId>.prev.md（回归档，不删）。
+    reportSubmitted.delete(childId)
+    stagedReports.delete(childId)
     sessionTypes.set(childId, record.agentType)
   // 心跳同点开新一轮（keep-alive）：复活轮的「本轮已运行」从此刻起算，上一代际
   // 的沉默时长与未回应 ping 数一概不继承——带着上一代的计时复活，会把一个刚
@@ -250,10 +289,14 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     fallbackDecided,
     repairRetried,
     reportSubmitted,
+    stagedReports,
     modelCache,
     heartbeats,
     tombstoneType,
     markSubmitted,
+    stageReport,
+    takeStagedReport,
+    dropStagedReport,
     retireChild,
     retireTypeRecords,
     fallbackOverrideFor,

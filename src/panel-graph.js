@@ -30,7 +30,12 @@ const H = 300
 const CENTER = { x: 148, y: 150, r: 22 }
 const ORBIT_R = 105
 const READ_SLOTS = [{ x: 74, y: 76 }, { x: 148, y: 45 }, { x: 222, y: 76 }]
-const WRITE_SLOT = { x: 148, y: 255 }
+// 写泳道槽位池 = 读弧关于中心水平线的镜像（对称抄读泳道几何）。顺序「弧心优先」：
+// 索引 0 是 (148,255)——改造前单写槽的原位，容量 1 时视觉/动画逐像素兼容；
+// 容量 ≥2 再向两侧铺开。池长度 = 容量钳制上限（config 钳 [1,3]），标签与占用的
+// 槽位数一律由快照的 lanes.write.capacity 决定，不写死容量值。
+const mirrorSlot = (s) => ({ x: s.x, y: CENTER.y * 2 - s.y })
+const WRITE_SLOTS = [mirrorSlot(READ_SLOTS[1]), mirrorSlot(READ_SLOTS[0]), mirrorSlot(READ_SLOTS[2])]
 const DOCK = [{ x: 26, y: 268 }, { x: 50, y: 268 }, { x: 74, y: 268 }]
 const NODE_R = 16
 const DOCK_W = 18
@@ -213,8 +218,12 @@ export function createGraphEngine(canvas) {
   const nodes = new Map()
   const particles = []
   const edgeFlash = new Map()
-  const readSlots = [null, null, null]
-  let writeSlotUsed = null
+  const readSlots = READ_SLOTS.map(() => null)
+  const writeSlots = WRITE_SLOTS.map(() => null)
+  // 两泳道容量（快照 lanes.read/write.capacity；缺省 1 = 改造前单槽形态）。挂载期
+  // 读一次的配置，会话内恒定；槽位池只按 capacity 取前 N 个，多出的尾槽永不分配。
+  let readCapacity = 1
+  let writeCapacity = 1
   let queueView = []
   let centerFlashT = -1e9
   let centerFlashColor = ACCENT_RUNNING
@@ -244,19 +253,21 @@ export function createGraphEngine(canvas) {
   }
 
   function allocSlot(id, agentType) {
-    if (laneOf(agentType) === 'read') {
-      for (let i = 0; i < READ_SLOTS.length; i++) {
-        if (!readSlots[i]) { readSlots[i] = id; return READ_SLOTS[i] }
-      }
-      return READ_SLOTS[0]
+    // 两泳道同构：按各自容量取前 N 槽（容量 1 = 单槽形态，与池首槽同形）；满则回落
+    // 首槽（真闸在 broker 侧容量判定，这里只是视觉兜底，绝不静默溢出到别的槽）。
+    const pool = laneOf(agentType) === 'read'
+      ? { slots: readSlots, cap: readCapacity, geo: READ_SLOTS }
+      : { slots: writeSlots, cap: writeCapacity, geo: WRITE_SLOTS }
+    for (let i = 0; i < pool.cap && i < pool.geo.length; i++) {
+      if (!pool.slots[i]) { pool.slots[i] = id; return pool.geo[i] }
     }
-    writeSlotUsed = id
-    return WRITE_SLOT
+    return pool.geo[0]
   }
   function freeSlot(n) {
     const i = readSlots.indexOf(n.rec.id)
     if (i >= 0) readSlots[i] = null
-    if (writeSlotUsed === n.rec.id) writeSlotUsed = null
+    const w = writeSlots.indexOf(n.rec.id)
+    if (w >= 0) writeSlots[w] = null
   }
 
   function collect(now) {
@@ -303,8 +314,21 @@ export function createGraphEngine(canvas) {
     n.rec.status = to
   }
 
-  function applySnapshot(records, queue, histories) {
+  // lanes = 快照的泳道容量事实（{ read|write: { capacity } }；broker 侧
+  // Orchestration.snapshot() 发）。占用数不重复进快照，面板从 currentRecords 自算。
+  // 缺省/坏值一律回落 1（= 改造前单写槽形态），容量变化需重启 preset，会话内恒定。
+  function applyLaneCapacity(lanes) {
+    const capOf = (lane, poolLen) => {
+      const n = Number(lanes && typeof lanes === 'object' && lanes[lane] ? lanes[lane].capacity : undefined)
+      return Number.isFinite(n) && n >= 1 ? Math.min(poolLen, Math.floor(n)) : 1
+    }
+    readCapacity = capOf('read', READ_SLOTS.length)
+    writeCapacity = capOf('write', WRITE_SLOTS.length)
+  }
+
+  function applySnapshot(records, queue, histories, lanes) {
     if (destroyed) return
+    applyLaneCapacity(lanes)
     const now = T()
     collect(now)
     const ended = endedByChild(histories)
@@ -394,8 +418,8 @@ export function createGraphEngine(canvas) {
     ctx.beginPath(); ctx.arc(CENTER.x, CENTER.y, ORBIT_R, Math.PI * 1.14, Math.PI * 1.86); ctx.stroke()
     ctx.beginPath(); ctx.arc(CENTER.x, CENTER.y, ORBIT_R, Math.PI * 0.14, Math.PI * 0.86); ctx.stroke()
     ctx.restore()
-    haloText('读泳道 · ≤3 并行', 44, 12, `9px ${MONO_FONT}`, LANE_LABEL_COLOR)
-    haloText('写泳道 · 单线', 248, 292, `9px ${MONO_FONT}`, LANE_LABEL_COLOR)
+    haloText(`读泳道 · ${readCapacity} 并行`, 44, 12, `9px ${MONO_FONT}`, LANE_LABEL_COLOR)
+    haloText(`写泳道 · ${writeCapacity} 并行`, 248, 292, `9px ${MONO_FONT}`, LANE_LABEL_COLOR)
     haloText('队列', 26, 250, `9px ${MONO_FONT}`, LANE_LABEL_COLOR)
 
     for (const n of nodes.values()) {
@@ -590,7 +614,7 @@ export function createGraphEngine(canvas) {
   return { applySnapshot, start, destroy, hitTest, stats }
 }
 
-function GraphCanvas({ records, queue, histories }) {
+function GraphCanvas({ records, queue, histories, lanes }) {
   const canvasRef = React.useRef(null)
   const engineRef = React.useRef(null)
 
@@ -608,8 +632,8 @@ function GraphCanvas({ records, queue, histories }) {
 
   React.useEffect(() => {
     const engine = engineRef.current
-    if (engine) engine.applySnapshot(records, queue, histories)
-  }, [records, queue, histories])
+    if (engine) engine.applySnapshot(records, queue, histories, lanes)
+  }, [records, queue, histories, lanes])
 
   const onMove = (e) => {
     const engine = engineRef.current
@@ -632,9 +656,24 @@ function GraphCanvas({ records, queue, histories }) {
   })
 }
 
-export function GraphSection({ records, queue, histories, sessions }) {
+// 泳道容量取桶：优先 pickBucket 选中的那个桶（每编排会话一份 config）；桶 id 对不上
+// 时（降级空桶 / legacy 桶 / 单会话直显形态）退到「同配置桶」——本仓所有编排会话共用
+// 同一份 broker config，取任一桶即装机值，避免空图状态显示「1 并行」与装机不符；
+// 一个桶都没有才回落 undefined（engine 侧兜底 1）。
+export function pickLanes(lanesByParent, parentSessionId) {
+  if (!lanesByParent || typeof lanesByParent !== 'object') return undefined
+  const own = parentSessionId ? lanesByParent[parentSessionId] : undefined
+  if (own && typeof own === 'object') return own
+  for (const value of Object.values(lanesByParent)) {
+    if (value && typeof value === 'object') return value
+  }
+  return undefined
+}
+
+export function GraphSection({ records, queue, histories, sessions, lanesByParent }) {
   const [open, setOpen] = React.useState(true)
   const scope = pickBucket(records, queue, histories, readCurrentSessionId(sessions))
+  const lanes = pickLanes(lanesByParent, scope.parentSessionId)
   const waiting = scope.records.filter((r) => r && r.status === 'waiting').length
   const ownerChip = scope.parentCount > 1 && scope.parentSessionId
     ? React.createElement('span', {
@@ -681,6 +720,6 @@ export function GraphSection({ records, queue, histories, sessions }) {
         ? React.createElement('span', { style: { fontSize: 11, color: '#777' } }, hint)
         : null,
     ),
-    open ? React.createElement(GraphCanvas, { records: scope.records, queue: scope.queue, histories: scope.histories }) : null,
+    open ? React.createElement(GraphCanvas, { records: scope.records, queue: scope.queue, histories: scope.histories, lanes }) : null,
   )
 }

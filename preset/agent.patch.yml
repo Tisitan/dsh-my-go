@@ -167,14 +167,24 @@
               # 同步 preset 会覆盖本行，改完记得保留本键。
               reportExternalization: true
 
-              # 读平面并行池（D5/D7/D8/D9）：读平面 = explore/librarian，
-              # 写平面（Hermes/Hephaestus/Prometheus/Oracle/Looker/Apelles/自定义角色）恒单线。
-              # 1 = 关闭 = 全局单线现状；2~3 = 读平面并发上限（>3 钳制 3，非法值回落 1）。
+              # 读平面并行池（D5/D7/D8/D9）：读平面 = explore/librarian。
+              # 1 = 关闭该池；2~3 = 读平面并发上限（>3 钳制 3，非法值回落 1）。
+              # 「全局单线」只在读池与写池**都为 1** 时成立（见下方写池段）。
               # 挂载期读一次，不做运行时切换。缺省（`?? 1`）= 关闭。
               # 装机口径：取上限 3。同步 preset 会覆盖本行，改完记得保留本键且值必须为
               # 3——防回潮哨兵
               # test/report-clause.test.mjs 的 readPoolSize pin 站岗，被改回 2/1 即红。
               readPoolSize: 3
+
+              # 写平面并行池（与读池对称，双轨制）：写平面 = 其余全部工种
+              # （Hermes/Hephaestus/Prometheus/Oracle/Looker/Apelles/自定义角色）。
+              # 1 = 关闭 = 写平面串行；2~3 = 写平面并发上限（>3 钳制 3，非法值回落 1）。
+              # 挂载期读一次，不做运行时切换。缺省（`?? 1`）= 关闭。
+              # 两池皆 1 时 isLaneFree 退化为全局单线（与写池批次前逐字节等价）。
+              # 装机口径：取上限 3（双车道各 3、峰值 6 并行）。同步 preset 会覆盖本行，
+              # 改完记得保留本键且值必须为 3——防回潮哨兵
+              # test/report-clause.test.mjs 的 writePoolSize pin 站岗，被改回 2/1 即红。
+              writePoolSize: 3
 
               # 接力链总闸（D21~D29）：开 → chain_start/chain_resolve 注册。
               # 依赖 reportExternalization=true（D23 fail-fast：总闸关则 chain_start 直接

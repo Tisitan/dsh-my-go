@@ -220,7 +220,7 @@ export function createEndingOps({
     const fallbackLabel = `${agentLabel(type, prompt.slice(0, SUBAGENT_PROMPT_MAX))}#${placeholder.childId}`
     try {
       // agentOptions 覆盖为备选条目（provider/model 均已过 pickFallbackEntry 预检）；
-      // persona/toolFilter 与 dispatchWork 同源（bindings[type] + prompts 链），
+      // 人设与 dispatchWork 同源（bindings[type] + prompts 链），
       // 重派 = 同角色换脑重新上岗。
             // spawn 前登记 pending 备选：覆盖 startContinuable resolve
       // 之前 waterfall 只能靠 label 识别工种的窗口
@@ -235,7 +235,6 @@ export function createEndingOps({
         parent,
         label: fallbackLabel,
         agentOptions: { provider: entry.provider, model: entry.model },
-        toolFilter: getBindings()[type]?.toolFilter,
         sig: new AbortController().signal,
       })
       // resolve 成功：撤临时登记 + 工种活登记 + 备选覆盖转正三步同点（含换键前

@@ -223,33 +223,6 @@ export const SETTINGS_CSS = `
   display: flex;
   gap: 4px;
 }
-.mygo-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.mygo-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.07));
-  color: var(--dsw-alias-label-secondary, #999);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-}
-.mygo-chipName {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mygo-chipKill {
-  cursor: pointer;
-  color: var(--dsw-alias-state-error-primary, #e57373);
-  flex-shrink: 0;
-}
 .mygo-detail {
   min-height: 62px;
   max-height: 124px;

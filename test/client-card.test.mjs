@@ -689,33 +689,13 @@ test('模型目录：datalist 来自宿主 modelCatalog，渠道清单在下拉�
   assert.equal(booted.scope.state.writes.length, 0)
 })
 
-test('工具花名册：listTools 喂 allow/deny 的 datalist，刷新按钮重拉一次', async () => {
-  const booted = openCard({ user: { roles: { 'custom-x': { provider: '', model: '', reasoningEffort: '', fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } } } } })
-  await settle(booted)
-  assert.equal(booted.connection.calls.filter((call) => call.endpoint === 'listTools').length, 1, '挂载即拉一次花名册')
-  await click(booted, rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('custom-x')))
-  const list = all(booted.tree, (node) => node.tag === 'datalist').find((node) => node.props?.id?.includes('tf-custom-x-allow'))
-  assert.deepEqual(all(list, (node) => node.tag === 'option').map((node) => node.props.value), ['read', 'grep', 'bash'])
-  await click(booted, button(booted.tree, '刷新花名册'))
-  await settle(booted)
-  assert.equal(booted.connection.calls.filter((call) => call.endpoint === 'listTools').length, 2)
-})
-
-test('工具名单编辑：加一条 → 草稿可见 → 删除 → 保存发数组', async () => {
-  const booted = openCard({ user: { roles: { 'custom-x': { provider: '', model: '', reasoningEffort: '', fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } } } } })
+test('旧工种toolFilter可读但无编辑器，无名单请求或写入', async () => {
+  const booted = openCard({ user: { roles: { 'custom-x': { provider: 'p', model: 'm', fallbacks: [], persona: '', toolFilter: { allow: ['read'], deny: ['write'] } } } } })
   await settle(booted)
   await click(booted, rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('custom-x')))
-  const toolInput = all(booted.tree, (node) => node.tag === 'input' && node.props?.placeholder?.includes('工具名'))[0]
-  await typeValue(booted, toolInput, 'grep')
-  await click(booted, buttonExact(booted.tree, '+ 添加'))
-  assert.equal(all(booted.tree, (node) => hasClass(node, 'mygo-chip')).length, 1)
-  await click(booted, buttonExact(booted.tree, '立即保存'))
-  const op = booted.scope.state.writes[0].ops.find((entry) => entry.path.join('.') === 'roles.custom-x.toolFilter.allow')
-  assert.deepEqual(op, { op: 'set', path: ['roles', 'custom-x', 'toolFilter', 'allow'], value: ['grep'] })
-  await click(booted, all(booted.tree, (node) => node.props?.role === 'button')[0])
-  await click(booted, buttonExact(booted.tree, '立即保存'))
-  const after = booted.scope.state.writes[booted.scope.state.writes.length - 1].ops.find((entry) => entry.path.join('.') === 'roles.custom-x.toolFilter.allow')
-  assert.deepEqual(after, { op: 'unset', path: ['roles', 'custom-x', 'toolFilter', 'allow'] }, '清空名单 = unset')
+  assert.equal(booted.connection.calls.filter((call) => call.endpoint === 'listTools').length, 0)
+  assert.equal(all(booted.tree, (node) => node.tag === 'input' && node.props?.placeholder?.includes('工具名')).length, 0)
+  assert.match(textOf(booted.tree), /工种 allow\/deny 已取消/)
 })
 
 test('人设覆盖：载入文件默认走自有端点，留空保存发 unset', async () => {

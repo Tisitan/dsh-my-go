@@ -7,6 +7,8 @@
 //   ② R7 注入探针（闭合串转义 + 数据块纪律，写侧对称面）
 //   ③ R2 锁绕行探针（链 hop 与人派 work 竞争同 lane 不超容）
 //   ③b R2-p3 读池放开探针（pool=3 下链内仍一次一个 hop，与 ③ 正交）
+//   ③c R2-w3 写池放开探针（writePoolSize=3 下写池满负荷，链内在飞 hop 恒 1）
+//   ③d R2-w3b 写池满员断面（写池 3/3 时放行 gated 写跳 → hop 落队不超容，释放一槽才换手）
 //   ④ R11 回填挪位探针（E2 抢跑 × 链的时序窗口，§4.2-①）
 // 外加 input-missing（§3.1 board 缺席挂起）、T14（队列放弃 → 链 failed）、
 // T11（D10 备选重派换绑）三条终局收口。
@@ -205,6 +207,135 @@ test('R2-p3(读池放开探针): readPoolSize=3 下人派读任务可与 hop 同
     snap = snapshotNow().parents[PARENT.id]
     assert.equal(snap.chains[0].cursor, 2)
     assert.equal(snap.chains[0].state, 'running')
+  } finally { await removeHomeWithRetry(home) }
+})
+
+// 写池放开探针（writePoolSize 配置化，与 R2-p3 读池侧对称）：写池放开的是**跨任务**
+// 并发，链内 hop 的串行性由状态机自身保证（上一 hop 终局才 enqueue 下一 hop，派发
+// 唯一通道 enqueue+advanceQueue）。断言形状：写池 3/3 满（hop + 两条人派写同时在飞，
+// 证明池真的开着）× 写池留有余槽时链内也不提前上岗下一跳（证明池放开 ≠ 链内并行）。
+// 声明形态：写跳无 auto 档（R-e），故 hop2/hop3 均带 sync 门——链到站即挂起，需
+// chain_resolve 放行，这也正是「写池有余槽 ≠ 自动续跳」的最锐利断面。
+// 与 R2-w3b 的分工（两者互补，勿合并）：本用例的断面是「**写池有余槽**」——证明 sync 门
+// 语义 + 跨任务并发（有槽也不自动消耗）；R2-w3b 的断面是「**写池零余槽**」——证明放行
+// gated 写跳时容量闸咬住（落队而非超容顶进）。
+const DECL_W3 = [
+  { agent: 'explore', prompt: '任务A' },
+  { agent: 'hermes', prompt: '任务B', gate: 'sync' },
+  { agent: 'hephaestus', prompt: '任务C', gate: 'sync' },
+]
+const writeLane = (parent) => snapshotNow().parents[parent.id].currentRecords.filter((r) => r.lane === 'write')
+// 某一跳的在飞记录（按预写首串前缀识别）：既能数「谁在飞」，也用于断言「谁**没有**
+// 提前上岗」。需要真 childId 时一律走上面的 hopRealInFlight 末步谓词——只用前缀会
+// 命中 beginSpawning 的 child-* 占位，喂给 submitReport 会打空（R2-p3 已实证）。
+const hopRecs = (parent, head) => snapshotNow().parents[parent.id].currentRecords
+  .filter((r) => String(r?.prompt ?? '').startsWith(head))
+
+test('R2-w3(写池放开探针): writePoolSize=3 下人派写任务可与 hop 同时在飞，但链内在飞 hop 恒 1', async () => {
+  const { tools, spawned, PARENT, dispatch, home, submitReport } = await relayCtx({ relayChains: true, readPoolSize: 1, writePoolSize: 3 })
+  // 写跳（hermes/hephaestus）是施工层：报告闸门强制 deviation/unverified 两字段，
+  // 通用替身（只给四字段）会被闸门退回——此处按施工层口径补齐。
+  const submitBuildReport = (childId, conclusion) => tools.get('report_submit').execute(
+    { report: `完整报告全文（${conclusion}）：实施细节与全部证据。`, conclusion, evidence: ['无'], open: '无', deviation: '无', unverified: '无' },
+    { agent: { id: childId, session: { header: { parentSession: PARENT.id } } }, signal: new AbortController().signal },
+  )
+  try {
+    const r = await tools.get('chain_start').execute({ hops: DECL_W3 }, execOf(PARENT))
+    assert.equal(r.ok, true, '含写跳的三跳链声明合法（写跳带 sync 门）')
+    await waitFor(() => spawned.length === 1, { what: 'hop1 spawn' })
+    const g1 = spawned[0].childId
+    // 人派两条写任务：写池 2/3 在飞（证明写池开着，不是恒单线）
+    const p1 = await tools.get('go_work').execute({ agent: 'hermes', prompt: '人派写1' }, execOf(PARENT))
+    const p2 = await tools.get('go_work').execute({ agent: 'prometheus', prompt: '人派写2' }, execOf(PARENT))
+    assert.equal(p1.status, 'running', '写池 3 下人派写任务立即上岗（恒单线时代此处必排队）')
+    assert.equal(p2.status, 'running', '第二条写任务仍上岗（写 lane 2/3）')
+    assert.equal(writeLane(PARENT).length, 2, '快照侧：写 lane 2/3（不用 spawn 计数）')
+    assert.equal(inFlightHops(PARENT, DECL_W3).length, 1, 'hop1（读跳）在飞，链内在飞 hop 数 = 1')
+    // hop1 终局 → 链到站 hop2（写跳，sync 门）挂起：写池尚余 1 槽，链也不自动放行
+    await submitReport(g1, '跳1结论')
+    await writeBoard(PARENT.id, g1, '上一环节完整报告正文（写池放开探针）')
+    dispatch('subagent/end', { ...GOOD_END('跳1结论'), id: g1 })
+    await waitFor(() => snapshotNow().parents[PARENT.id]?.chains?.[0]?.state === 'suspended', { what: 'chain suspended(sync) at write hop' })
+    assert.equal(hopRecs(PARENT, '任务B').length, 0, '写跳到站即挂起，不因写池有余槽提前上岗')
+    assert.equal(inFlightHops(PARENT, DECL_W3).length, 0, '链内在飞 hop = 0（上一跳已退场、下一跳未上岗）')
+    assert.equal(spawned.length, 3, '无新 hop 上岗（写池余槽不放行未裁决的写跳）')
+    assert.equal(writeLane(PARENT).length, 2, '写池仍 2/3：余槽留着等裁决，不自动消耗')
+    // 主编放行 → hop2 顶进第三个写槽（写池 3/3 满）
+    const chain = snapshotNow().parents[PARENT.id].chains[0]
+    await tools.get('chain_resolve').execute({ chainId: chain.id, decision: 'continue' }, execOf(PARENT))
+    await waitFor(() => hopRealInFlight(PARENT, '任务B') !== null, { what: 'hop2 真身上岗' })
+    assert.equal(writeLane(PARENT).length, 3, '写池 3/3：hop2 + 人派两条并存（池满负荷证明池开着）')
+    const g2 = hopRealInFlight(PARENT, '任务B')
+    // 释放一条人派写槽 → 写池 2/3 有余槽，hop2 未终局则 hop3 绝不提前上岗
+    dispatch('subagent/end', { ...GOOD_END('人派写1 结论'), id: p1.childId })
+    await waitFor(() => writeLane(PARENT).length === 2, { what: '人派写1 退场，写池回落到 2/3' })
+    assert.equal(hopRealInFlight(PARENT, '任务B'), g2, 'hop2 仍在飞（余槽没有换手给下一跳）')
+    assert.equal(hopRecs(PARENT, '任务C').length, 0, '写池有余槽但上一 hop 未终局：下一跳不上岗')
+    // hop2 终局 → 链到站 hop3（写跳，sync 门）再次挂起；写池余槽（1/3）同样不自动放行
+    await submitBuildReport(g2, '跳2结论')
+    await writeBoard(PARENT.id, g2, '第二跳完整报告正文（写池放开探针）')
+    dispatch('subagent/end', { ...GOOD_END('跳2结论'), id: g2 })
+    await waitFor(() => {
+      const c = snapshotNow().parents[PARENT.id]?.chains?.[0]
+      return c?.suspendReason === 'sync' && c?.cursor === 2
+    }, { what: 'hop3 到站挂起（cursor=2）' })
+    assert.equal(hopRecs(PARENT, '任务C').length, 0, 'hop2 已退场、hop3 待裁决：链内在飞 hop = 0')
+    assert.equal(writeLane(PARENT).length, 1, '写池 1/3 大有余槽，链仍不放行未裁决的写跳')
+    // 放行第三跳：写 slot 有（1/3），hop3 上岗，全程链内一次一个
+    const chain2 = snapshotNow().parents[PARENT.id].chains[0]
+    await tools.get('chain_resolve').execute({ chainId: chain2.id, decision: 'continue' }, execOf(PARENT))
+    await waitFor(() => hopRealInFlight(PARENT, '任务C') !== null, { what: 'hop3 真身上岗' })
+    const snap = snapshotNow().parents[PARENT.id]
+    assert.equal(inFlightHops(PARENT, DECL_W3).length, 1, '第三跳同样一次一个（写池容量不改变链内串行）')
+    assert.equal(snap.chains[0].cursor, 2)
+    assert.equal(snap.chains[0].state, 'running')
+    assert.equal(writeLane(PARENT).length, 2, 'hop3 + 人派写2 并存（写池 2/3，跨任务并行 ≠ 链内并行）')
+  } finally { await removeHomeWithRetry(home) }
+})
+
+// R2-w3b（写池 3/3 满 + 放行断面，B2 实证设计）：R2-w3 证明的是「sync 门语义 + 写池余槽
+// 不被链自动消耗」；本用例把断面推到**写池零余槽**——chain_resolve 放行 gated 写跳时
+// 写池已 3/3，hop 必须**落队**而不是顶掉容量。三断言同时咬：(a) spawned 数不变（没派出去）、
+// (b) writeLane 恒 3（不超容）、(c) queue.length===1（hop 落队而非蒸发）；随后释放一槽，
+// 验证换手同样不超容（队首 hop 顶进腾出的那个槽，写 lane 仍 3/3、队列清空）。
+// 红绿实证：影子副本上把 orchestration.mjs 的 `isLaneFree` 变异为 `return true`（取消容量
+// 判定）→ 本用例必红（hop 直接顶成第 4 条写在飞）；恢复后绿。
+test('R2-w3b(写池满员断面): writePoolSize=3 写池 3/3 时放行 gated 写跳 → hop 落队不超容，释放一槽才换手', async () => {
+  const { tools, spawned, PARENT, dispatch, home, submitReport } = await relayCtx({ relayChains: true, readPoolSize: 1, writePoolSize: 3 })
+  const queueOf = () => snapshotNow().parents[PARENT.id].queue
+  try {
+    const r = await tools.get('chain_start').execute({ hops: DECL_W3 }, execOf(PARENT))
+    assert.equal(r.ok, true, '含写跳的三跳链声明合法')
+    await waitFor(() => spawned.length === 1, { what: 'hop1 spawn' })
+    const g1 = spawned[0].childId
+    // hop1（读跳）终局 → 链到站 hop2（写跳，sync 门）挂起（此时写池还空着）
+    await submitReport(g1, '跳1结论')
+    await writeBoard(PARENT.id, g1, '上一环节完整报告正文（写池满员断面）')
+    dispatch('subagent/end', { ...GOOD_END('跳1结论'), id: g1 })
+    await waitFor(() => snapshotNow().parents[PARENT.id]?.chains?.[0]?.state === 'suspended', { what: 'chain suspended(sync) at write hop' })
+    // 先用三条人派写任务把写池灌满 3/3（证明池开着且已零余槽）
+    const h1 = await tools.get('go_work').execute({ agent: 'hermes', prompt: '人派写1' }, execOf(PARENT))
+    const h2 = await tools.get('go_work').execute({ agent: 'prometheus', prompt: '人派写2' }, execOf(PARENT))
+    const h3 = await tools.get('go_work').execute({ agent: 'hephaestus', prompt: '人派写3' }, execOf(PARENT))
+    assert.deepEqual([h1.status, h2.status, h3.status], ['running', 'running', 'running'], '三条人派写任务全部上岗（写池 3/3）')
+    assert.equal(writeLane(PARENT).length, 3, '快照侧：写 lane 3/3 零余槽')
+    assert.equal(queueOf().length, 0, '放行前队列为空')
+    const spawnedBefore = spawned.length
+    // 放行 gated 写跳：写池已满 → 必须落队，不得超容、不得蒸发
+    const chain = snapshotNow().parents[PARENT.id].chains[0]
+    await tools.get('chain_resolve').execute({ chainId: chain.id, decision: 'continue' }, execOf(PARENT))
+    await waitFor(() => queueOf().length === 1, { what: '满写池下 hop 落队' })
+    assert.equal(spawned.length, spawnedBefore, '写池满：hop 未派发（spawn 数不变，绝不超容顶进）')
+    assert.equal(writeLane(PARENT).length, 3, '写 lane 仍 3/3（队列里的 hop 不占槽）')
+    assert.equal(hopRecs(PARENT, '任务B').length, 0, 'hop2 未上岗（既不在在飞也不占槽）')
+    assert.deepEqual(queueOf().map((w) => w.agentType), ['hermes'], '队首就是被放行的写跳（lane 内 FIFO，队形不重排）')
+    // 释放一槽 → 队首 hop 顶进腾出的那个槽：换手同样不超容
+    dispatch('subagent/end', { ...GOOD_END('人派写1 结论'), id: h1.childId })
+    await waitFor(() => hopRealInFlight(PARENT, '任务B') !== null, { what: '槽位释放后 hop2 换手上岗' })
+    assert.equal(writeLane(PARENT).length, 3, '换手后写 lane 仍 3/3（hop2 顶进腾出的槽，非新增容量）')
+    assert.equal(queueOf().length, 0, 'hop2 上岗后队列清空（lane 内 FIFO 补位）')
+    assert.equal(spawned.length, spawnedBefore + 1, '换手只新增一次 spawn（hop2 真身上岗）')
+    assert.equal(inFlightHops(PARENT, DECL_W3).length, 1, '链内在飞 hop 恒 1（链内串行不受写池容量影响）')
   } finally { await removeHomeWithRetry(home) }
 })
 

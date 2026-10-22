@@ -11,6 +11,7 @@
  * injection parameters.
  */
 
+import { sessionEvents } from './adjacent.mjs'
 import { AGENT_TYPES, AGENT_TYPE_PREFIX, LEDGER_PARENTS_CAP } from './constants.mjs'
 
 export function describeAgent(type, persona) {
@@ -61,16 +62,23 @@ export function escapeXml(text) {
   return String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
 
-// 工种识别单一入口：活登记优先，label 正则兜底——
-// sessionTypes 不持久化，cold-resume 后为空，而 session.header.label 落盘在案。
+// 工种识别：活登记优先；rc.2 把 label 持久化在 descriptor，旧宿主留在 header。
+// descriptor 在 agent/created 和首次请求之前写入，故新建与冷恢复都无需等 start 返回。
 export function typeOfAgent(sessionTypes, agent) {
-  return sessionTypes.get(agent?.id) ?? /^dsh-my-go:([a-z-]+)/.exec(agent?.session?.header?.label ?? '')?.[1]
+  const live = sessionTypes.get(agent?.id)
+  if (live !== undefined) return live
+  return /^dsh-my-go:([a-z-]+)/.exec(agentRoleLabel(agent))?.[1]
+}
+
+export function agentRoleLabel(agent) {
+  const descriptor = sessionEvents(agent?.session).findLast((event) => event.type === 'subagent/descriptor')
+  return descriptor?.data?.label ?? agent?.session?.header?.label ?? ''
 }
 
 // 备选重派覆盖合并：重派成功时两半把备选 {provider, model} 登记进
 // activeFallback（childId 键），agent/request waterfall 每请求经本函数求有效
 // 绑定——覆盖存在时只换 provider/model，工种其余字段（reasoningEffort/
-// fallbacks/toolFilter…）原样保留。返回新对象，绝不原地改 bindings[type]：
+// fallbacks…）原样保留。返回新对象，绝不原地改 bindings[type]：
 // 绑定表按工种共享，原地写会把备选泄漏给同工种的常规派发。缺/畸形覆盖原样返回。
 export function resolveEffectiveBinding(binding, override) {
   if (typeof override?.provider !== 'string' || typeof override?.model !== 'string') return binding

@@ -202,7 +202,6 @@ test('RPC/settings 契约：RPC 端点全家与 settings.register 为 lib 独有
 // CHANGELOG  的映射表。
 const BROKER_ONLY_PATHWAYS = [
   ['sharedRolePersona(', '内置人设现读走 shared（两侧各抄一份 = prompts/ 档案与派发人设分叉）', 'scheduler'],
-  ['sharedResolveRoleToolFilter(', '角色工具过滤现算走 shared（漏一处 = 派发时不再按活目录降级）', 'scheduler'],
   ['resolveEffectiveBinding(', '备选覆盖合并走 shared（手抄合并规则是备选泄漏给常规派发的温床）', 'broker'],
   ['spawnChild(', '派发组合子唯一出口（另起 spawn 路径 = 绕开 restrict 与台账登记）', 'scheduler'],
   ['attemptFallbackRedeploy(', '备选重派入口（终局落账与重派共用同一决策点）', 'ending'],
@@ -329,7 +328,7 @@ test(' 设置页加固在册（源码断言）：dirty 汇聚 / revision 围栏 
   assert.equal(countOf(coreSrc, 'saveAndClose'), 0, 'settings.section 的 close affordance 随入口一起退役')
   // ── 目录与名单：非设置数据仍走插件自有端点
   assert.ok(countOf(coreSrc, 'getBuiltinPersona') >= 1, '人设文件读取仍是插件自有端点')
-  assert.ok(countOf(coreSrc, 'listTools') >= 1, '工具花名册仍是插件自有端点')
+  assert.equal(countOf(coreSrc, 'useToolRoster('), 0, '工种工具编辑器及其轮询已退役')
   // ── 可手填 + 渠道失败区分（编辑器已迁到 roles-editor.js 的详情面板）
   assert.equal(countOf(paneSrc, 'function combobox('), 1, 'input+datalist 组合框定义唯一')
   assert.ok(countOf(paneSrc, "el('datalist'") >= 1, '清单在场时仍可点选')
@@ -555,7 +554,7 @@ test('broker 拆分 5.2：E2 缓冲/dispose 兜底/投递链三簇本体落位 b
     [deliverySrc, 'broker-delivery.mjs', 'async function tryFacadeSteer('],
     [deliverySrc, 'broker-delivery.mjs', 'function interruptForAbort('],
     [deliverySrc, 'broker-delivery.mjs', 'async function deliverWithQueueFallback('],
-    [deliverySrc, 'broker-delivery.mjs', 'function rearmAfterDelivery('],
+    [deliverySrc, 'broker-delivery.mjs', 'async function rearmAfterDelivery('],
     [deliverySrc, 'broker-delivery.mjs', 'const coordinatorSource ='],
   ]) {
     assert.equal(countOf(src, marker), 1, `${home} 唯一登记处: ${marker}`)
@@ -937,7 +936,7 @@ test('lib 半 settings schema：fallbacks 数组被接受并原样带出', async
   assert.ok(host.Config !== undefined, 'schema 由顶层 Config 声明（0.1.7），宿主直接读它')
   const parsed = resolvedHostConfig({ roles: { hermes: { provider: 'a', model: 'b', fallbacks: [{ provider: 'x', model: 'y' }] } } })
   assert.deepEqual(parsed.roles.get().hermes.fallbacks, [{ provider: 'x', model: 'y' }], 'schema 接受 fallbacks 且保持数组形状')
-  assert.deepEqual(parsed.roles.get().hermes.toolFilter, { allow: [], deny: [] }, '未给的字段取 schema 默认（宿主解析语义）')
+  assert.equal(parsed.roles.get().hermes.toolFilter, undefined, '不再声明工种限制默认')
 })
 
 test('写面：fallbacks 空数组转 unset，非空数组原样 set', () => {
@@ -1042,12 +1041,12 @@ test('写面：draft.roles 行显式携带 persona/toolFilter 时 set/unset，�
   )
   assert.deepEqual(
     ops.filter((o) => o.path[2] === 'toolFilter' && o.path[3] === 'allow'),
-    [{ op: 'set', path: ['roles', 'custom-x', 'toolFilter', 'allow'], value: ['read'] }],
+    [],
     'allow 非空 set（剔空条目）',
   )
   assert.deepEqual(
     ops.filter((o) => o.path[2] === 'toolFilter' && o.path[3] === 'deny'),
-    [{ op: 'unset', path: ['roles', 'custom-x', 'toolFilter', 'deny'] }],
+    [],
     'deny 空数组 unset',
   )
 })
@@ -1232,7 +1231,7 @@ test('shared 行为面直测：失败分类 / 角色合并 / 迁移 ops / 工种
   assert.equal(merged.hermes.model, 'base')
   // migrateLegacyRolesOps：整行搬入 roles + 旧键 unset
   const ops = sharedRoles.migrateLegacyRolesOps({ hermes: { model: 'm1' } })
-  assert.deepEqual(ops.map((o) => [o.op, o.path.join('.')]), [['set', 'roles.hermes'], ['unset', 'hermes']])
+  assert.deepEqual(ops.map((o) => [o.op, o.path.join('.')]), [['set', 'roles.hermes']])
   // typeOfAgent：活登记优先于畸形 label；无登记时 label 兜底
   assert.equal(sharedMisc.typeOfAgent(new Map([['c1', 'hermes']]), { id: 'c1', session: { header: { label: 'garbage' } } }), 'hermes')
   assert.equal(sharedMisc.typeOfAgent(new Map(), { id: 'c2', session: { header: { label: 'dsh-my-go:explore: 快速检索' } } }), 'explore')

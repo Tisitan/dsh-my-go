@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 /**
  * dsh-my-go — 编排台账持久化。
  *
@@ -24,7 +25,7 @@
  *   - 防抖窗/串行链/关闭位三个可变位收进一个小 state 对象持有（saveState）。
  */
 
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 // 卸载路径的台账同步落盘：清理函数里不等异步链，直接用
 // node:fs 同步三件套（mkdir/writeFile/rename 的 sync 形态），原子语义与热路径一致。
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -84,7 +85,7 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
   // 防抖窗（timer）/串行链（chain）/关闭位（closed）三枚可变位集中持有；
   // closed 卸载后置真：在飞的异步写全部作废（收尾的同步写不能被一枚更旧的
   // payload 覆回去——异步链的 .then 在清理函数之后才跑）。
-  const saveState = { timer: null, chain: Promise.resolve(), closed: false }
+  const saveState = { timer: null, chain: Promise.resolve(), closed: false, requested: false }
   function ledgerPayload() {
     // 占槽记录（currentMap：spawning/running/waiting）从来不入档，本档只有 history
     // 与 chains 两桶，挂起停摆的 episode 标记 stallNotified 因此天然不持久化
@@ -104,7 +105,7 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
     return JSON.stringify(payload)
   }
   function writeLedgerSync(payload) {
-    const tmpPath = `${ledgerPath}.tmp`
+    const tmpPath = `${ledgerPath}.${randomUUID()}.tmp`
     try {
       mkdirSync(dirname(ledgerPath), { recursive: true })
       writeFileSync(tmpPath, payload, 'utf-8')
@@ -115,6 +116,8 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
     }
   }
   function scheduleLedgerSave() {
+    if (saveState.closed) return
+    saveState.requested = true
     if (saveState.timer) return
     saveState.timer = setTimeout(() => {
       saveState.timer = null
@@ -123,11 +126,13 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
         if (saveState.closed) return
         // 原子写：先写同目录 .tmp 再 rename 覆盖——进程崩溃写
         // 到一半时撕裂的是 tmp，台账本体非旧即新恒完整，不再全量丢账。
-        const tmpPath = `${ledgerPath}.tmp`
+        const tmpPath = `${ledgerPath}.${randomUUID()}.tmp`
         try {
           await mkdir(dirname(ledgerPath), { recursive: true })
           await writeFile(tmpPath, payload, 'utf-8')
-          await rename(tmpPath, ledgerPath)
+          // No await between the final generation check and publication.
+          if (saveState.closed) { await rm(tmpPath, { force: true }); return }
+          renameSync(tmpPath, ledgerPath)
         } catch (error) {
           // 写/rename 失败：尽力清掉 tmp 残骸，warn 留痕但不抛出打断串行链
           await rm(tmpPath, { force: true }).catch(() => {})
@@ -140,14 +145,14 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
   // 插件卸载收尾：只 clearTimeout 等于把整个防抖窗（250ms）
   // 内的台账变更丢弃——最后一次完工/复活根本不入档，重启后 continue 报
   // unknown-id（文件兜底也救不了：文件里压根没有那条记录）。
-  // 有 pending timer 就同点做完这次写：撤定时器 → 作废在飞的异步链 →
+  // 只要曾请求保存就同点收尾（包括 timer 已触发的在飞写）：撤定时器 → 作废异步链 →
   // 同步落最新 payload（tmp+rename 原子语义不变；卸载路径接受同步 I/O）。
   function closeLedger() {
-    if (saveState.timer === null) return
+    if (saveState.closed) return
+    saveState.closed = true
     clearTimeout(saveState.timer)
     saveState.timer = null
-    saveState.closed = true
-    writeLedgerSync(ledgerPayload())
+    if (saveState.requested) writeLedgerSync(ledgerPayload())
   }
 
   // 台账文件兜底查找：continue/forward 内存全实例未命中时，回读台账文件再找一次。

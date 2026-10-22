@@ -1,7 +1,7 @@
 {
   "name": "dsh-my-go",
-  "version": "0.5.0",
-  "description": "多智能体编排预设：主编（Sisyphus）调度 + 内置工种名册 + 报告落板；星型拓扑单线阻塞、按工种绑定模型，含 go_work/continue/need_help/forward 通信工具、Web UI 树状图面板与设置页。",
+  "version": "0.6.0",
+  "description": "多智能体编排预设：主编（Sisyphus）调度 + 内置工种名册 + 报告落板；星型嵌套 + 双泳道池化编排（读/写双池各自计数）、按工种绑定模型，含 go_work/continue/need_help/forward 通信工具、Web UI 树状图面板与设置页。",
   "author": "Tisitan",
   "license": "MIT",
   "repository": {

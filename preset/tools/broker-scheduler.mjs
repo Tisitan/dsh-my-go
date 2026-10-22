@@ -48,10 +48,10 @@
  */
 
 import { SELF_REGISTERED_TOOLS, RUN_CODE_TOOL } from '../shared/constants.mjs'
+import { startLocalChild } from '../shared/activation.mjs'
 import {
   rosterKeys as sharedRosterKeys,
   rolePersona as sharedRolePersona,
-  resolveRoleToolFilter as sharedResolveRoleToolFilter,
 } from '../shared/roles.mjs'
 import { agentLabel, describeAgent } from '../shared/misc.mjs'
 import { laneOf, bindSpawnedChild } from '../shared/orchestration.mjs'
@@ -111,10 +111,10 @@ export function createSchedulerOps({
     bump()
     return `[dsh-my-go] 流水线停摆: ${holder.childId} (${holder.agentType}) 挂起占槽，队列压着 ${queueLen} 个任务无人推进；${helpPart}。处置: forward/continue 处置求助单后流水线自动恢复`
   }
-  // T2 的槽主挑选：报的是「挡住这条新任务的那位」。读池开启（容量 ≥2）时只有同
-  // 泳道的挂起记录才挡得住本任务，跨泳道去报等于把停摆记错了人头上；而默认的
-  // 全局单线（readPoolSize=1，isLaneFree 退化为 size===0）下任何挂起记录都挡全场，
-  // 同泳道挑不到就取任意一条挂起者。
+  // T2 的槽主挑选：报的是「挡住这条新任务的那位」。任一池开启（容量 ≥2）时只有同
+  // 泳道的挂起记录才挡得住本任务，跨泳道去报等于把停摆记错了人头上；而两池皆关的
+  // 全局单线（readPoolSize=1 且 writePoolSize=1，isLaneFree 退化为 size===0）下任何
+  // 挂起记录都挡全场，同泳道挑不到就取任意一条挂起者。
   function stallHolder(orch, agentType) {
     const waiting = [...orch.currentMap.values()].filter((r) => r.status === 'waiting')
     if (waiting.length === 0) return undefined
@@ -176,9 +176,10 @@ export function createSchedulerOps({
     if (!orch) return
         // D18（global-scan，read-pool-semantics.md §2.1）：自队首扫描
     // 全队列，第一条其 lane 有空位的 work 上岗；满池 lane 的 work 原地保留——
-    // skip 不重排队列序，lane 内 FIFO 与全局序可观测都不变。readPoolSize=1 时
-    // isLaneFree 退化为全局单线（size===0 才 free），本循环与旧「队首一刀切」
-    // 逐字节等价：上岗一条即满，扫描自然终止。
+    // skip 不重排队列序，lane 内 FIFO 与全局序可观测都不变。两池皆关
+    // （readPoolSize=1 且 writePoolSize=1）时 isLaneFree 退化为全局单线
+    // （size===0 才 free），本循环与旧「队首一刀切」逐字节等价：上岗一条即满，
+    // 扫描自然终止。
     // 终止性：每轮 picked 必然出队（dequeueById）或队空返回；派发是 void 异步链，
     // 其同步段（至 beginSpawning 占槽）先于下一轮扫描执行，laneCount 即时反映，
     // 循环填池到无空位为止。派发同步段抛错（unknown role/无 parent）时占位未入
@@ -218,7 +219,7 @@ export function createSchedulerOps({
   const rolePersona = (type) => sharedRolePersona(getBindings(), promptCache, loadPrompt, type)
 
   // 本插件注册的编排工具名：schemas() 无参只返回全局层视图（内建 + MCP），
-  // preset 层的自产工具不在其中——toolFilter 合法引用它们时不能误杀。
+  // preset 层的自产工具不在其中，补齐后供拓扑闸探测已注册工具。
   function liveToolNames() {
     try {
       const tools = getTools()
@@ -230,27 +231,20 @@ export function createSchedulerOps({
     }
   }
 
-  const resolveRoleToolFilter = (type, filter) => sharedResolveRoleToolFilter(type, filter, liveToolNames())
 
   /**
    * 派发一个儿童会话（go_work 直派与备选重派**共用**）。两条路的差异全部
    * 参数化：agentOptions（直派按工种绑定、重派按备选条目）、label（同一
    * agentLabel 公式，重派需要在 try 外先算好以便失败清理）、signal（直派带
-   * 调用方信号、重派恒新合成一枚）。persona/toolFilter 两路同源——重派是
-   * 「同角色换脑重新上岗」，人设与工具面必须跟着工种走，不随备选条目变。
+   * 调用方信号、重派恒新合成一枚）。人设预热两路同源——重派是
+   * 「同角色换脑重新上岗」；实际人设在继承的动态系统提示段中按 descriptor 识别。
    * 只负责 spawn 本身：占位换键（bindChild）、登记表写入、失败补偿都留在
    * 调用方，两路的收尾时机不同（重派成功要做备选转正，直派成功只登记工种）。
    * @returns 新儿童 childId
    */
-  async function spawnChild({ agentType, prompt, parent, label, agentOptions, toolFilter, sig }) {
-    const [persona, roleFilter] = await Promise.all([
-      rolePersona(agentType),
-      // toolFilter 由调用方按**进入本路径时**的绑定快照传入（直派取 entry-time
-      // 的 `binding.toolFilter`，重派取当时的 `bindings[type]?.toolFilter`）——
-      // 此处不重读 bindings，否则一次配置段热更夹在两次 await 之间
-      // 就会改变本次派发已经定下的工具面。
-      Promise.resolve(resolveRoleToolFilter(agentType, toolFilter)),
-    ])
+  async function spawnChild({ agentType, prompt, parent, label, agentOptions, sig }) {
+    // Prime the inherited dynamic persona section before the child can start.
+    await rolePersona(agentType)
     const request = {
       label,
       // 提交条款注入（REPORT_CLAUSE，唯一出处）：此处是直派与备选重派唯一共用
@@ -262,17 +256,15 @@ export function createSchedulerOps({
         { type: 'text', text: prompt },
         ...(REPORT_EXT ? [{ type: 'text', text: REPORT_CLAUSE }] : []),
       ],
-      ...(persona !== undefined ? { persona } : {}),
-      ...(roleFilter !== undefined ? { toolFilter: roleFilter } : {}),
       parent,
       ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
       signal: sig,
     }
-    const { childId } = await getSubagents().startContinuable({
-      provider: 'spawn',
+    const { childId } = await startLocalChild(getSubagents(), {
       label,
       request,
       signal: sig,
+      onResultError: (error, id) => console.warn(`[dsh-my-go] activation result capture failed for ${String(id)}: ${String(error)}`),
     })
     return childId
   }
@@ -280,7 +272,7 @@ export function createSchedulerOps({
   async function dispatchWork(agentType, prompt, parent, signal, queuedWork, orchHint) {
     if (!rosterKeys().includes(agentType)) {
       const roster = rosterKeys().map((t) => `- ${t}: ${describeAgent(t, getBindings()[t]?.persona)}`).join('\n')
-      throw new Error(`unknown agent role: ${String(agentType)} — not in the live roster. Re-run go_work with one of the available roles:\n${roster}\n(model bindings and tool filters: see the roles section of orchestration_status)`)
+      throw new Error(`unknown agent role: ${String(agentType)} — not in the live roster. Re-run go_work with one of the available roles:\n${roster}\n(model bindings and personas: see the roles section of orchestration_status)`)
     }
     const binding = getBindings()[agentType] ?? {}
     // 队列路径的父会话兜底已上移到 advanceQueue（按 work.parentId 从
@@ -293,8 +285,8 @@ export function createSchedulerOps({
         // 否则队列派发必败 TypeError（重试 4 次全败后放弃）。
     const sig = signal ?? new AbortController().signal
         // 泳道容量分叉（按 lane 判定，不再看 isBusy）：目标 lane 有空位即直接 spawn，
-    // 满则入队等本 lane 释放。readPoolSize=1 时 isLaneFree 退化口径 = 全局空，
-        // 与 isBusy() 判定逐字节等价（D5 默认关 = 现状）。
+    // 满则入队等本 lane 释放。两池皆关（readPoolSize=1 且 writePoolSize=1）时
+    // isLaneFree 退化口径 = 全局空，与 isBusy() 判定逐字节等价（D5 默认关 = 现状）。
     if (!orch.isLaneFree(laneOf(agentType))) {
       const workId = orch.enqueue(agentType, prompt, parent?.id)
       bump()
@@ -307,26 +299,29 @@ export function createSchedulerOps({
     }
     const placeholder = orch.beginSpawning(agentType, prompt)
     try {
-      // Resolve provider: use binding's explicit provider, or inherit from parent agent options
+      // Inherit the parent route unless the whole configured pair is available.
+      // Never seed a new provider with an unrelated inherited model.
       const parentProvider = parent?.options?.provider
       const resolvedProvider = binding.provider ?? parentProvider
-      // Build agentOptions: always pass provider so sub-agent doesn't fall back to DSH default
+      const resolvedModel = binding.model ?? parent?.options?.model
       const agentOpts = {}
-      if (resolvedProvider) agentOpts.provider = resolvedProvider
-      // Only set model if it exists on the resolved provider
-      if (binding.model !== undefined && resolvedProvider) {
-        if (await modelExists(resolvedProvider, binding.model)) {
+      if (parentProvider) agentOpts.provider = parentProvider
+      if (binding.provider !== undefined || binding.model !== undefined) {
+        if (resolvedProvider && resolvedModel && await modelExists(resolvedProvider, resolvedModel)) {
+          agentOpts.provider = resolvedProvider
+          agentOpts.model = resolvedModel
+        } else if (!resolvedProvider && binding.model !== undefined) {
+          // Provider is not yet resolved: the request waterfall validates this model
+          // against the actual seed provider before the first adapter call.
           agentOpts.model = binding.model
+        } else {
+          console.warn(`[dsh-my-go] spawn: configured route "${String(resolvedProvider)}/${String(resolvedModel)}" is unavailable; inheriting parent route`)
         }
-      } else if (binding.model !== undefined && !resolvedProvider) {
-        // No provider available — set model anyway, agent/request handler will validate
-        agentOpts.model = binding.model
       }
-      // persona/toolFilter 走 DSH spawn 正统通道（SubagentStartRequest），
-      // 首条 prompt 保持纯任务文本；内置工种人设经 rolePersona 复用
-      // prompts/ 加载链，自定义角色读 settings roles 行。
+      // 人设经继承的动态系统提示段注入，按持久化 descriptor 识别工种。
+      // 首条 prompt 保持纯任务；各工种继承同一宿主工具面。
       const label = agentLabel(agentType, prompt.slice(0, SUBAGENT_PROMPT_MAX))
-      const childId = await spawnChild({ agentType, prompt, parent, label, agentOptions: agentOpts, toolFilter: binding.toolFilter, sig })
+      const childId = await spawnChild({ agentType, prompt, parent, label, agentOptions: agentOpts, sig })
       sessionTypes.set(childId, agentType)
       // 占位可能在 spawn 窗口里已被回收：E2 泄漏哨兵的年龄判定只看 createdAt，冷读慢的
       // 派发（实测 56~145ms，测试场景 grace=50ms）会被判成「链无进展」并 finish+retire。

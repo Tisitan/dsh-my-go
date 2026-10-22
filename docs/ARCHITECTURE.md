@@ -5,7 +5,7 @@
 dsh-my-go 是构建在 DeepSeek Harness (DSH) 之上的智能体编排系统。它把
 DSH 原生能力（continuable 子智能体、`subagents` 服务、`agent/request`
 waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
-**星型 + 单线嵌套**拓扑：Sisyphus 调度，子智能体执行并汇报。
+**星型嵌套 + 双泳道池化**拓扑：Sisyphus 调度，子智能体执行并汇报。
 
 ## 1. 拓扑与职责
 
@@ -32,13 +32,14 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 > 空绑定，全部继承环境路由），具体模型由使用者在设置中按工种配置。
 
 - **所有子智能体（叶子）不直接通信**，必须经由 Sisyphus 中转。
-- **执行模式**：单线阻塞，同一时段只能有一个子智能体运行；按
+- **执行模式**：泳道阻塞（读/写双池各自计数），并发受泳道容量约束
+  （装机双车道各 3、峰值 6 并行）；按
   编排会话隔离——每个父会话一条独立流水线，互不排队。
 - **Sisyphus = 主会话**：用户对话所选模型即 Sisyphus 的模型；它不单独创建。
 - **花名册可扩展**：八个内置工种（含可视化画师 Apelles——
   `AGENT_TYPES` 末位追加、`prompts/apelles.md` 人设、名册三处消费面自动带上，
   见 §2.3）之外，settings `roles` dict 支持自定义角色
-  （键名 `^[a-z][a-z-]*$`，可绑定模型/人设/工具过滤），派发面按活名册校验
+  （键名 `^[a-z][a-z-]*$`，可绑定模型/人设；工具权限继承宿主），派发面按活名册校验
   ——扩展入口见 §2.3 与配置卡角色详情栏。
 - **子智能体 = DSH continuable subagent**：通过 `subagents.startContinuable`
   创建，持久化到独立 Session，支持后续邻接投递（`deliverToAdjacent` 适配层：
@@ -89,7 +90,7 @@ waterfall、Session 会话与投影）组合成 AGENTS.md 所描述的
 > 随各自注册开关联动——开关关 = 工具未注册 = 无需 deny（闸的意图被「工具根本
 > 不存在」真空满足），开关开 = deny 必须生效。
 
-### 2.1 单线阻塞与会话隔离
+### 2.1 泳道阻塞与会话隔离
 
 编排状态按编排会话分桶维护：`orchestrations:
 Map<parentSessionId, Orchestration>` 惰性创建——每个 Sisyphus 会话独立一条
@@ -126,7 +127,7 @@ interface OrchestrationState {
   结构化拒绝——占位 id 背后还没有会话，投了就是假 accepted；
   对已结束的子智能体会重新入册（revive 回 currentMap + 恢复类型/备选覆盖/属主
   三张表，并把上一代际留下的两张一次性表——备选 once-guard 与 abort 护航——
-  同点清零，复活即新世代），保持单线阻塞与结论回收。
+  同点清零，复活即新世代），保持泳道阻塞与结论回收。
 - **属主路由与竞态墓碑**：`subagent/end` 经 `childOwner` 直达
   属主实例（未登记则全局扫描活记录/历史兜底）；`agent/disposed` 恒先于 end
   到达的竞态由有界墓碑表（`disposedTypes`，cap 50）+ 宽限期兜底消化——宽限
@@ -153,8 +154,8 @@ interface OrchestrationState {
   续聊），而不是报 unknown sub-agent id。落盘形状为
   `{ version: 2, parents: { [parentSessionId]: history[] } }` 分桶；v1 旧档
   载入 'legacy' 兜底桶，跨重启经全局扫描命中。写盘走同目录 `.tmp` + rename
-  的原子序，串行化在 Promise 链上；**防抖窗（250ms）内的最后一次
-  变更随插件卸载同步补写**——清理函数只 `clearTimeout` 会让窗口内
+  的原子序，串行化在 Promise 链上、各写使用唯一临时文件；发布前同步检查关闭位，避免旧写
+  覆盖收尾。**最后一次变更随插件卸载同步补写（包括已在飞的写）**——清理函数只 `clearTimeout` 会让窗口内
   的完工/复活整段蒸发，重启后那条记录连文件兜底查找都救不回来。
 - **父会话补充通知**：harness 的完工通知（settled）是
   dsh-subagent 硬编码模板，插件不可抑制/改写（alpha.2/3 时代与其并存的
@@ -197,15 +198,22 @@ interface OrchestrationState {
 
 ### 2.3 名册路由与 spawn 正统通道
 
-settings `roles: dict(roleSchema)`，角色键名在 schema 层强制
-`^[a-z][a-z-]*$`；旧顶级七工种键在装载与热更时自动无损迁入 `roles`
-（幂等；失败保留原配置仅 warn，apply 不中断）。`go_work` / `forward` 的
-`agent` / `target` 参数为自由 string 按活名册校验——未注册名结构化报错
-并附当前可用清单；`orchestration_status` 尾部输出活花名册（sisyphus
-不入可派名册）。子代理 persona / toolFilter 经 `SubagentStartRequest`
-官方字段注入（descriptor v2 持久化、冷恢复原样重放），首条 prompt 的
-`<system-reminder>` 包装退役；toolFilter 派发前按活工具目录过滤降级
-（warn 留痕），allow 全缺名时丢弃 toolFilter 回落全量目录。
+settings `roles: dict(roleSchema)`，角色键名强制 `^[a-z][a-z-]*$`。
+旧顶级工种只读兼容：仅给缺席的 `roles` 行补写 set，绝不 unset 宿主不允许热写的
+旧键；显式 roles 行优先（包括空对象），迁移幂等，写入失败仍可读旧绑定。
+`go_work` / `forward` 按活名册校验，状态工具与提示简报共享花名册。
+
+rc.2 不再消费 start request 的 persona/toolFilter。MyGO 不传这些旧字段：
+工种人设由继承的动态 deployment persona 段注入，优先 roles 人设、prompts 文件、
+通用兜底。加载期等待内置人设预热；派发前重试缺席文件。工种识别优先活登记，
+其次最新 `subagent/descriptor.data.label`，最后旧 `session.header.label`。
+宿主在首次请求前写入 descriptor，冷恢复重放它；备选路由的 pending label 同样
+走此统一读取路径，避免首请求回跳主选模型。任务 prompt 不包人设。
+
+工种级 allow/deny 已移除，schema 与编辑器不声明该功能，旧 `toolFilter` 可读取但
+合并绑定时明确忽略。各工种继承同一宿主工具面；宿主沙箱、审批边界不变，MyGO
+防递归及邻接通信约束仍独立执行。历史 descriptor 中已有的过滤仍会被宿主重放，
+本次不改写会话；需要新工具继承行为时新派子会话。
 
 **apelles 的名册容纳**：新增内置工种不需要任何路由
 改动——`AGENT_TYPES` 末位追加 `'apelles'`（shared/constants 单源）后，
@@ -232,9 +240,9 @@ write（不在 READ_LANE_TYPES，§2.8）。需要手工同步的只有展示面
 - **roles 原样附带**：投影恒保留 roles dict 本体（含自定义行），是角色清单的
   数据源；`sisyphus` 例外——它永远是顶级键，roles 里出现即视为死数据，
   读面不复活、写面不落、存量靠删除面自然清出；
-- **顶级形状不消费 persona/toolFilter**：`<type>` 顶级键只承载绑定五字段
+- **顶级形状不消费 persona**：`<type>` 顶级键只承载绑定五字段
   （provider / model / reasoningEffort / fallbacks），
-  persona 与 toolFilter 只存在于 roles 行形状；
+  persona 存在于 roles 行形状，旧 toolFilter 不消费；
 - **显式携带才写**：`src/settings-ops.js` 的 `buildSettingsOps` 只对草稿行显式
   携带的字段产生 set/unset ops——部分行（如只带 persona）绝不误清已配的 provider /
   model 绑定（修复「部分行误清」回归），空值 unset。
@@ -309,10 +317,10 @@ child-registry / adjacent 两档；再拆出 end-attribution；
 | failure.mjs | 失败归一化 + 备选链错误分类器（仅 broker 消费） |
 | archive.mjs | 持久化 turn-failure 档案读取（多帧 zstd 逐帧解压；仅 broker 消费） |
 | roles.mjs | 角色名册数据 + 路由 helpers（bindings / promptCache 注入）；名册条目 `rosterEntries` 是三处消费面（面板 roster / 编排状态文本 / 系统提示简报）的唯一语义源（A-05） |
-| orchestration.mjs | 单线阻塞编排状态机（broker 独有；为两半同一实现）。0.4.0 线二期起泳道化：`laneOf` 泳道判定表、`readCapacity` 读池容量、`laneCount`/`isLaneFree` 复合忙判定、`dequeueById` lane-aware 出队原语，Orchestration 兼持声明式接力链桶 `chains`（链是账本不是槽位持有者，不参与 laneCount/isBusy）；快照增发 `currentRecords` 全量数组与 `chains` 字段 |
+| orchestration.mjs | 泳道阻塞编排状态机（broker 独有；为两半同一实现）。0.4.0 线二期起泳道化：`laneOf` 泳道判定表、`readCapacity`/`writeCapacity` 读写两池容量、`laneCount`/`isLaneFree` 复合忙判定、`dequeueById` lane-aware 出队原语，Orchestration 兼持声明式接力链桶 `chains`（链是账本不是槽位持有者，不参与 laneCount/isBusy）；快照增发 `currentRecords` 全量数组、`chains` 字段与 `lanes: { read|write: { capacity } }` 容量事实（0.6.0 写池批次；面板星图按容量渲染，只发容量不发占用） |
 | misc.mjs | 展示字符串 / 默认绑定 / XML 转义 / typeOfAgent / 台账修剪 / prompt 预载 |
 | child-registry.mjs | 子代理侧**十一张**桥接登记表（`sessionTypes` / `disposedTypes` / `childOwner` / `activeFallback` / `pendingFallbackByLabel` / `abortExpected` / `fallbackDecided` / `repairRetried` / `reportSubmitted` / `modelCache` / `heartbeats`）+ 跨表不变量（墓碑/收尾/备选两段式登记/复活重建——复活即新世代，同点清备选 once-guard 与 abort 护航两张一次性表）；`createChildRegistry()` 工厂，broker 独有（健康度批；心跳表随 落表，见 §2.12） |
-| end-attribution.mjs | **subagent/end 归因决策纯函数**（B5，自 broker 的事件回调抽出）：十条控制出口（ignore / late-duplicate / unattributable / no-owning-orchestration / expected-abort / fallback-in-flight / fallback-evaluation / finalize / suspended-help-hold / report-gate-repair）返回 `{decision, ops, notices, facts}`——改哪些表、对谁说什么、槽位还占不占；写副作用与异步重派链全在 broker 的 dispatcher。`shouldAdvanceQueue` 把「finalizeEnd 不推进队列」从注释协议升级为返回值里的显式口径（R3/R4）。失败附因经 `readFailure` 回调注入（本模块不认识文件也不认识会话）。增 **E7' 报告提交制闸门**与第九出口 `report-gate-repair`（判定源 = 成功提交登记而非消息解析，机制见 §2.7）；E8 `suspended-help-hold` 接住 need_help 挂起回合的中场哨 end（台账 status=waiting 时闸门不适用、记录留 waiting） |
+| end-attribution.mjs | **subagent/end 归因决策纯函数**（B5，自 broker 的事件回调抽出）：十条控制出口（ignore / late-duplicate / unattributable / no-owning-orchestration / expected-abort / fallback-in-flight / fallback-evaluation / finalize / suspended-help-hold / report-gate-repair）返回 `{decision, ops, notices, facts}`——改哪些表、对谁说什么、槽位还占不占；写副作用与异步重派链全在 broker 的 dispatcher。`shouldAdvanceQueue` 把「finalizeEnd 不推进队列」从注释协议升级为返回值里的显式口径（R3/R4）。失败附因经 `readFailure` 回调注入（本模块不认识文件也不认识会话）。增 **E7' 报告提交制闸门**与第九出口 `report-gate-repair`（判定源 = 成功提交登记而非消息解析，机制见 §2.7）；E8 `suspended-help-hold` 接住 need_help 挂起回合的中场哨 end（台账 status=waiting 时闸门不适用、仅 completed 记录留 waiting，失败/取消正常收尾） |
 | adjacent.mjs | 上游邻接消息面唯一耦合点：`planAdjacentDelivery`（**路由表单一出处**，N15：route ∈ queue / steer / legacy / unavailable + invoke）+ `sessionEvents` / `canQueueAdjacent`（plan 薄壳）/ `deliverToAdjacent`（委托 plan）/ `reportToParent`，按方法存在性在 alpha.2/3 ↔ alpha.4 间特性探测分界；broker 独有（自 misc 独立，健康度批） |
 | board.mjs | 报告板存储层（报告外部化与接力链共用，0.5.0 线一期建、三期 D23 复用）：`writeBoard`（tmp+rename 原子写，覆盖留痕 `.prev.md`）/ `readBoardSlice`（行切片分页，offset/limit 越界钳制；not-found 回错误对象不抛）/ `hasBoardEntry`（同步 existsSync，E7' 闸门兜底判定）。根焊死 `boardRoot()` = `<DSH_HOME>/dsh-my-go/board`，sessionId/childId 双段编码防穿越；broker 独有（机制见 §2.7） |
 | paths.mjs | DSH_HOME / MyGO 数据目录路径解析（`dshHome` / `mygoHome` / `sessionsHome`，lib 与 broker 共用，0.5.0 线批次；DSH_HOME 缺席或空串一律回落 `~/.dsh`，空串语义有钉测） |
@@ -387,21 +395,32 @@ unverified 成六件）。总闸 `config.reportExternalization`
 - **报告板（shared/board.mjs，读写唯一出处）**：路径焊死
   `<DSH_HOME>/dsh-my-go/board/<encodeSegment(sessionId)>/<encodeSegment(childId)>.md`
   （双段编码，穿越与盘符逃逸在编码层消除）；写入 tmp+rename 原子序，正板被
-  覆盖时旧板改名 `.prev.md` 留痕（只留最近一版，不参与读取）；读取按行切片
+  覆盖时复制旧板并原子替换 `.prev.md` 留痕，正板在新板就绪前始终可读（只留最近一版，不参与读取）；读取按行切片
   （offset 0-based、越界钳制并回显实际生效值、字节保真），文件缺席返回
   `{error:'not-found'}` 不抛——主编「读了没货」是正常形态。
 - **report_submit（子代侧）**：`isSubAgent` 目录闸（主编会话调用即拒——主编
-  永远只经 `report_fetch` 读板）→ validateReportArgs → writeBoard 落板 →
-  `markSubmitted` 成功登记（child-registry 持有，E7' 的判定源）→ metrics
-  `board-write` 事件（bytes 容量观测）。
+  永远只经 `report_fetch` 读板）→ validateReportArgs（只查字段在不在，evidence
+  不做格式正则）→ writeBoard 落板 → `markSubmitted` 成功登记（child-registry
+  持有，E7' 的判定源）→ metrics `board-write` 事件（bytes 容量观测）。校验失败
+  时先把传入的 report 正文暂存进 `stagedReports`（有界），错误里明说「已暂存」，
+  重调把 report 传 `（已暂存）`（或省略）即回填——防小字段报错导致几千字正文重吐。
 - **report_fetch（主编侧）**：切片读板，offset/limit 分页（默认 200 行、
   上限 2000 行）；根焊死取 `exec.agent.id`（主编会话自身）不经参数面，子代
-  即便绕过 deny 闸也读不到别家板。
+  即便绕过 deny 闸也读不到别家板。**在飞 / 排队拦截**：目标子代仍在台账
+  `currentMap`（`running` / `spawning` / `waiting`）或排队中时直接回
+  `{ ok: false, message }`，不读板文件——子代派出后立即查板只会读到旧报告，
+  这是主编幻觉的主要入口；完工（或新一轮提交）之后自动放开。
 - **E7' 闸门（shared/end-attribution.mjs，第九出口 report-gate-repair）**：
   completed 终局且开关开时过闸。**判定源是成功提交登记，子代最后一条消息
-  不参与任何解析**；表（内存登记，跨终局保留）为快路径、板（`hasBoardEntry`
-  现算）为兜底——兜底补的病灶：进程重启后内存表必然为空，而报告全文还在板
-  上，只查表会把「交过」的儿童误判「从未提交」再发射补发。已交付 → 仍走
+  不参与任何解析**；表（内存登记，终局不清——只随复活开新任务轮翻篇）为快
+  路径、板（`hasBoardEntry` 现算）为兜底——兜底补的病灶：进程重启后内存表必然
+  为空，而报告全文还在板上，只查表会把「交过」的儿童误判「从未提交」再发射
+  补发。**代际口径**：`retireChild` 终局不清登记（双发残余窗口里终局后再来的
+  end 不该被判从未提交）；`rearmChild`（主编 `continue`/`forward` 已完工子代
+  开新任务轮）清登记并把旧正板归档成 `<childId>.prev.md`，新一轮不重交就正常
+  补发；而 `need_help` 挂起后的 **waiting 续接是同一轮任务**，不清登记、不归档，
+  恢复后只说一句收尾话也判已交付直通（补发轮曾把 4993B 长报告覆盖成 777B
+  摘要，这条界限就是防线）。已交付 → 仍走
   finalize，主编收到的终局摘要是 `buildOwnerSummary` 从已校验字段合成的概要
   （conclusion 全文 + evidence 逐行 + open + 「全文落板，report_fetch
   childId=… 切片取阅」一行；harness 固有完工通知承担外包装）；登记值缺席仅
@@ -417,26 +436,35 @@ unverified 成六件）。总闸 `config.reportExternalization`
   路径会给从未成功提交的儿童也落板，此后闸门的板兜底对该 childId 恒真、
   不再发射第二次补发——「骚扰过一次就不再骚扰」，统计口径靠 phase 分开。
 
-### 2.8 读平面并行池（readPoolSize，0.4.0 线二期）
+### 2.8 泳道并行池（readPoolSize / writePoolSize，0.4.0 线二期 + 0.6.0 写池批次）
 
-写平面恒单线是地基不动；读平面（explore/librarian）可扩为 N 并发
-（规划 docs/plans/read-pool-semantics.md，D5/D7/D8/D9 已裁决）。
+两条泳道（read / write）各自独立计数：write lane（其余工种）与 read lane
+（explore/librarian）各可扩为 N 并发，lane 内 FIFO、跨 lane 不阻塞；**两池皆 1
+（`readPoolSize=1` 且 `writePoolSize=1`）才退化为全局单线**，与旧行为逐字节等价。
+（read 池：规划 docs/plans/read-pool-semantics.md，D5/D7/D8/D9 已裁决；write 池由
+0.6.0 写池批次按同一骨架放开——并发放行的判据是「写集是否相交 + 有无数据依赖」，
+不是「任务属 read 还是 write lane」，决策由来见 CHANGELOG 0.6.0。）
 
-- **容量**：`config.readPoolSize`（缺省 `?? 1` = 关闭 = 全局单线现状，逐字节
-  等价改造前；2~3 启用，>3 钳 3，非法值回落 1 而非抛错；挂载期读一次）。
-  `preset/agent.patch.yml` 显式 `3`（顶格，一致性 pin 站岗）。
+- **容量**：`config.readPoolSize` / `config.writePoolSize`（缺省皆 `?? 1`；`1` =
+  关闭该池 = 该平面串行；`2~3` = 该平面并发上限；`>3` 钳 3，非法值回落 1 而非抛错；
+  挂载期各读一次，不做运行时切换）。两池容量互相独立（`clampReadCapacity` /
+  `clampWriteCapacity` 是同一实现的泳道别名）。`preset/agent.patch.yml` 显式
+  `readPoolSize: 3` 与 `writePoolSize: 3`（双车道各 3、峰值 6 并行，一致性 pin 站岗）。
 - **泳道判定（laneOf）**：explore/librarian 入 read lane；looker（多模态
   成本异质）与自定义角色及一切未知名恒 write lane，**不可配**（D8）——
   lane 落在 `beginSpawning` 的 `...extra` 之后强制重算，调用方越权注入
   `lane` 字段会被纠正；revive 从旧台账回槽时按 laneOf 归一化补写（防旧格式
-  记录回槽后漏统计，单线锁被一条旧档案架空）。
-- **占槽口径**：在 currentMap 即占槽（spawning/waiting/running 同权）。
-  `isBusy` 从「size>0」改为复合判定「任何 lane 满」；readCapacity=1 时
+  记录回槽后漏统计，泳道槽被一条旧档案架空）。
+- **占槽口径**：在 currentMap 即占槽（spawning/waiting/running 同权）；完成子代的 continue/forward
+  在异步投递前预占容量，成功转正或失败后释放，防并发复活挤爆泳道。
+  `isBusy` 从「size>0」改为复合判定「任何 lane 满」；两池皆 1 时
   `isLaneFree` 退化为 `size===0`（全局单线，而非「read 1 + write 1 各占
-  一槽」——否则默认配置下 write 在跑时 read 会被放行，违背 D5）。
+  一槽」——否则默认配置下 write 在跑时 read 会被放行，违背 D5）；单池为 1
+  不再是全局单线的充分条件。卡死语义：`need_help` 挂起仍占自己那条槽，
+  但 write lane 满池为 3 ⇒ 单点挂起/卡死只占 1/3，不再全线冻结。
 - **lane-aware 上岗**：满池 lane 的队首任务不阻塞另一 lane——出队走
   `dequeueById` 按 id 精确移除（被跳过者原地保留、队列序不重排），lane 内
-  仍 FIFO；接力链 hop 与人派 work 同队同律（读池放开的是**跨任务**并发，
+  仍 FIFO；接力链 hop 与人派 work 同队同律（两池放开的是**跨任务**并发，
   链内恒一次只有一个在飞 hop）。
 
 ### 2.9 接力链（relayChains，0.4.0 线三期）
@@ -515,7 +543,7 @@ docs/usage-stats-design.md，D1 四桶 / D1a 币种 / D2 游标缓存 / D3 RPC�
 - **聚合引擎（usage-aggregator.mjs，依赖注入纯模块）**：台账驱动按需聚合——
   每 child 游标增量扫描（live store 快路径 + 持久化 zstd 档案主路径，end 时
   live 已摘除是预期不是错误）；LRU 只留最近 4 个被轮询的父（R2）；终态
-  child 一次全扫后冻结、复活（continue/forward）即解冻续扫（R3/R4，复活即
+  child 完整扫描后才冻结；档案不完整时下轮从头重建以补齐游标前的缺帧，复活（continue/forward）即解冻续扫（R3/R4，复活即
   新世代）；**父会话自身用量恒扫**（D6，专用 self 槽：活父走 live 增量、冷父
   走档案，isSelf 合成行排子代之前——合计 = 完整开销）。缺失桶 null 不补 0、
   partial 沿聚合链逐级 OR（面板显 `≥` 下界）。

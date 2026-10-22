@@ -4,39 +4,33 @@
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx.
  * The former closure dependencies are now explicit injection parameters:
  * `bindings` (mutable per-half state), `promptCache`/`loadPrompt` (prompt
- * loading chain — each half owns its own cache instance), and `knownTools`
- * (live tool catalog snapshot).
+ * loading chain — each half owns its own cache instance).
  */
 
 import { AGENT_TYPES } from './constants.mjs'
 
-// 旧形态迁移（顶级内置工种键 → roles dict）：输入 settings resolved 值，输出
-// settingsService.mutate 的 ops（无需迁移时返回 null）。语义：
-//   - sisyphus 恒为顶级键，永不迁移（旧 toolMask 顶级键已随屏蔽功能
-//   迁移至独立工具面板插件而废弃，此处不再提及）；
-//   - 顶级行无损整行搬入 roles（含 fallbacks 等全字段），同名覆盖 roles
-//     已有行（旧顶级是迁移前唯一权威来源）；
-//   - 旧键 unset（废弃不再消费），roles 中既有其他键不受影响；
-//   - 幂等：迁移后无顶级工种键 → 再次调用返回 null，不产生任何 ops。
+// 旧顶级工种只读兼容：缺少 roles 同名行时补写该行，不 unset 非 volatile 旧键。
+// 显式 roles 行（包括空对象）优先；补写后幂等，失败仍可从旧键读取绑定。
 export function migrateLegacyRolesOps(stored) {
   if (!stored || typeof stored !== 'object') return null
   const legacy = []
   for (const key of AGENT_TYPES) {
     const row = stored[key]
-    if (row && typeof row === 'object') legacy.push(key)
+    if (row && typeof row === 'object' && !Object.hasOwn(stored.roles ?? {}, key)) legacy.push(key)
   }
   if (legacy.length === 0) return null
   const ops = legacy.map((key) => ({ op: 'set', path: ['roles', key], value: stored[key] }))
-  ops.push(...legacy.map((key) => ({ op: 'unset', path: [key] })))
   return ops
 }
 
 // settings → bindings 合并：基线 + sisyphus（顶级）+ 内置工种与 roles dict
-// 自定义键（roles 行）。角色行可携带 persona/toolFilter（自定义角色数据层，
-// 内置工种人设仍走 prompts/*.md，故 baseBindings 无此二字段）。缺字段
+// 自定义键（roles 行）。角色行可携带 persona；旧 toolFilter 明确忽略（不进入运行时绑定）。缺字段
 // 回落基线，与旧逐字段 ?? 链同语义；每次整表重建，WebUI unset 正确回落。
 export function mergeRoleBindings(baseBindings, stored) {
-  const merged = { ...baseBindings }
+  const merged = Object.fromEntries(Object.entries(baseBindings).map(([key, row]) => {
+    const { toolFilter: _ignored, ...binding } = row ?? {}
+    return [key, binding]
+  }))
   if (!stored || typeof stored !== 'object') return merged
   const roles = stored.roles && typeof stored.roles === 'object' ? stored.roles : {}
   // roles dict 键排除 sisyphus：sisyphus 恒为顶级键（与
@@ -44,7 +38,8 @@ export function mergeRoleBindings(baseBindings, stored) {
   // 的 sisyphus 行是 schema 字符集约束拦不住的死数据——合并不消费它，避免
   // 「两处来源、一处生效」的错觉；排除而非并入，不让 sisyphus 绑定出现双权威。
   for (const key of ['sisyphus', ...new Set([...AGENT_TYPES, ...Object.keys(roles).filter((k) => k !== 'sisyphus')])]) {
-    const row = key === 'sisyphus' ? stored.sisyphus : roles[key]
+    const row = key === 'sisyphus' ? stored.sisyphus
+      : Object.hasOwn(roles, key) ? roles[key] : stored[key]
     if (row && typeof row === 'object') {
       merged[key] = {
         provider: row.provider || merged[key]?.provider,
@@ -52,7 +47,6 @@ export function mergeRoleBindings(baseBindings, stored) {
         reasoningEffort: row.reasoningEffort || merged[key]?.reasoningEffort,
         fallbacks: row.fallbacks ?? merged[key]?.fallbacks,
         persona: row.persona ?? merged[key]?.persona,
-        toolFilter: row.toolFilter ?? merged[key]?.toolFilter,
       }
     }
   }
@@ -82,13 +76,7 @@ export function rosterEntries(bindings) {
       provider: typeof entry?.provider === 'string' ? entry.provider : '',
       model: typeof entry?.model === 'string' ? entry.model : '',
     }))
-    const toolFilter = row.toolFilter && typeof row.toolFilter === 'object' ? row.toolFilter : {}
-    const allow = (Array.isArray(toolFilter.allow) ? toolFilter.allow : []).map(String).filter((name) => name !== '')
-    const deny = (Array.isArray(toolFilter.deny) ? toolFilter.deny : []).map(String).filter((name) => name !== '')
     const builtin = AGENT_TYPES.includes(role)
-    const parts = []
-    if (allow.length > 0) parts.push(`仅 ${allow.join(', ')}`)
-    if (deny.length > 0) parts.push(`除 ${deny.join(', ')}`)
     return {
       role,
       builtin,
@@ -100,7 +88,7 @@ export function rosterEntries(bindings) {
         : provider ? `${provider}·跟随环境`
         : '跟随环境',
       chain,
-      toolFilterText: parts.length > 0 ? parts.join('；') : '全量',
+      toolFilterText: '继承宿主（工种限制已取消）',
       personaSource: typeof row.persona === 'string' && row.persona.length > 0
         ? '自定义人设'
         : builtin ? '内置文件' : '无（跟随环境）',
@@ -134,7 +122,7 @@ export function renderRosterBriefing(bindings) {
 
 // 角色人设来源优先级：settings roles 行 persona（自定义/覆盖）→
 // prompts/<type>.md（内置工种现成加载链，注入方决定路径根）→ 内置兜底文案；
-// 自定义角色未配 persona 则不注入（undefined = 不传字段，由部署人设接管）。
+// 自定义角色未配 persona 返回 undefined，动态提示段使用通用工种兜底。
 export async function rolePersona(bindings, promptCache, loadPrompt, type) {
   const custom = bindings[type]?.persona
   if (typeof custom === 'string' && custom.length > 0) return custom
@@ -143,32 +131,3 @@ export async function rolePersona(bindings, promptCache, loadPrompt, type) {
   return AGENT_TYPES.includes(type) ? `You are a ${type} sub-agent in the dsh-my-go orchestration system. Execute one focused task and report results to Sisyphus.` : undefined
 }
 
-// toolFilter 透传前的缺名兜底（勘察 Q2 红线：restrict 校验遇到未注册名会
-// 让整个 startContinuable 失败）：对照活目录过滤假名 + warn。knownTools 为
-// undefined（目录不可知）时原样透传（宁可在 spawn 处显式报错，不静默改写
-// 配置语义）。allow 被过滤至空 = 配置整体不可信，丢弃 allow 让子代理回落
-// 全量目录，绝不让它殉葬。
-export function resolveRoleToolFilter(type, filter, knownTools) {
-  if (!filter || typeof filter !== 'object') return undefined
-  const pick = (names) => {
-    if (knownTools === undefined) {
-      console.warn(`[dsh-my-go] toolFilter for ${type}: live tool catalog unavailable, passing through unfiltered`)
-      return names
-    }
-    const kept = names.filter((n) => knownTools.has(n))
-    const dropped = names.filter((n) => !knownTools.has(n))
-    if (dropped.length > 0) console.warn(`[dsh-my-go] toolFilter for ${type}: skipped unknown tool(s): ${dropped.join(', ')}`)
-    return kept
-  }
-  const out = {}
-  if (Array.isArray(filter.allow) && filter.allow.length > 0) {
-    const allow = pick(filter.allow.map(String))
-    if (allow.length > 0) out.allow = allow
-    else console.warn(`[dsh-my-go] toolFilter for ${type}: allow list emptied by catalog filter, dropping it (sub-agent falls back to the full catalog)`)
-  }
-  if (Array.isArray(filter.deny) && filter.deny.length > 0) {
-    const deny = pick(filter.deny.map(String))
-    if (deny.length > 0) out.deny = deny
-  }
-  return Object.keys(out).length > 0 ? out : undefined
-}

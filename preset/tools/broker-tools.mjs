@@ -44,7 +44,9 @@ import { escapeXml, typeOfAgent } from '../shared/misc.mjs'
 import { rosterEntries as sharedRosterEntries, formatRosterRow as sharedFormatRosterRow } from '../shared/roles.mjs'
 import { reportToParent } from '../shared/adjacent.mjs'
 import { writeBoard, readBoardSlice } from '../shared/board.mjs'
-import { validateReportArgs, buildReportBoard } from '../shared/report-format.mjs'
+import {
+  validateReportArgs, buildReportBoard, reportNeedsStage, isBlankReport, isStagedReportPlaceholder, STAGED_REPORT_HINT,
+} from '../shared/report-format.mjs'
 import { laneOf, nextId } from '../shared/orchestration.mjs'
 import { createChain, validateChainDeclaration, RELAY_CHAINS_CAP } from '../shared/relay-chain.mjs'
 
@@ -85,6 +87,7 @@ export function registerAllTools({
   REPORT_EXT,
   RELAY_CHAINS,
   READ_POOL_SIZE,
+  WRITE_POOL_SIZE,
   HELP_CONTENT_MAX,
   STATUS_HISTORY_LIMIT,
   STATUS_CONCLUSION_MAX,
@@ -95,8 +98,8 @@ export function registerAllTools({
     description: [
       'Dispatch a NEW sub-agent (role) from the live roster with an empty context, running under its role persona and tool set. Orchestrator-only gate: sub-agents cannot call this — their only uplink is need_help.',
       'Routing: go_work = fresh task or new specialty; continue = resume an existing childId keeping its context (cheaper for follow-ups on the same task). agent/prompt and the returned childId are a stable contract (never renamed).',
-      'Roster = built-in specialists + custom roles; unknown names are rejected with the roster listed — check the roles section of orchestration_status for bindings and tool filters.',
-      `Lanes: the write plane runs one at a time; the read plane (Explore/Librarian) runs up to ${READ_POOL_SIZE} in parallel (the live readPoolSize config; 1 = fully serial). A full lane queues the task until a slot frees in ITS lane; other sessions run independent pipelines.`,
+      'Roster = built-in specialists + custom roles; unknown names are rejected with the roster listed — check the roles section of orchestration_status for bindings and personas.',
+      `Lanes: the write plane runs up to ${WRITE_POOL_SIZE} in parallel (the live writePoolSize config; 1 = fully serial); the read plane (Explore/Librarian) runs up to ${READ_POOL_SIZE} in parallel (the live readPoolSize config; 1 = fully serial). A full lane queues the task until a slot frees in ITS lane; other sessions run independent pipelines.`,
       'Anti-polling: after dispatch you MUST stop — no more tool calls, no user reply; completion arrives as a notification. queued=true returns a work-* placeholder, NOT a childId — find the real one via orchestration_status.',
     ].join('\n'),
     parameters: {
@@ -177,79 +180,88 @@ export function registerAllTools({
       if (!parent) throw new Error('continue requires a calling agent (exec.agent was undefined)')
       if (!canOrchestrate(parent)) throw new Error('continue is reserved for orchestrator sessions (agents without parentSession)')
       const callerOrch = orchFor(parent.id)
-      // M1 定位 + 三道闸（queued 占位提示 / 跨会话抢属主 / 单线占用 / spawning 占位）
-      const { orch, ownerPid, record, id: targetId, isFinished, isRunning } = await resolveContinueTarget(args.id, {
+      // M1 定位 + 三道闸（queued 占位提示 / 跨会话抢属主 / 泳道取得预占槽 / spawning 占位）
+      const { orch, ownerPid, record, id: targetId, isFinished, isRunning, releaseSlot, advanceAfterRevival } = await resolveContinueTarget(args.id, {
         callerOrch, parent, verb: 'continue', queuedHint: true, spawningGate: true,
       })
-      // urgency 三档（三档一律经 subagents 门面投递）：
-      // queued=真 FIFO，等当前轮结束后被消费；steer=走 alpha.4 的 sendMessage
-      // （next-step 边界即见、不打断进行中的工具调用），非 running / 拿不到活体 /
-      // 门面拒收三种情况都落回 queued；abort=先 interrupt 掐断当前 turn 再排队
-      // 投递（顺序铁律：先掐后投，命中 wakeRequested 闩锁，drain 收敛后续轮自动开跑）。
-      const urgency = typeof args.urgency === 'string' ? args.urgency : 'queued'
-      let mode = 'queued'
-      if (urgency === 'steer') {
-        const steerMessageId = await tryFacadeSteer({
-          parent, targetId, prompt: args.prompt, signal: exec?.signal, isRunning, isFinished, status: record.status,
-        })
-        if (steerMessageId !== undefined) {
-          orch.followupPrompt(targetId, args.prompt, 'steer')
-          // 心跳信号 + 起表：steer 档投递成功即刷新（早退支与下方 queued/
-          // 塌档支各记一次，两条出口都不漏——本工具的每次成功投递都是一次信号）。
-          // ensure 与信号同点：本工具也是**复活面**（continue 命中已完工子代让
-          // 流水线重新有在飞），派发面的 ensure 照不到它，而 end 后的对账往往
-          // 已经把拍子停掉——不缺这一条，「派A→A交报告→continue(A,下一段长活)」
-          // 整轮零心跳。ensure 幂等，在飞中重调零代价。
-          // via=ping：steer 档正是「主编照心跳摘要发进度询问」的投递档（子代在跑、
-          // 消息插在步边界上），与下方 queued 复活支的 via=revive 分开标注。
-          childRegistry.noteHeartbeatSignal(targetId, Date.now())
-          ensureHeartbeat(parent.id, 'ping')
-          // 埋点：投递成功基线（steer 档）。urgency 为声明档。
-          metrics.record({ kind: 'continue', promptBytes: args.prompt.length, urgency })
-          bump()
-          return { accepted: true, messageId: steerMessageId, mode: 'steer' }
-        }
-      }
-      if (urgency === 'abort' && isRunning) {
-        // waiting/finished 无 turn 可掐：跳过 interrupt 直接走 queued 投递
-        if (interruptForAbort({ parent, targetId })) mode = 'abort'
-      }
-      // M4 投递：先投递，成功后再复籍/落账（M5）——投递失败不会留下假 running、
-      // 也不会弄丢求助单。门面差异见 shared/adjacent.mjs（唯一出处）。
-      let messageId
-      let delivery = 'queued'
       try {
-        const delivered = await deliverWithQueueFallback({ parent, targetId, prompt: args.prompt, signal: exec?.signal, label: 'continue' })
-        messageId = delivered.messageId
-        delivery = delivered.delivery
-      } catch (error) {
-        // abort 已掐断但投递失败的补偿：撤销护航，让被掐轮的 aborted end 走
-        // 正常 finalizeEnd 落史并推进队列——绝不留下「记录 running 但子代理
-        // idle、再无 end 到达」的死槽（end 先于本 catch 到达的极小窗口内
-        // guard 已被消费，主流程重试 continue 即可自然恢复，窗口见 CHANGELOG）
-        abortExpected.delete(targetId)
-        throw error
+        // urgency 三档（三档一律经 subagents 门面投递）：
+        // queued=真 FIFO，等当前轮结束后被消费；steer=走 alpha.4 的 sendMessage
+        // （next-step 边界即见、不打断进行中的工具调用），非 running / 拿不到活体 /
+        // 门面拒收三种情况都落回 queued；abort=先 interrupt 掐断当前 turn 再排队
+        // 投递（顺序铁律：先掐后投，命中 wakeRequested 闩锁，drain 收敛后续轮自动开跑）。
+        const urgency = typeof args.urgency === 'string' ? args.urgency : 'queued'
+        let mode = 'queued'
+        if (urgency === 'steer') {
+          const steerMessageId = await tryFacadeSteer({
+            parent, targetId, prompt: args.prompt, signal: exec?.signal, isRunning, isFinished, status: record.status,
+          })
+          if (steerMessageId !== undefined) {
+            orch.followupPrompt(targetId, args.prompt, 'steer')
+            // 心跳信号 + 起表：steer 档投递成功即刷新（早退支与下方 queued/
+            // 塌档支各记一次，两条出口都不漏——本工具的每次成功投递都是一次信号）。
+            // ensure 与信号同点：本工具也是**复活面**（continue 命中已完工子代让
+            // 流水线重新有在飞），派发面的 ensure 照不到它，而 end 后的对账往往
+            // 已经把拍子停掉——不缺这一条，「派A→A交报告→continue(A,下一段长活)」
+            // 整轮零心跳。ensure 幂等，在飞中重调零代价。
+            // via=ping：steer 档正是「主编照心跳摘要发进度询问」的投递档（子代在跑、
+            // 消息插在步边界上），与下方 queued 复活支的 via=revive 分开标注。
+            childRegistry.noteHeartbeatSignal(targetId, Date.now())
+            ensureHeartbeat(parent.id, 'ping')
+            // 埋点：投递成功基线（steer 档）。urgency 为声明档。
+            metrics.record({ kind: 'continue', promptBytes: args.prompt.length, urgency })
+            bump()
+            // 成功出口才推进队列（此时预占尚未释放，推进照旧晚于投递与信号记账）。
+            advanceAfterRevival()
+            return { accepted: true, messageId: steerMessageId, mode: 'steer' }
+          }
+        }
+        if (urgency === 'abort' && isRunning) {
+          // waiting/finished 无 turn 可掐：跳过 interrupt 直接走 queued 投递
+          if (interruptForAbort({ parent, targetId })) mode = 'abort'
+        }
+        // M4 投递：先投递，成功后再复籍/落账（M5）——投递失败不会留下假 running、
+        // 也不会弄丢求助单。门面差异见 shared/adjacent.mjs（唯一出处）。
+        let messageId
+        let delivery = 'queued'
+        try {
+          const delivered = await deliverWithQueueFallback({ parent, targetId, prompt: args.prompt, signal: exec?.signal, label: 'continue' })
+          messageId = delivered.messageId
+          delivery = delivered.delivery
+        } catch (error) {
+          // abort 已掐断但投递失败的补偿：撤销护航，让被掐轮的 aborted end 走
+          // 正常 finalizeEnd 落史并推进队列——绝不留下「记录 running 但子代理
+          // idle、再无 end 到达」的死槽（end 先于本 catch 到达的极小窗口内
+          // guard 已被消费，主流程重试 continue 即可自然恢复，窗口见 CHANGELOG）
+          abortExpected.delete(targetId)
+          throw error
+        }
+        if (delivery === 'steer' && mode === 'queued') mode = 'steer'
+        // 心跳信号 + 起表：continue 是对该子代的一次投递（含「ping 发出」这一
+        // 档——主编照心跳摘要发的进度询问走的就是本工具），刷新 lastSignalAt 并清零
+        // 「未回应 ping 数」。投递成功之后才记：投递失败不该被当成一次信号。
+        // ensure 同点（理由见上方 steer 出口）：复活面必须自己把拍子点起来。
+        // via=revive：本条出口的典型现场是「已完工子代被 continue 捞回来接着干」。
+        childRegistry.noteHeartbeatSignal(targetId, Date.now())
+        ensureHeartbeat(parent.id, 'revive')
+        // 埋点：投递成功基线（queued/abort 档及塌档重试）。
+        // urgency 取声明档（abort 掐断成功后仍如实记 'abort'）。
+        metrics.record({ kind: 'continue', promptBytes: args.prompt.length, urgency })
+        // 台账照记 urgency 声明档（queued 为默认不落字段，保持旧记录零变化）
+        await rearmAfterDelivery({
+          orch, record, targetId, ownerPid, isFinished,
+          prompt: args.prompt,
+          urgency: urgency === 'queued' ? undefined : urgency,
+          resolvePendingHelp: true,
+        })
+        bump()
+        advanceAfterRevival()
+        return { accepted: true, messageId, mode }
+      } finally {
+        // 预占槽位必须无条件归还：投递失败/abort 补偿后若漏放，同一 childId 再
+        // 次 continue 会恒报「another revival is in progress」，残留足量即全池停摆。
+        releaseSlot()
       }
-      if (delivery === 'steer' && mode === 'queued') mode = 'steer'
-      // 心跳信号 + 起表：continue 是对该子代的一次投递（含「ping 发出」这一
-      // 档——主编照心跳摘要发的进度询问走的就是本工具），刷新 lastSignalAt 并清零
-      // 「未回应 ping 数」。投递成功之后才记：投递失败不该被当成一次信号。
-      // ensure 同点（理由见上方 steer 出口）：复活面必须自己把拍子点起来。
-      // via=revive：本条出口的典型现场是「已完工子代被 continue 捞回来接着干」。
-      childRegistry.noteHeartbeatSignal(targetId, Date.now())
-      ensureHeartbeat(parent.id, 'revive')
-      // 埋点：投递成功基线（queued/abort 档及塌档重试）。
-      // urgency 取声明档（abort 掐断成功后仍如实记 'abort'）。
-      metrics.record({ kind: 'continue', promptBytes: args.prompt.length, urgency })
-      // 台账照记 urgency 声明档（queued 为默认不落字段，保持旧记录零变化）
-      rearmAfterDelivery({
-        orch, record, targetId, ownerPid, isFinished,
-        prompt: args.prompt,
-        urgency: urgency === 'queued' ? undefined : urgency,
-        resolvePendingHelp: true,
-      })
-      bump()
-      return { accepted: true, messageId, mode }
     },
   })
 
@@ -387,39 +399,64 @@ export function registerAllTools({
         bump()
         return { kind: 'go_work', targetId: String(result?.childId ?? ''), resolved: true }
       }
-      // M1 定位 + 三道闸（跨会话抢属主 / 单线占用；queued 与 spawning 两道占位闸
+      // M1 定位 + 三道闸（跨会话抢属主 / 泳道取得预占槽；queued 与 spawning 两道占位闸
       // 是 continue 独有的行为，不互相补齐）
-      const { orch, ownerPid, record, id: targetId, isFinished } = await resolveContinueTarget(target, {
+      const { orch, ownerPid, record, id: targetId, isFinished, releaseSlot, advanceAfterRevival } = await resolveContinueTarget(target, {
         callerOrch, parent, verb: 'forward',
       })
-      // M4 投递：转发本身没有 urgency 概念，档位意图固定 queued——有真 FIFO 就走
-      // FIFO，runtime 给不出排队通路时塌为 steer，返回体如实回报 mode（绝不静默）。
-      const { messageId, delivery } = await deliverWithQueueFallback({
-        parent, targetId, prompt, signal: exec?.signal, label: 'forward',
-      })
-      // 心跳信号 + 起表（与 continue 同律）：回给子代的投递是一次信号；
-      // target=childId 这一支同样可能复活已完工子代（forward 的 continue 等效），
-      // 故 ensure 与信号同点补位（幂等）。target=工种那一支走 dispatchWork，
-      // 其内部已 ensure，此处不重复。via=revive：本支无 urgency 概念，语义是
-      // 「把手里这张单子交给那个子代继续办」。
-      childRegistry.noteHeartbeatSignal(targetId, Date.now())
-      ensureHeartbeat(parent.id, 'revive')
-      // 埋点：forward 投递成功基线。forward 无 urgency 概念，
-      // urgency 字段如实记实际投递档（delivery：queued / 塌档 steer）。
-      metrics.record({ kind: 'continue', promptBytes: prompt.length, urgency: delivery })
-      // M5：forward 的台账照记在复籍**之前**（continue 在其之后），差异见
-      // rearmAfterDelivery 的 ledgerFirst 参数注释；求助单销账始终在投递成功之后。
-      rearmAfterDelivery({
-        orch, record, targetId, ownerPid, isFinished,
-        prompt,
-        resolvePendingHelp: false,
-        ledgerFirst: true,
-      })
-      helpOrch.resolveHelp(help.id)
-      bump()
-      return { kind: 'continue', targetId: messageId, resolved: true, mode: delivery }
+      try {
+        // M4 投递：转发本身没有 urgency 概念，档位意图固定 queued——有真 FIFO 就走
+        // FIFO，runtime 给不出排队通路时塌为 steer，返回体如实回报 mode（绝不静默）。
+        const { messageId, delivery } = await deliverWithQueueFallback({
+          parent, targetId, prompt, signal: exec?.signal, label: 'forward',
+        })
+        // 心跳信号 + 起表（与 continue 同律）：回给子代的投递是一次信号；
+        // target=childId 这一支同样可能复活已完工子代（forward 的 continue 等效），
+        // 故 ensure 与信号同点补位（幂等）。target=工种那一支走 dispatchWork，
+        // 其内部已 ensure，此处不重复。via=revive：本支无 urgency 概念，语义是
+        // 「把手里这张单子交给那个子代继续办」。
+        childRegistry.noteHeartbeatSignal(targetId, Date.now())
+        ensureHeartbeat(parent.id, 'revive')
+        // 埋点：forward 投递成功基线。forward 无 urgency 概念，
+        // urgency 字段如实记实际投递档（delivery：queued / 塌档 steer）。
+        metrics.record({ kind: 'continue', promptBytes: prompt.length, urgency: delivery })
+        // M5：forward 的台账照记在复籍**之前**（continue 在其之后），差异见
+        // rearmAfterDelivery 的 ledgerFirst 参数注释；求助单销账始终在投递成功之后。
+        await rearmAfterDelivery({
+          orch, record, targetId, ownerPid, isFinished,
+          prompt,
+          resolvePendingHelp: false,
+          ledgerFirst: true,
+        })
+        helpOrch.resolveHelp(help.id)
+        bump()
+        advanceAfterRevival()
+        return { kind: 'continue', targetId: messageId, resolved: true, mode: delivery }
+      } finally {
+        releaseSlot()
+      }
     },
   })
+
+  // report_fetch 的在飞拦截判定（「正在执行中，报告尚未就绪」）。全实例扫描而非
+  // 只读调用方流水线：属主已换的收养场景与跨会话边缘情况同样是「尚未完工」，
+  // 混读旧板比多一次全局扫描危险得多。命中返回拦截提示，未命中返回 undefined
+  // （= 已结束或从未在册，照常走读板路径，not-found 由 readBoardSlice 回答）。
+  function inFlightHint(childId) {
+    const STATUS_LABEL = { running: '正在执行任务中', spawning: '正在派发中', waiting: '挂起等待中' }
+    for (const orch of orchestrations.values()) {
+      const record = orch.currentMap.get(childId)
+      if (record) {
+        const label = STATUS_LABEL[record.status] ?? `状态 ${String(record.status)}`
+        return `子代 ${childId}（${record.agentType ?? '未知工种'}）${label}，报告尚未就绪——请等完工通知后再读取；此时板上即便有文件也只是上一轮的旧报告，不作为本轮结论。`
+      }
+      const queued = orch.snapshot().queue.find((work) => work.id === childId)
+      if (queued) {
+        return `子代 ${childId}（${queued.agentType ?? '未知工种'}）正在队列中排队，报告尚未就绪——请等它上岗并完工的通知后再读取。`
+      }
+    }
+    return undefined
+  }
 
   // 只读状态工具的路由：Sisyphus 会话读自己的流水线；子代理经
   // childOwner/record 扫描读属主流水线；无调用方上下文（测试/RPC 场景）
@@ -458,10 +495,10 @@ export function registerAllTools({
       const lines = []
       if (s.currentRecords.length > 0) {
         // D20：current 单条 → currentRecords 全量列表化；并行下主编
-        // 需要一眼读出各 lane 的在飞数，每行带 lane 标注，池未扩容（两 lane 均
-        // 容量 1）时不加汇总行（保持旧观感）。
+        // 需要一眼读出各 lane 的在飞数，每行带 lane 标注，两池皆未扩容（两 lane
+        // 容量 1 = 退化全局单线）时不加汇总行（保持旧观感）。
         for (const c of s.currentRecords) lines.push(`● running: ${c.agentType} (${c.childId}) — ${c.status} [${c.lane ?? laneOf(c.agentType)}]`)
-        if (s.currentRecords.length > 1 || orch.capacityOf('read') > 1) {
+        if (s.currentRecords.length > 1 || orch.capacityOf('read') > 1 || orch.capacityOf('write') > 1) {
           lines.push(`  lanes: read ${orch.laneCount('read')}/${orch.capacityOf('read')} · write ${orch.laneCount('write')}/${orch.capacityOf('write')}`)
         }
       } else {
@@ -481,7 +518,7 @@ export function registerAllTools({
     },
   })
 
-  // 活花名册区：名字 / 模型绑定 / 备选链 / toolFilter 摘要 /
+  // 活花名册区：名字 / 模型绑定 / 备选链 / 工具继承说明 /
   // 人设来源。go_work 的 agent 参数以此为权威指引（description 不再内嵌清单）。
   // 行投影改吃 shared/rosterEntries 单一源——这里与
   // lib 半各抄一份逐字相同的 18 行摘要逻辑，而 shared 的简报渲染又是第三式，
@@ -669,34 +706,42 @@ export function registerAllTools({
   // 两者皆由 harness 填写、不经参数面），子代不可能伪造他人板——防越权写是本
   // 工具的存在前提。子代 deny 闸不得 deny 本工具（它就是子代面向的上报通道）；
   // 主编侧无 parentSession，运行时守卫直接抛错。六字段先过 validateReportArgs
-  //（唯一校验出处）：不过 → 逐条错误抛回原地重调，不落板、不登记；过 → 正文与
-  // 两尾字段（deviation / unverified）经 buildReportBoard 拼成板面 markdown 落板 +
-  // conclusion/evidence/open 登记成功事实（终局合成回执消费）。两尾字段 schema 面
-  // 可选、闸门面按工种强制（施工层必填），强制语义单源在 REPORT_CLAUSE。
+  //（唯一校验出处，宽松口径：只查在不在，不查长什么样）：不过 → 逐条错误抛回
+  // 原地重调，不落板、不登记；过 → 正文与两尾字段（deviation / unverified）经
+  // buildReportBoard 拼成板面 markdown 落板 + conclusion/evidence/open 登记成功
+  // 事实（终局合成回执消费）。两尾字段 schema 面可选、闸门面按工种强制（施工层
+  // 必填），强制语义单源在 REPORT_CLAUSE。
+  //
+  // 长正文暂存（防「小字段报错 → 几千字 report 重吐」烧钱）：校验失败时先把本次
+  // 传进来的 report 正文存进 childRegistry 的有界暂存池（成功提交 / 复活开新一轮
+  // / 终局翻篇三处清理），错误清单尾部明说「已暂存 + 重调可传占位符」。重调时
+  // report 省略、为空或传「（已暂存）」/(已暂存)/[staged]/复用，即自动回填暂存
+  // 正文参与校验与落板。宿主 schema 层 report 仍是 required——传四字占位符既能
+  // 过宿主校验，又不必重吐全文。
   // 开关关 → 不注册。
   if (REPORT_EXT) {
     registerTool({
       name: 'report_submit',
       description: [
         'Submit your COMPLETE task report to the report board, where the orchestrator reads it back with report_fetch. Sub-agent-only gate: orchestrators never submit. Call it ONCE when your task work is done, with all six fields (stable contract, never renamed):',
-        '- report: the COMPLETE report text (implementation details, process, all evidence). Plain text or Markdown; goes to the board for sliced reading.',
+        '- report: the COMPLETE, auditable technical report: actual changes, key decisions, necessary execution/verification records and recovery pointers. Plain text or Markdown; no user-facing brevity limit or unrelated raw logs.',
         '- conclusion: 2-4 sentence self-contained conclusion (what was done, key decisions, outcome).',
-        '- evidence: string array; each item is one bare "path:line" anchor (e.g. preset/tools/broker.mjs:87), a typed "test:"/"image:" line (e.g. test:npm test → exit 0, image:shots/a.png), or ["无"] when there is truly no file evidence — no other surrounding prose.',
+        '- evidence: string array with the key evidence: "path:line" anchors, plain paths, URLs, "test:"/"image:" records, or a short explanatory line — anything non-empty is accepted. Pass ["无"] (or ["/"]) when nothing applies.',
         '- open: remaining/deferred items; write 「无」 if none.',
-        '- deviation: 偏差记录 — what deviated from the dispatched plan and why; write 「无」 if none.',
-        '- unverified: 未验项 — surfaces you did NOT verify (write 「无」 only if you truly verified everything).',
-        'deviation / unverified are optional in schema but MANDATORY for build-layer agents (hermes / hephaestus): missing or empty is rejected field-by-field. Never write these two as headings inside `report` — the board renders them as "## 偏差记录" / "## 未验项" sections itself.',
-        'A successful submit IS the delivery — the orchestrator gets a system-synthesized summary receipt, and your final message can be one free-form sentence. Validation failures return per-item errors: fix and re-call in place. What you submit does NOT enter the orchestrator\'s context.',
+        '- deviation: 偏差记录 — what deviated from the dispatched plan and why; write 「无」 if none. MANDATORY for build-layer agents (hermes / hephaestus).',
+        '- unverified: 未验项 — gaps within the acceptance scope and limitations affecting the conclusion; write 「无」 if there are none, without inventing gaps. MANDATORY for build-layer agents.',
+        'Validation only checks that fields are present and non-empty — it does not police evidence formatting; the board renders "## 偏差记录" / "## 未验项" sections itself (a same-named section already inside report is not duplicated).',
+        'If validation fails on some field, your report body is STAGED automatically: re-call with the missing fields fixed and pass report: "（已暂存）" (or omit report) — the staged full text is reused, no need to resend thousands of characters. A successful submit IS report delivery, not proof of functional acceptance; your final message may be one free-form sentence.',
       ].join('\n'),
       parameters: {
         type: 'object',
         properties: {
-          report: { type: 'string', description: 'The COMPLETE report text (implementation details, process, all evidence). Plain text or Markdown.' },
+          report: { type: 'string', description: 'The COMPLETE auditable technical report: actual changes, decisions, necessary execution/verification records and recovery pointers. Plain text or Markdown; no user-facing brevity limit. On a re-call after a validation error you may pass "（已暂存）" to reuse the staged body.' },
           conclusion: { type: 'string', description: '2-4 sentence self-contained conclusion: what was done, key decisions, outcome.' },
-          evidence: { type: 'array', items: { type: 'string' }, description: 'One bare "path:line" anchor per item (e.g. preset/tools/broker.mjs:87), or a typed "test:"/"image:" line (e.g. test:npm test → exit 0). No other surrounding prose. Pass ["无"] when there is no file evidence.' },
+          evidence: { type: 'array', items: { type: 'string' }, description: 'Key evidence, one item each: "path:line", plain path, URL, "test:command → exit code" / "image:path" record, or a short note — any non-empty string is accepted. Pass ["无"] (or ["/"]) when there is no applicable evidence.' },
           open: { type: 'string', description: 'Remaining/deferred items; 「无」 if none.' },
           deviation: { type: 'string', description: '偏差记录: deviations from the dispatched plan and why; 「无」 if none. MANDATORY for hermes / hephaestus, optional elsewhere.' },
-          unverified: { type: 'string', description: '未验项: surfaces left unverified; 「无」 only if nothing is unverified. MANDATORY for hermes / hephaestus, optional elsewhere.' },
+          unverified: { type: 'string', description: '未验项: gaps within acceptance scope and limitations affecting conclusions; 「无」 if none, without inventing gaps. MANDATORY for hermes / hephaestus, optional elsewhere.' },
         },
         required: ['report', 'conclusion', 'evidence', 'open'],
         additionalProperties: false,
@@ -719,18 +764,34 @@ export function registerAllTools({
         if (typeof sessionId !== 'string' || sessionId === '') {
           throw new Error(`report_submit: parent session id is missing or malformed (${String(sessionId)})`)
         }
-        const checked = validateReportArgs(args, { agentType: typeOfAgent(sessionTypes, child) })
+        // 暂存回填：report 省略 / 为空 / 传占位符 → 取回上一次暂存的长正文。
+        // 首次调用（暂存池为空）照原样进校验，报错自然会教它补全文。
+        // 回填后的正文留在池里（takeStagedReport 只读取不删）：校验失败时「池里有没有可
+        // 回填的正文」这一事实仍然成立，提示才教得对；成功落板才 dropStagedReport。
+        const staged = isBlankReport(args?.report) || isStagedReportPlaceholder(args?.report)
+        const effectiveArgs = staged ? { ...args, report: childRegistry.takeStagedReport(child.id) ?? '' } : args
+        const checked = validateReportArgs(effectiveArgs, { agentType: typeOfAgent(sessionTypes, child) })
         if (!checked.ok) {
-          throw new Error(['report_submit: 检测到字段校验未通过（未落板、未登记）——请按下逐条修正后原地重调', ...checked.errors.map((e) => `- ${e}`)].join('\n'))
+          // 暂存与提示**同源**：本次带了正文就先入池（新稿覆盖旧稿）；随后只问一件事
+          // ——此刻池里有没有可回填的正文。有才附「已暂存」提示，否则重调传占位符
+          // 回填到的是空正文，等于教它往闸门上撞第二次。
+          if (reportNeedsStage(args?.report) && !isStagedReportPlaceholder(args?.report)) {
+            childRegistry.stageReport(child.id, args.report.trim())
+          }
+          const stagedNow = childRegistry.takeStagedReport(child.id) !== undefined
+          const lines = ['report_submit: 检测到字段校验未通过（未落板、未登记）——请按下逐条修正后原地重调', ...checked.errors.map((e) => `- ${e}`)]
+          if (stagedNow) lines.push(STAGED_REPORT_HINT)
+          throw new Error(lines.join('\n'))
         }
         let written
         try {
-          written = await writeBoard(sessionId, child.id, buildReportBoard(args))
+          written = await writeBoard(sessionId, child.id, buildReportBoard(effectiveArgs))
         } catch (error) {
           console.warn(`[dsh-my-go] report_submit 落板失败 (${sessionId}/${child.id}): ${String(error)}`)
           throw new Error(`report_submit failed: ${String(error)}`)
         }
         childRegistry.markSubmitted(child.id, checked.value)
+        childRegistry.dropStagedReport(child.id)
         // 心跳信号：交报告是子代最明确的一次「我还活着」——刷新信号并清零
         // 未回应 ping 数，免得一个刚交完报告的儿童在下一拍仍被建议 ping。
         childRegistry.noteHeartbeatSignal(child.id, Date.now())
@@ -747,6 +808,9 @@ export function registerAllTools({
   // board/<主编会话 id>/——sessionId 一律取 exec.agent.id（主编会话自身），
   // 不经参数面：子代即便绕过 deny 闸也读不到别家板（跨会话不可达由 1.1 的
   // boardPath 双段编码兜底），canOrchestrate 运行时守卫与子代 deny 闸双保险。
+  // 在飞 / 排队拦截（防抢跑读旧报告）：子代仍在 running / spawning 或还在队列里
+  // 时，正板位上的东西只可能是上一代际的残留（复活归档与本轮落板之间的窗口），
+  // 读它就是把老报告当本轮结论——直接返回 ok:false 拦截提示，不读板文件。
   // 分页口径（D1，1.1 readBoardSlice 已备）：offset 为 0-based 跳过行数，越界
   // 钳制并回显实际生效值；默认 limit 200 行、上限 2000 行（工具层钳业务上限——
   // 一次调用最多拉 2000 行进主编上下文，再大就该用 evidence 行号缩小窗口）。
@@ -758,6 +822,7 @@ export function registerAllTools({
         '切片是常态，全文取回是异常路径：日常只用 offset/limit 读关键段（报告 evidence 里的「路径:行号」可直接换算成行位），把整份报告一次性拉进上下文会挤占你自己的预算——仅在切片不足以下判断时才扩大窗口。',
         'childId/offset/limit are a stable contract (never renamed): childId = which sub-agent\'s report (ids in orchestration_status); offset = 0-BASED lines to SKIP (Array.slice semantics, NOT a 1-based page number), default 0; limit = max lines per call, default 200, capped at 2000.',
         'The response carries totalLines for precise paging; out-of-range offset/limit are clamped and the effective values echoed.',
+        'If the child is still running / spawning / queued (report not ready yet), this returns { ok: false, message } with an explicit hint instead of reading a previous-generation report from the board — wait for the completion notification.',
       ].join('\n'),
       parameters: {
         type: 'object',
@@ -798,6 +863,8 @@ export function registerAllTools({
         if (typeof args?.childId !== 'string' || args.childId === '') {
           throw new Error('report_fetch requires a non-empty childId (see orchestration_status for ids)')
         }
+        const inFlight = inFlightHint(args.childId)
+        if (inFlight) return { ok: false, message: inFlight }
         // 业务钳制在工具层（readBoardSlice 只管物理边界）：offset 非≥有限数按 0、
         // limit 缺省 200 / 上限 2000；NaN/Infinity 一律按缺省兜（schema 已限 number，
         // 此处是对宿主宽松传参的防御）。
@@ -1070,12 +1137,13 @@ export function registerAllTools({
           ...(RELAY_CHAINS ? ['chain_start', 'chain_resolve'] : []),
           ...ADJACENT_BYPASS_TOOLS,
           ...AGENT_TEAMS_TOOLS.filter((name) => teamsLive?.has(name)),
+          ...(teamsLive?.has('subagent_codex') ? ['subagent_codex'] : []),
         ], 'sub-agent gate')
         return
       }
       // Sisyphus 主会话：隐藏 skill 工具（catalog 注入守门）+ 上游邻接消息
       // 三件套（防旁路加固 R1/R3）。编排面只认 broker 自己的七件套：直调上游
-      // send_message 会绕过台账/单线锁，并对已结束 child 触发 coldResume 后
+      // send_message 会绕过台账/泳道容量闸，并对已结束 child 触发 coldResume 后
       // 把结论丢进 broker 的「late/duplicate ignored」分支（双流并发）；
       // 直调 interrupt_agent 没有 abortExpected 护航（预期掐断被误判真失败）。
       // 与预设声明行 tool-mask 的 config.deny 是**双保险**：mask 走

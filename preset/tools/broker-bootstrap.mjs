@@ -21,14 +21,14 @@
  * 纯函数层（loadAllPrompts / typeOfAgent / renderRosterBriefing）直引 ../shared/。
  * 接线位点注：本簇接线点前移至调度簇之前（promptCache/loadPrompt
  * 是调度簇 rolePersona 的注入源），promptCache 缓存壳与 sharedLoadAllPrompts 的
- * fire-and-forget 预热随工厂调用建立——位移不改注册序，预热不 await 不阻塞挂载。
+ * 预热随工厂调用建立；broker 等待 ready 后再注册工具，避免首请求竞态。
  *
  * 卸载口径：本簇无定时器/登记表类状态（promptCache 与挂载实例同寿），无 clear*
  * 需要导出；段注册的生命周期由注入的 effect 壳持有，卸载即随 broker 侧 effect
  * scope 回收。
  *
  * 形态：createBootstrapOps({ effect, registerSection, getSectionOrder, on,
- * sessionTypes, getBindings }) → { promptCache, loadPrompt }。
+ * sessionTypes, getBindings }) → { promptCache, loadPrompt, ready }。
  */
 
 import { readFile } from 'node:fs/promises'
@@ -88,11 +88,11 @@ export function createBootstrapOps({
   let searchDisciplineFallbackWarned = false
 
   // Load all prompt files from the prompts/ directory at startup
-  void sharedLoadAllPrompts(promptCache, loadPrompt)
+  const ready = sharedLoadAllPrompts(promptCache, loadPrompt)
 
   // 联网搜索纪律段的人设档预热：它**不是工种**，故刻意不进
   // AGENT_TYPES（那枚常量喂 typeOfAgent / 名册 / 面板工种解析，塞进去等于多出
-  // 一个不存在的工种）——预热单独一发，与 loadAllPrompts 同为 fire-and-forget，
+  // 一个不存在的工种）——预热单独 fire-and-forget，工种预热则等待 ready，
   // 同守「失败不写缓存、下次现读重试」纪律。段体函数只读缓存（text 必须同步返
   // 回字符串），故读盘时机固定在挂载期，不在 assemble 路径上现读。
   void loadPrompt(SEARCH_DISCIPLINE_PROMPT_KEY)
@@ -103,7 +103,7 @@ export function createBootstrapOps({
   // to differentiate Sisyphus from sub-agents.
   //
   // For sub-agents:
-  //   - deployment:persona: empty (sub-agent persona is injected via context)
+  //   - deployment persona section: role persona from the durable descriptor label
   //   - dsh-my-go:orchestration: empty (sub-agents don't orchestrate)
   //   - dsh-my-go:search-discipline: loaded from prompts/search-discipline.md
   //     (公共联网纪律，只对子代理发声)
@@ -127,7 +127,13 @@ export function createBootstrapOps({
   // Use loaded sisyphus.md for persona section
   // 段体只有一份，宿主代差异全在注册面（见下方双代分支）。
   const personaSectionText = (context) => {
-    if (isSubAgentContext(context)) return ''
+    if (isSubAgentContext(context)) {
+      const type = typeOfAgent(sessionTypes, context?.agent)
+      if (!type) return ''
+      const custom = getBindings()[type]?.persona
+      return typeof custom === 'string' && custom.length > 0 ? custom
+        : promptCache.get(type) ?? `You are a ${type} sub-agent in the dsh-my-go orchestration system.`
+    }
     const file = promptCache.get('sisyphus')
     // sisyphus.md contains both persona and orchestration;
     // extract just the persona (everything before ## 编排规则)
@@ -224,5 +230,5 @@ export function createBootstrapOps({
     },
   }), 'dsh-my-go-broker.searchDiscipline()')
 
-  return { promptCache, loadPrompt }
+  return { promptCache, loadPrompt, ready }
 }

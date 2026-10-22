@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Orchestration, pruneLedgerParents } from '../preset/tools/broker.mjs'
-import { laneOf, clampReadCapacity } from '../preset/shared/orchestration.mjs'
+import { laneOf, clampReadCapacity, clampWriteCapacity } from '../preset/shared/orchestration.mjs'
 
 test('beginSpawning occupies the single slot (isBusy)', () => {
   const o = new Orchestration()
@@ -344,7 +344,7 @@ test('laneCount 对无 lane 记录按 laneOf(agentType) 兜底归类（防异常
   assert.equal(o.isBusy(), true, '写平面占用 → 忙（漏计即放行双写，红线）')
 })
 
-test('readCapacity 钳制：非法值回落 1（=关闭），>3 钳 3；write 恒 1 不随配置变', () => {
+test('readCapacity 钳制：非法值回落 1（=关闭），>3 钳 3；写池缺省 1 不随读池配置变', () => {
   assert.equal(clampReadCapacity(0), 1)
   assert.equal(clampReadCapacity(-2), 1)
   assert.equal(clampReadCapacity('x'), 1)
@@ -354,8 +354,86 @@ test('readCapacity 钳制：非法值回落 1（=关闭），>3 钳 3；write �
   assert.equal(clampReadCapacity(5), 3)
   assert.equal(new Orchestration().capacityOf('read'), 1, '默认 1 = 关闭 = 现状')
   assert.equal(new Orchestration({ readCapacity: 99 }).capacityOf('read'), 3)
-  assert.equal(new Orchestration({ readCapacity: 99 }).capacityOf('write'), 1, 'write 容量不受 readCapacity 影响')
-  assert.equal(new Orchestration({ readCapacity: 99 }).capacityOf('anything-else'), 1, '未知 lane 名按写平面口径')
+  assert.equal(new Orchestration({ readCapacity: 99 }).capacityOf('write'), 1, '写池缺省 1，不被 readCapacity 波及')
+  assert.equal(new Orchestration({ readCapacity: 99 }).capacityOf('anything-else'), 1, '未知 lane 名按最保守容量 1')
+})
+
+// ── 写池配置化（与读池对称）────────────────────────────────────────────────
+test('writeCapacity 钳制：与读池同律（非法回落 1、>3 钳 3）；两池容量互相独立', () => {
+  assert.equal(clampWriteCapacity(0), 1, '非法值回落 1 = 写平面恒单线现状')
+  assert.equal(clampWriteCapacity(-2), 1)
+  assert.equal(clampWriteCapacity('x'), 1)
+  assert.equal(clampWriteCapacity(undefined), 1)
+  assert.equal(clampWriteCapacity(null), 1)
+  assert.equal(clampWriteCapacity(NaN), 1)
+  assert.equal(clampWriteCapacity(2), 2)
+  assert.equal(clampWriteCapacity(2.9), 2, '非整向下取整')
+  assert.equal(clampWriteCapacity(5), 3, '>3 钳 3')
+  assert.equal(new Orchestration().capacityOf('write'), 1, '缺省 1 = 关闭 = 写平面恒单线现状')
+  assert.equal(new Orchestration({ writeCapacity: 3 }).capacityOf('write'), 3)
+  assert.equal(new Orchestration({ writeCapacity: 3 }).capacityOf('read'), 1, 'writeCapacity 不波及读池')
+  assert.equal(new Orchestration({ readCapacity: 3, writeCapacity: 3 }).capacityOf('read'), 3)
+})
+
+test('写池 3 数据层：写 lane 三条在飞未满、第四条即满；写池满不冻读 lane', () => {
+  const o = new Orchestration({ readCapacity: 1, writeCapacity: 3 })
+  o.beginSpawning('hermes', 'w1')
+  o.beginSpawning('prometheus', 'w2')
+  assert.equal(o.isLaneFree('write'), true, '写池 2/3 未满')
+  assert.equal(o.isBusy(), false, '两池皆有空位 → 不忙（写池 ≥2 后 size>0 不再是忙判定）')
+  o.beginSpawning('hephaestus', 'w3')
+  assert.equal(o.laneCount('write'), 3)
+  assert.equal(o.isLaneFree('write'), false, '写池 3/3 满——旧口径下第二条写即满')
+  assert.equal(o.isLaneFree('read'), true, '写池满不冻读 lane（任一池开启即各 lane 独立计数）')
+  assert.equal(o.isBusy(), true, '任一 lane 满 → 忙')
+  o.beginSpawning('explore', 'r1')
+  assert.equal(o.laneCount('read'), 1)
+  assert.equal(o.isLaneFree('read'), false, '读池仍为 1：读 lane 自己满')
+})
+
+test('退化等价：write=1+read=1 与旧全局单线逐点等价；write=1+read=3 与写池批次前装机行为等价', () => {
+  // 参考实现 = 写池批次前的判定式原文（readCapacity<=1 → 全局单线；写 lane 容量恒 1）
+  const refLaneCount = (recs, lane) => recs.filter((r) => (r.lane ?? laneOf(r.agentType)) === lane).length
+  const refIsLaneFree = (recs, lane, readCap) => {
+    if (readCap <= 1) return recs.length === 0
+    const cap = lane === 'read' ? readCap : 1
+    return refLaneCount(recs, lane) < cap
+  }
+  // 状态矩阵：空 / 读1 / 写1 / 读满 / 写2 / 读写各1 / 写3
+  const shapes = [
+    [],
+    [['explore']],
+    [['hermes']],
+    [['explore'], ['librarian'], ['explore']],
+    [['hermes'], ['prometheus']],
+    [['explore'], ['hermes']],
+    [['hermes'], ['prometheus'], ['hephaestus']],
+  ]
+  for (const readCap of [1, 2, 3]) {
+    for (const shape of shapes) {
+      const o = new Orchestration({ readCapacity: readCap, writeCapacity: 1 })
+      for (const [type, ...rest] of shape) o.beginSpawning(type, 't', ...rest)
+      const recs = [...o.currentMap.values()]
+      for (const lane of ['read', 'write']) {
+        assert.equal(
+          o.isLaneFree(lane), refIsLaneFree(recs, lane, readCap),
+          `readCap=${readCap} 形态=${JSON.stringify(shape)} lane=${lane}：写池缺省 1 下与改造前同点同判`,
+        )
+      }
+      assert.equal(o.capacityOf('write'), 1, '写池缺省 = 恒单线容量')
+      // 两池皆 1 = 双池皆关 = 全局单线：两条判定线都必须退化为「全局空才 free」
+      if (readCap === 1) {
+        assert.equal(o.isLaneFree('read'), recs.length === 0, 'readCap=1+writeCap=1 → 全局单线')
+        assert.equal(o.isLaneFree('write'), recs.length === 0, 'readCap=1+writeCap=1 → 全局单线')
+        assert.equal(o.isBusy(), recs.length > 0, '两池皆 1 → isBusy 与旧 size>0 逐点等价')
+      }
+    }
+  }
+  // 显式双 1 与缺省构造同判（装机新态 writePoolSize 显式 1 的退化面）
+  const explicit = new Orchestration({ readCapacity: 1, writeCapacity: 1 })
+  explicit.beginSpawning('hermes', 'w')
+  assert.equal(explicit.isLaneFree('read'), false, '显式双 1 = 全局单线（write 占用时 read 不上岗）')
+  assert.equal(explicit.isBusy(), true)
 })
 
 test('退化口径（D5 默认关 = 全局单线）：容量 1 下 write 占用时 read 不得放行', () => {
@@ -387,4 +465,65 @@ test('dequeueById 按 id 精确出队：序不重排、未知 id 无害', () => 
   assert.equal(emitted, 1, '与 dequeue() 同款 emit')
   assert.equal(o.dequeueById('work-none'), undefined, '未知 id 无害返回 undefined')
   assert.equal(o.queue.length, 2)
+})
+
+// ── 复活预占的原子性（先占后断言）────────────────────────────────────────────
+// 病灶：reserveRevival 原先是「先 isLaneFree 再 set」两步——同一 tick 内两个不同
+// childId 的复活会双双看到最后一个空位并双双通过，复活完 lane 里挤进 cap+1 条。
+test('reserveRevival 同 tick 双复活受容量约束：后到者必被拒，lane 占用不超容', () => {
+  const o = new Orchestration({ readCapacity: 3, writeCapacity: 1 })
+  // 已有一条读记录在飞 → 读池 1/3，只剩 2 个空位
+  const running = o.beginSpawning('explore', '在飞')
+  assert.equal(o.laneCount('read'), 1)
+  // 同 tick 连续三次复活预占（无 await、无交错）：只有两条能过
+  const r1 = o.reserveRevival('done-1', 'read')
+  const r2 = o.reserveRevival('done-2', 'read')
+  const r3 = o.reserveRevival('done-3', 'read')
+  assert.equal(typeof r1, 'function', '第一个预占成立（读池 2/3）')
+  assert.equal(typeof r2, 'function', '第二个预占成立（读池 3/3）')
+  assert.equal(r3, undefined, '第三个同 tick 预占被容量拒绝——查-占两步竞态的现场')
+  assert.equal(o.laneCount('read'), 3, 'laneCount 恰为容量，不超容')
+  assert.equal(o.isLaneFree('read'), false)
+  assert.equal(o.revivalReservations.size, 2, '被拒者不留预占残渣')
+  // 归还一条后可再预占（拒绝不是永久性的）
+  r1()
+  assert.equal(typeof o.reserveRevival('done-3', 'read'), 'function', '空位归还后同一 childId 可再预占')
+  assert.equal(o.laneCount('read'), 3, '再次回到容量上限')
+  assert.equal(o.laneCount('write'), 0, '读池预占不污染写 lane')
+  assert.ok(o.currentMap.has(running.childId))
+})
+
+test('reserveRevival 同一 childId 二次预占被拒（防重复计槽），写入不重复', () => {
+  const o = new Orchestration({ writeCapacity: 2 })
+  const first = o.reserveRevival('done-1', 'write')
+  assert.equal(typeof first, 'function')
+  assert.equal(o.reserveRevival('done-1', 'write'), undefined, '同一 childId 已在复活中 → 拒绝')
+  assert.equal(o.revivalReservations.size, 1)
+  assert.equal(o.laneCount('write'), 1)
+})
+
+// 交接窗口：revive 把记录搬回 currentMap 时预占可能还挂着（归还前的一拍）。
+// 同一 childId 同时出现在两处只能算 1 槽——否则读数是「重复计槽」而非「多占槽」，
+// 会让 isLaneFree 在交接窗口内误判满池，把本该上岗的排队任务冻住。
+test('laneCount 对已在 currentMap 的 childId 跳过其预占：交接窗口内同一子代只算一槽', () => {
+  const o = new Orchestration({ readCapacity: 2, writeCapacity: 1 })
+  const rec = o.beginSpawning('librarian', 't')
+  o.bindChild(rec.childId, 'sess-1')
+  o.finish('sess-1', 'done')
+  assert.equal(o.laneCount('read'), 0, '完工落史即释放读槽')
+  const free = o.reserveRevival('sess-1', 'read')
+  assert.equal(typeof free, 'function')
+  assert.equal(o.laneCount('read'), 1, '仅预占：算 1 槽')
+  o.revive('sess-1')
+  assert.equal(o.currentMap.has('sess-1'), true)
+  assert.equal(o.revivalReservations.has('sess-1'), true, '预占尚未归还（交接窗口）')
+  assert.equal(o.laneCount('read'), 1, '同一 childId 跨两处只算一槽（重复计槽会误报满池）')
+  assert.equal(o.isLaneFree('read'), true, '读池 1/2：交接窗口不得把自己算成 2/2')
+  free()
+  assert.equal(o.laneCount('read'), 1, '归还预占后口径不变（记录接管那一槽）')
+  assert.equal(o.isLaneFree('read'), true)
+  // 不同 childId 的预占照常叠加（跳过只针对同一 id，不放宽容量）
+  assert.equal(typeof o.reserveRevival('other-done', 'read'), 'function')
+  assert.equal(o.laneCount('read'), 2)
+  assert.equal(o.isLaneFree('read'), false, '另一条子代确占第二槽 → 满池')
 })

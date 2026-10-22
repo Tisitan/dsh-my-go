@@ -14,7 +14,7 @@
  * with its own full-width annotation strip, plus a save bar.
  *   1. 模型与角色 — one row per role (8 built-ins + the custom roster), the
  *      selected role edited on the right (model priority chain, effort,
- *      persona override, tool allow/deny, card JSON).
+ *      persona override, card JSON).
  *   2. 用量单价表 — one row per "{provider}/{model}" key, four buckets on the
  *      right, one currency knob for the whole table.
  *
@@ -87,7 +87,6 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const [picked, setPicked] = React.useState(AGENT_TYPES[0])
   const [pickedPrice, setPickedPrice] = React.useState(null)
   const [newRoleKey, setNewRoleKey] = React.useState('')
-  const [toolDrafts, setToolDrafts] = React.useState({})
   const [importError, setImportError] = React.useState('')
   const [newPriceKey, setNewPriceKey] = React.useState('')
   const [personaFileErr, setPersonaFileErr] = React.useState({})
@@ -112,7 +111,6 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const writable = ready && snapshot.writable !== false && snapshot.mode !== 'memory'
 
   const models = useCatalog(catalog)
-  const tools = useToolRoster(connection)
 
   React.useEffect(() => {
     if (!dirty) return undefined
@@ -238,11 +236,6 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const setPersona = (key, text) => stage((prev) => ({
     ...prev,
     roles: { ...prev.roles, [key]: withPersonaOverride(rowOf(key), text) },
-  }))
-
-  const setToolFilter = (key, filter) => stage((prev) => ({
-    ...prev,
-    roles: { ...prev.roles, [key]: { ...prev.roles?.[key], toolFilter: { allow: [...(filter.allow ?? [])], deny: [...(filter.deny ?? [])] } } },
   }))
 
   const loadBuiltinPersona = async (key) => {
@@ -421,22 +414,16 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
           current,
           writable,
           catalog: models,
-          tools: tools.names,
-          rosterFailed: tools.failed,
-          toolDrafts,
-          setToolDrafts,
           importError,
           personaFileErr,
           setBinding,
           setChain,
           setPersona,
-          setToolFilter,
           loadBuiltinPersona,
           onExportRole: exportRole,
           onImportOverwrite: importOverwrite,
           onDeleteRole: deleteRole,
           onRenameRole: renameRole,
-          onRefreshTools: tools.refresh,
         }) : null),
       ),
       el('div', { className: 'mygo-detail', 'data-role': 'role-detail' }, roleDetailText(selectedKey, current)),
@@ -644,7 +631,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
     el('div', { className: 'mygo-legend' },
       el('span', null, '链：#1 主选，#2..N 备选，失败按序降级'),
       el('span', null, '覆盖：persona 覆盖了 prompts 文件默认'),
-      el('span', null, '未连接：工具名不在宿主花名册（MCP 未连或手填）'),
+      el('span', null, '工具权限继承宿主；工种 allow/deny 已取消，旧 toolFilter 配置会被忽略。编排防递归约束保留。'),
     ),
 
     el('div', { className: 'mygo-footer' },
@@ -678,29 +665,6 @@ function useCatalog(catalog) {
     catalog?.load?.()
   }, [catalog])
   return state
-}
-
-/** The tool roster (listTools RPC): a snapshot the user may re-pull by hand. */
-function useToolRoster(connection) {
-  const [names, setNames] = React.useState([])
-  const [failed, setFailed] = React.useState(false)
-  const load = React.useCallback(() => {
-    if (!connection?.rpc?.call) return
-    connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.listTools, {})
-      .then((res) => {
-        if (res && res.ok && Array.isArray(res.value)) {
-          setNames(res.value.filter((name) => typeof name === 'string' && name !== ''))
-          setFailed(false)
-        } else {
-          setFailed(true)
-        }
-      })
-      .catch(() => setFailed(true))
-  }, [connection])
-  React.useEffect(() => {
-    load()
-  }, [load])
-  return { names, failed, refresh: load }
 }
 
 /* ── 小组件与纯投影 ─────────────────────────────────────────────────────── */
@@ -743,7 +707,6 @@ export function roleDetailText(key, current) {
   const builtin = AGENT_TYPES.includes(key)
   const row = builtin ? (current[key] ?? {}) : (current.roles?.[key] ?? {})
   const chain = composeChain(row)
-  const filter = row.toolFilter ?? {}
   const lines = [
     `${AGENT_LABELS[key] ?? key}（${key}）· ${builtin ? '内置工种' : '自定义角色'}`,
     `模型优先级：${chain.map((entry, index) => `#${index + 1} ${entry.provider || '—'}/${entry.model || '—'}`).join('  ')}`,
@@ -751,9 +714,7 @@ export function roleDetailText(key, current) {
   ]
   if (key !== 'sisyphus') lines.push(`人设来源：${personaOverrideSource(current.roles?.[key])}`)
   if (!builtin) {
-    const allow = Array.isArray(filter.allow) ? filter.allow : []
-    const deny = Array.isArray(filter.deny) ? filter.deny : []
-    lines.push(`工具面：白名单 ${allow.length} 条${allow.length > 0 ? `（${allow.join(', ')}）` : ''}；黑名单 ${deny.length} 条${deny.length > 0 ? `（${deny.join(', ')}）` : ''}`)
+    lines.push('工具权限继承宿主；旧工种 toolFilter 已忽略。')
     lines.push('派发时 go_work 用键名点名该角色；删除后下次保存整键从 roles 字典移除。')
   }
   return lines.join('\n')
@@ -861,23 +822,18 @@ export function parseRoleText(text) {
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, error: 'JSON 必须是一个角色对象' }
   const key = typeof parsed.key === 'string' ? parsed.key : ''
-  const filter = parsed.toolFilter && typeof parsed.toolFilter === 'object' ? parsed.toolFilter : {}
   const row = {
     provider: typeof parsed.provider === 'string' ? parsed.provider : '',
     model: typeof parsed.model === 'string' ? parsed.model : '',
     reasoningEffort: typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort : '',
     fallbacks: Array.isArray(parsed.fallbacks) ? parsed.fallbacks : [],
     persona: typeof parsed.persona === 'string' ? parsed.persona : '',
-    toolFilter: {
-      allow: Array.isArray(filter.allow) ? filter.allow.map(String).filter((name) => name !== '') : [],
-      deny: Array.isArray(filter.deny) ? filter.deny.map(String).filter((name) => name !== '') : [],
-    },
   }
   return { ok: true, key, row }
 }
 
 export function blankRole() {
-  return { provider: '', model: '', reasoningEffort: '', fallbacks: [], persona: '', toolFilter: { allow: [], deny: [] } }
+  return { provider: '', model: '', reasoningEffort: '', fallbacks: [], persona: '' }
 }
 
 export function blankPriceRow() {

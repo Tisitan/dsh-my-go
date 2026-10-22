@@ -56,7 +56,6 @@ test('normalizeRoleRows：脏数据归一 + 内置键剔除 + toolFilter 摊平'
     provider: 'p9', model: 'm9', reasoningEffort: 'high', 
     fallbacks: [{ provider: 'p8', model: 'm8' }],
     persona: 'X 的人设',
-    allow: ['read'], deny: ['write'],
   }], '内置键/非法键名/非对象值被剔除，allow 去重防脏')
 })
 

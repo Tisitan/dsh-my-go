@@ -16,8 +16,15 @@ const defaultSchemas = () => [{ name: 'read' }, { name: 'write' }, { name: 'glob
 
 // 全功能 mock 契约见 helpers/mock-ctx.mjs（六文件共用）；本文件专属默认值是台账
 // 目录前缀，toolsRegistry（活花名册数据源）由用例逐个传入。
+const capturedPrompts = new WeakMap()
 function mockCtxFull(options = {}) {
-  return createMockCtx({ homePrefix: 'dsh-my-go-roster-route-', ...options })
+  const mock = createMockCtx({ homePrefix: 'dsh-my-go-roster-route-', ...options, captureSections: true })
+  capturedPrompts.set(mock.ctx, mock.sections)
+  return mock
+}
+function personaFor(ctx, spec) {
+  const section = capturedPrompts.get(ctx).find((s) => s.name === 'deployment:persona')
+  return section.text({ agent: { id: 'synthetic', session: { header: { parentSession: 'parent-1', label: spec.label } } } })
 }
 
 test('go_work 自定义角色：persona/toolFilter 经 spawn 通道注入，prompt 保持纯任务', async () => {
@@ -40,8 +47,9 @@ test('go_work 自定义角色：persona/toolFilter 经 spawn 通道注入，prom
   const r = await tools.get('go_work').execute({ agent: 'custom-x', prompt: 'do the thing' }, execOf(parent))
   assert.equal(r.status, 'running')
   const req = specs[0].request
-  assert.equal(req.persona, '你是自定义角色 X', '自定义角色 persona 经 request.persona 通道')
-  assert.deepEqual(req.toolFilter, { allow: ['read', 'need_help'], deny: ['write'] }, '活目录内 allow（含编排自产工具）与 deny 原样透传')
+  assert.equal(personaFor(ctx, specs[0]), '你是自定义角色 X', '人设在继承的prompt section中生效')
+  assert.equal(req.persona, undefined, 'rc.2请求不再携带已删除字段')
+  assert.equal(req.toolFilter, undefined, '旧角色限制被忽略，继承宿主工具')
   assert.equal(req.prompt[0].text, 'do the thing', '首条 prompt 为纯任务文本（system-reminder 包装退役）')
 })
 
@@ -83,8 +91,8 @@ test('toolFilter 缺名兜底：假名被过滤 + warn，spawn 照常', async ()
     })
     const r = await tools.get('go_work').execute({ agent: 'hermes', prompt: 'x' }, execOf(parent))
     assert.equal(r.status, 'running', '过滤后 spawn 照常')
-    assert.deepEqual(specs[0].request.toolFilter, { allow: ['read', 'need_help'] }, '假名被剔除')
-    assert.ok(warnings.some((l) => l.includes('ghost-tool')), '被跳过的名字 warn 留痕')
+    assert.equal(specs[0].request.toolFilter, undefined, '所有旧工种限制均已取消')
+    assert.equal(warnings.some((l) => l.includes('toolFilter')), false, '旧值不再参与派发校验')
   } finally {
     console.warn = origWarn
   }
@@ -107,7 +115,7 @@ test('toolFilter allow 全部为假名：丢弃 toolFilter（不传字段），�
     })
     await tools.get('go_work').execute({ agent: 'hermes', prompt: 'x' }, execOf(parent))
     assert.equal('toolFilter' in specs[0].request, false, '配置不可信时不传 toolFilter')
-    assert.ok(warnings.some((l) => l.includes('allow list emptied')), 'allow 被清空有 warn')
+    assert.equal(warnings.some((l) => l.includes('toolFilter')), false)
   } finally {
     console.warn = origWarn
   }
@@ -121,12 +129,12 @@ test('内置工种：persona 经 spawn 通道注入（取自包内 prompts/）�
   })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'hermes', prompt: 'plain task' }, execOf(parent))
-  assert.equal(typeof specs[0].request.persona, 'string', '内置工种恒有 persona 字段')
+  assert.equal(typeof personaFor(ctx, specs[0]), 'string', '内置工种恒有 persona 字段')
   // 0.1.7 关键性质：读盘根从「安装副本」变成「已安装包根的 prompts/」——仓库形态下
   // 该目录本就存在，故这里断言的是**真档案原文**而不是兜底文案（兜底分支由下方
   // 纯函数用例覆盖，不再依赖「仓库里恰好没有 prompts/」这个旧前提）。
   const hermesPrompt = await readFile(new URL('../prompts/hermes.md', import.meta.url), 'utf-8')
-  assert.equal(specs[0].request.persona, hermesPrompt, '包内 prompts/hermes.md 就地生效（新范式的核心性质）')
+  assert.equal(personaFor(ctx, specs[0]), hermesPrompt, '包内 prompts/hermes.md 就地生效（新范式的核心性质）')
   assert.equal(specs[0].request.prompt[0].text, 'plain task', '首条 prompt 不再含 persona 包装')
 })
 
@@ -170,8 +178,8 @@ test('fallback 重派：persona/toolFilter 与首派同源（bindings[type]）',
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
   await waitFor(() => specs.length >= 2, { what: '链首失败 → 切备选重派' })
   assert.equal(specs.length, 2, '链首失败 → 切备选重派')
-  assert.equal(specs[1].request.persona, 'hermes 定制人设', '重派 persona 与首派同源')
-  assert.deepEqual(specs[1].request.toolFilter, { allow: ['read'] }, '重派 toolFilter 同源且缺名过滤')
+  assert.equal(personaFor(ctx, specs[1]), 'hermes 定制人设', '重派 persona 与首派同源')
+  assert.equal(specs[1].request.toolFilter, undefined, '重派也继承宿主工具')
   assert.deepEqual(specs[1].request.agentOptions, { provider: 'p1', model: 'm1' }, 'agentOptions 仍为备选条目')
   assert.equal(specs[1].request.prompt[0].text, `${REDISPATCH_RESUME_PREFIX}\nbuild it`, '重派 prompt = 恢复前缀（A1）+ 任务文本（单源 import 不另抄）')
   assert.equal(specs[0].request.prompt[0].text, 'build it', '首发路径零注入恢复前缀')
@@ -188,8 +196,8 @@ test('orchestration_status：尾部含角色名册区（内置 + 自定义），
   })
   const r = await tools.get('orchestration_status').execute({}, execOf(parent))
   assert.ok(r.text.includes('── 角色名册（roster） ──'), '输出尾部有 roles 区标题')
-  assert.ok(r.text.includes('- hermes | 跟随环境 | 备选0 | 全量 | 内置文件'), '内置工种列出且未配显示跟随环境')
-  assert.ok(r.text.includes('- custom-x | p9·m9 | 备选0 | 除 write | 自定义人设'), '自定义角色列出绑定与 toolFilter 摘要')
+  assert.ok(r.text.includes('- hermes | 跟随环境 | 备选0 | 继承宿主（工种限制已取消） | 内置文件'), '内置工种列出且未配显示跟随环境')
+  assert.ok(r.text.includes('- custom-x | p9·m9 | 备选0 | 继承宿主（工种限制已取消） | 自定义人设'), '自定义角色列出绑定与 toolFilter 摘要')
   assert.ok(!r.text.includes('- sisyphus'), '编排者单例不入可派名册')
 })
 
@@ -236,7 +244,7 @@ test('forward：target 为自定义角色时走 go_work 派发并携带 persona'
   dispatch('subagent/end', { id: 'sess-w', stopReason: 'completed', lastAssistantMessage: [] })
   await waitFor(() => specs.length >= 2, { what: '首派完工后队列出列派发' })
   assert.equal(specs.length, 2, '首派完工后队列出列派发')
-  assert.equal(specs[1].request.persona, 'X 人设', 'forward→go_work 派发携带角色 persona')
+  assert.equal(personaFor(ctx, specs[1]), 'X 人设', 'forward→go_work 派发携带角色 persona')
 })
 
 // ── 工种识别统一：typeOfAgent 活登记优先 + label 正则兜底 ──
@@ -572,7 +580,7 @@ test('prompt 档案首读失败不入缓存：档案补齐后下一派即正确�
   const parent = { id: 'parent-1', session: { header: {} } }
   const specs = []
   const promptsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'prompts')
-  const probeType = `n11-probe-${process.pid}`
+  const probeType = `probe-${String(process.pid).split('').map((n) => String.fromCharCode(97 + Number(n))).join('')}`
   const probeFile = join(promptsDir, `${probeType}.md`)
   const dirPreexisted = existsSync(promptsDir)
   const { ctx, dispatch, tools } = mockCtxFull({
@@ -588,7 +596,7 @@ test('prompt 档案首读失败不入缓存：档案补齐后下一派即正确�
     mkdirSync(promptsDir, { recursive: true })
     writeFileSync(probeFile, 'N11 探针人设原文', 'utf-8')
     await tools.get('go_work').execute({ agent: probeType, prompt: 'second' }, execOf(parent))
-    assert.equal(specs[1].request.persona, 'N11 探针人设原文', '失败不入缓存：档案补齐后下一派即现读生效（修复前首读的 null 永久钉死）')
+    assert.equal(personaFor(ctx, specs[1]), 'N11 探针人设原文', '失败不入缓存：档案补齐后下一派即现读生效（修复前首读的 null 永久钉死）')
   } finally {
     await rm(probeFile, { force: true }).catch(() => {})
     if (!dirPreexisted) await rm(promptsDir, { recursive: true, force: true }).catch(() => {})

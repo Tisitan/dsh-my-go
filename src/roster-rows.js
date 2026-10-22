@@ -9,14 +9,14 @@
  * Scope note: this module is the persisted-roles
  * projection layer — key validation, stored-dict → editor-row normalization,
  * persona overrides and the getBuiltinPersona RPC result interpreter. The
- * row-level editing transitions (add/remove/update rows, tool entries,
+ * row-level editing transitions (add/remove/update rows,
  * summary lines, card JSON import/export) now live with the 0.5.0 settings
  * page in src/settings-core.js / src/roles-editor.js; the retired copies
  * that used to sit here were deleted as orphaned exports.
  *
  * A role row is `{ key, provider, model, reasoningEffort,
- * fallbacks, persona, allow, deny }` (the toolFilter object is flattened to
- * two name lists for the editors). Role keys must match ROLE_KEY_PATTERN —
+ * fallbacks, persona }`. Legacy toolFilter values are ignored.
+ * Role keys must match ROLE_KEY_PATTERN —
  * the same constraint the host settings schema enforces fail-closed — so an
  * invalid name is rejected client-side before any save attempt. All
  * functions are pure: inputs are never mutated, new arrays/objects returned.
@@ -29,18 +29,6 @@ export { ROLE_KEY_PATTERN }
 /** Whether `key` is a saveable custom-role name (lowercase start, [a-z-] body). */
 export function isValidRoleKey(key) {
   return typeof key === 'string' && ROLE_KEY_PATTERN.test(key)
-}
-
-function normalizeNameList(value) {
-  if (!Array.isArray(value)) return []
-  const seen = new Set()
-  const out = []
-  for (const entry of value) {
-    if (typeof entry !== 'string' || entry === '' || seen.has(entry)) continue
-    seen.add(entry)
-    out.push(entry)
-  }
-  return out
 }
 
 /**
@@ -61,8 +49,6 @@ export function normalizeRoleRows(value, builtinKeys = []) {
       reasoningEffort: typeof row.reasoningEffort === 'string' ? row.reasoningEffort : '',
       fallbacks: Array.isArray(row.fallbacks) ? row.fallbacks : [],
       persona: typeof row.persona === 'string' ? row.persona : '',
-      allow: normalizeNameList(row.toolFilter?.allow),
-      deny: normalizeNameList(row.toolFilter?.deny),
     }))
 }
 

@@ -36,10 +36,17 @@
  *
  * 报告提交制闸门：第九出口
  * `report-gate-repair`。completed 终局且调用方传 `reportGate.enabled` 时过闸：
- *   - 本轮（含历史轮）report_submit 已成功（reportGate.reportSubmitted 命中，
+ *   - 本代际 report_submit 已成功（reportGate.reportSubmitted 命中，
  *     或 hasBoard 兜底命中——表为快路径、板为准）→
  *     仍走 'finalize'，facts.conclusion 改存 buildOwnerSummary 合成概要（短）；
  *     全文已由 report_submit 落板（登记前提），无需落板兜底。
+ *     代际口径（「交过」到底指哪一轮）：登记与正板都按**代际**论——`retireChild`
+ *     终局不清叫「本代际已交付」，但 `rearmChild`（主编 continue/forward 复活
+ *     已结束子代、开新任务轮）同点清登记并把旧正板归档成 `<childId>.prev.md`，
+ *     故新一轮不重交就正常走补发，而不是被上一代的旧报告直通（主编读到的也会
+ *     是旧结论）。**同一轮任务未完结的续接（`need_help` 挂起后 waiting → running）
+ *     不是新世代**：不清登记、不归档，子代恢复后只说一句收尾话也判已交付直通
+ *     ——补发轮曾把 4993B 长报告覆盖成 777B 摘要，这条界限是它的防线。
  *   - 从未成功提交 → 'report-gate-repair'：ops 携带 add-repair-guard（once-guard，
  *     同步段由 dispatcher 第一时间落地——协议第 1 条），notices 同步预告，facts
  *     携带固定措辞的 repairPrompt。**不 finish**：记录留在 currentMap 实体占槽
@@ -79,7 +86,7 @@ const DECISION_ADVANCE = {
   'fallback-in-flight': 'no',
   'fallback-evaluation': 'no',
   'finalize': 'now',
-  'suspended-help-hold': 'no', // 挂起子代续占单线槽位，等主编 forward/continue
+  'suspended-help-hold': 'no', // 挂起子代续占所属泳道槽位，等主编 forward/continue
   'report-gate-repair': 'no', // 补发期间槽位仍占（记录留 currentMap，队列不推进）
 }
 
@@ -189,7 +196,7 @@ export function attributeEnd({
 
   // E4：urgency=abort 护航。
   // interrupt 掐断的那一轮必以非 completed 终局上报 end——它是编排方自造的预期
-  // 事件，落史会让 interrupt 前排队的 followup 续轮游离于单线阻塞之外，「失败已知
+  // 事件，落史会让 interrupt 前排队的 followup 续轮游离于泳道槽位之外，「失败已知
   // 悉」预告/附因推送还会误导主流程进入失败处置。
   // **guard 无条件就地消费**（协议第 3 条）：掐断与完工是赛跑关系，interrupt 只是
   // 同步受理（Agent.cancel 异步生效），被掐轮完全可能已跑到 completed 终局——那是
@@ -222,7 +229,7 @@ export function attributeEnd({
   // 报告」：那会发射第九出口 + queued 补发 prompt，把已经挂起的子代 coldResume
   // 唤醒（求助单还挂在册上，人却被踢回去补交报告）。闸门在这里不适用：
   // 不 finish、不补发、不推进队列——记录留在 waiting 原位，等主编 forward/continue。
-  if (ledgerRecord?.status === 'waiting') {
+  if (ledgerRecord?.status === 'waiting' && info?.stopReason === 'completed') {
     return done('suspended-help-hold', ops, { ownerPid, type: resolvedType }, {
       warn: `subagent/end for ${String(childId)} (${resolvedType}) is a suspended turn settling; record stays waiting, gate not applied`,
     })
@@ -291,9 +298,13 @@ export function attributeEnd({
   // failed 永不过闸（上方 failed 分支照旧）；reportGate 缺省 = 现路径一字不动。
   // 判定源是成功提交登记，子代最后一条消息不参与任何解析。
   if (reportGate?.enabled && !failed) {
-    // 表为快路径（内存登记，跨终局保留），板为兜底（文件持久化）：任一命中即
-    // 视为已交付。补上兜底的病灶：进程重启/冷恢复后内存表必然为空，而报告全文
-    // 明明还在板上——只查表就会把「交过」的儿童判成「从未提交」并发射补发。
+    // 表为快路径（内存登记；终局不清，只随 rearmChild 复活开新任务轮翻篇），
+    // 板为兜底（文件持久化）：任一命中即视为本代际已交付。补上兜底的病灶：进程
+    // 重启/冷恢复后内存表必然为空，而报告全文明明还在板上——只查表就会把
+    // 「交过」的儿童判成「从未提交」并发射补发。复活开新任务轮时旧正板已被
+    // 归档成 <childId>.prev.md（见 broker-delivery 的 rearmAfterDelivery），
+    // 故这条兜底只对「本代际的板」为真，不会替上一代际放行；waiting 续接不归档，
+    // 同一轮已交报告照常兜底命中。
     const hasBoard = reportGate.hasBoard ?? NEVER_HAS_BOARD
     const tableHit = reportGate.reportSubmitted(childId)
     if (tableHit || hasBoard(childId)) {
@@ -390,7 +401,7 @@ export function shouldAdvanceQueue(facts, { hasOwningOrch = true } = {}) {
       return false
     default:
       // undefined = 决策没登记时机。宁可不动队列，也不猜「推进」——把还在跑的那一轮
-      // 的槽位提前腾掉，等于放行两个子代理并行（单线阻塞是这插件的地基）。
+      // 的槽位提前腾掉，等于放行超出泳道容量的并行（泳道容量是该插件的地基）。
       return false
   }
 }

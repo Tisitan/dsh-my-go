@@ -116,7 +116,7 @@ export function createRelayOps({
       scheduleLedgerSave()
       // 派发类迁移（T1/T2/T5/T6/T9）入队即驱动上岗——复用 D19 直派补位通路，
       // 满池/队列无匹配时本调用是 no-op（泳道锁在 advanceQueue 内判定，INV-1；
-      // readPoolSize=1 退化全局单线，链 hop 与人派 work 同队串行）。
+      // 两池皆 1 才退化为全局单线，链 hop 与人派 work 同队串行）。
       advanceQueue(orch, parentHint ?? resolveParentAgent(chain.parentSessionId))
     }
     return workId

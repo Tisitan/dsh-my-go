@@ -5,11 +5,13 @@
 // 外加维护者裁决三条：sessionId 一律取主编会话自身、REPORT_EXT 闸内注册、not-found
 // 包装成主编可读返回（不抛）。板夹具直接用 writeBoard 造（1.1 round-trip 已锁
 // 写路径正确性，此处只造数据，不重复验存储层）。
+// 在飞 / 排队拦截：子代仍 running / spawning / 在队列时直接回 ok:false 拦截提示，
+// 即便板上正好有（上一代际的）旧文件也不读——防主编抢跑把老报告当本轮结论。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as broker from '../preset/tools/broker.mjs'
 import { writeBoard } from '../preset/shared/board.mjs'
-import { createMockCtx, removeHomeWithRetry, execOf } from './helpers/mock-ctx.mjs'
+import { createMockCtx, removeHomeWithRetry, execOf, waitFor, withRealSignalContract, snapOf } from './helpers/mock-ctx.mjs'
 
 const PARENT = { id: 'parent-f', session: { header: {} } }
 const CHILD = { id: 'sess-1', session: { header: { parentSession: 'parent-f' } } }
@@ -29,6 +31,7 @@ test('在册与契约：主编面向注册、childId 必填、description 自教
     assert.ok(tool.parameters.properties.offset && tool.parameters.properties.limit, 'offset/limit 可选参数在 schema')
     assert.ok(/0-BASED/i.test(tool.description), 'description 显式写明 offset 0-based（裁决·描述宽度）')
     assert.ok(tool.description.includes('切片是常态') && tool.description.includes('全文取回是异常路径'), '用法导向进 description（D15：不动 system prompt）')
+    assert.ok(tool.description.includes('still running / spawning / queued'), '拦截语义写进 description（在飞不读旧板）')
     assert.equal(tool.isConcurrencySafe(), true, '只读工具并发安全')
   } finally {
     await removeHomeWithRetry(home)
@@ -122,6 +125,67 @@ test('子代理调用被 canOrchestrate 运行时守卫拒（deny 闸双保险�
       /reserved for orchestrator/,
       '子代（有 parentSession）直调 invoke 也必须被守卫拦下',
     )
+  } finally {
+    await removeHomeWithRetry(home)
+  }
+})
+
+// ── 在飞 / 排队拦截（防抢跑读到上一代际的旧报告）────────────────────────────
+
+test('拦截：子代 running 时即便板上躺着旧文件，report_fetch 也回 ok:false + 执行中提示', async () => {
+  const { ctx, tools } = createMockCtx({
+    agents: { get: (id) => (id === 'parent-f' ? PARENT : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-live' })),
+  })
+  const home = process.env.DSH_HOME
+  try {
+    await broker.apply(ctx, {})
+    await tools.get('go_work').execute({ agent: 'hephaestus', prompt: '干活' }, execOf(PARENT))
+    await waitFor(() => snapOf('parent-f')?.currentRecords?.[0]?.status === 'running', { what: '子代在飞' })
+    await writeBoard('parent-f', 'sess-live', '# 上一代际的旧报告\n不该被读到。\n')
+    const r = await tools.get('report_fetch').execute({ childId: 'sess-live' }, execOf(PARENT))
+    assert.equal(r.ok, false, '在飞拦截')
+    assert.equal(r.text, undefined, '不返回任何旧报告内容')
+    assert.match(r.message, /正在执行任务中/, '明确提示正在执行中')
+    assert.match(r.message, /等完工通知后再读取/, '给出等待指引')
+    assert.ok(r.message.includes('sess-live'), '提示点名 childId')
+  } finally {
+    await removeHomeWithRetry(home)
+  }
+})
+
+test('拦截：子代仍在队列（queued）时回 ok:false + 排队提示；完工后照常读到新报告', async () => {
+  const { ctx, dispatch, tools } = createMockCtx({
+    agents: { get: (id) => (id === 'parent-f' ? PARENT : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: `sess-${Math.random().toString(36).slice(2, 8)}` })),
+  })
+  const home = process.env.DSH_HOME
+  try {
+    await broker.apply(ctx, {})
+    // 第一条占住唯一写槽；第二条排进队列，用占位 work id 查
+    await tools.get('go_work').execute({ agent: 'hermes', prompt: '一' }, execOf(PARENT))
+    const queued = await tools.get('go_work').execute({ agent: 'hermes', prompt: '二' }, execOf(PARENT))
+    assert.equal(queued.queued, true, '第二条入队')
+    const r = await tools.get('report_fetch').execute({ childId: queued.childId }, execOf(PARENT))
+    assert.equal(r.ok, false)
+    assert.equal(r.text, undefined, '排队中不读板')
+    assert.match(r.message, /队列中排队/), '排队拦截提示'
+    assert.match(r.message, /报告尚未就绪/)
+    // 第一条完工 → 终局闸门补发前的记录离开活槽：查询不再被拦截，走 not-found 才正常
+    dispatch('subagent/end', { id: snapOf('parent-f').currentRecords[0].childId, stopReason: 'error', lastAssistantMessage: [] })
+    await waitFor(() => snapOf('parent-f')?.history?.length === 1, { what: '首条失败落账' })
+  } finally {
+    await removeHomeWithRetry(home)
+  }
+})
+
+test('拦截只认在册状态：子代已结束（不在 currentMap / 队列）→ 照常读板', async () => {
+  const { tools, home } = await fetchCtx()
+  try {
+    await writeBoard('parent-f', 'sess-done', '已完工的报告正文')
+    const r = await tools.get('report_fetch').execute({ childId: 'sess-done' }, execOf(PARENT))
+    assert.equal(r.ok, true, '无在册记录 = 不拦截')
+    assert.equal(r.text, '已完工的报告正文')
   } finally {
     await removeHomeWithRetry(home)
   }

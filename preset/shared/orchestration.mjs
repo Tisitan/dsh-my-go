@@ -8,8 +8,9 @@
  * lives in the shared layer (not inlined into broker) so it stays ctx-free and
  * unit-testable in isolation.
  *
- * 泳道化（read-pool-semantics.md §一）：写平面恒单线是地基不动，读平面
- * （explore/librarian）扩为 N 并发（readCapacity，默认 1 = 关闭 = 逐字节现状）。
+ * 泳道化（read-pool-semantics.md §一）：两个泳道各自持容量——读平面
+ * （explore/librarian）readCapacity、写平面（其余全部工种）writeCapacity，
+ * 缺省皆为 1 = 关闭 = 逐字节现状（写池配置化见 write-pool 批次，与读池对称）。
  * 关键口径：
  *  - **占槽 = 在 currentMap 即占槽**（spawning/waiting/running 同权，与单线口径
  *    一致）——laneCount 按记录数统计，不看 status。
@@ -19,9 +20,9 @@
  *  - laneCount 对无 lane 记录按 laneOf(agentType) 兜底归类。双保险的理由：漏一条
  *    无 lane 的 write 记录进 currentMap，isBusy 复合判定就漏计它 → 放行第二个写
  *    平面子代 = 单线锁被架空，这类「静默变松」比「报错」危险得多。
- *  - isBusy() 是复合判定「任一 lane 满」：readCapacity=1 时与「size>0」逐点等价
- *    （每条记录恰属一个 lane）；容量 ≥2 后 size>0 不再是正确的忙判定（read 在飞
- *    1 条是设计内并行，不是忙）。
+ *  - isBusy() 是复合判定「任一 lane 满」：两池容量皆 1（退化全局单线）时与
+ *    「size>0」逐点等价（每条记录恰属一个 lane）；任一容量 ≥2 后 size>0 不再是
+ *    正确的忙判定（read 在飞 1 条是设计内并行，不是忙）。
  *
  * Iron rule: shared modules never import @deepseek-ai/* and never touch ctx.
  */
@@ -37,15 +38,20 @@ export function laneOf(agentType) {
   return READ_LANE_TYPES.has(agentType) ? 'read' : 'write'
 }
 
-// 读池容量钳制（规划 2.6：?? 1 默认关，2~3 启用，>3 钳 3）。非法值一律回落 1
-// （= 现状）而非抛错：容量来自部署 config，坏值不应炸挂载，回落关闭是最安全降级。
-const READ_CAPACITY_MAX = 3
+// 泳道容量钳制（读池/写池同律：规划 2.6 + 写池批次对称）：?? 1 默认关，2~3 启用，
+// >3 钳 3。非法值一律回落 1（= 现状）而非抛错：容量来自部署 config，坏值不应炸
+// 挂载，回落关闭是最安全降级。
+const LANE_CAPACITY_MAX = 3
 
-export function clampReadCapacity(value) {
+export function clampLaneCapacity(value) {
   const n = Number(value)
   if (!Number.isFinite(n) || n < 1) return 1
-  return Math.min(READ_CAPACITY_MAX, Math.floor(n))
+  return Math.min(LANE_CAPACITY_MAX, Math.floor(n))
 }
+
+// 两枚泳道别名指向同一实现：调用点自解释（读池/写池各自命名），钳制律单点。
+export const clampReadCapacity = clampLaneCapacity
+export const clampWriteCapacity = clampLaneCapacity
 
 let seq = 0
 export function nextId(prefix) {
@@ -55,11 +61,14 @@ export function nextId(prefix) {
 
 /** Minimal single-line-blocking orchestration state. Exported for unit tests. */
 export class Orchestration {
-  // readCapacity：读平面并发容量（构造期固定；broker 接线 config.readPoolSize 在 2.3）。
-  // 默认 1 = 关闭 = 单线现状，默认构造的实例与改造前行为逐字节等价。
-  constructor({ readCapacity = 1 } = {}) {
-    this.readCapacity = clampReadCapacity(readCapacity)
+  // readCapacity / writeCapacity：两泳道并发容量（构造期固定；broker 接线
+  // config.readPoolSize / config.writePoolSize）。默认皆 1 = 关闭 = 单线现状，
+  // 默认构造的实例与改造前行为逐字节等价。
+  constructor({ readCapacity = 1, writeCapacity = 1 } = {}) {
+    this.readCapacity = clampLaneCapacity(readCapacity)
+    this.writeCapacity = clampLaneCapacity(writeCapacity)
     this.currentMap = new Map()
+    this.revivalReservations = new Map()
     this.queue = []
     this.helpRequests = new Map()
     this.history = []
@@ -88,6 +97,12 @@ export class Orchestration {
       // 链桶追加字段（非形状变更——D13 快照注入兜底与面板渲染的
       // 数据源；渲染归 3.5，此处只保证链对快照消费者可见）。
       chains: [...this.chains],
+      // 泳道容量事实（写池批次）：面板星图按容量渲染写槽几何与标签。只发容量、
+      // 不发占用——占用数消费侧从 currentRecords 自算，避免同一事实两处漂移。
+      lanes: {
+        read: { capacity: this.readCapacity },
+        write: { capacity: this.writeCapacity },
+      },
     }
   }
 
@@ -99,30 +114,56 @@ export class Orchestration {
   }
 
   isBusy() {
-    // 复合判定「任何 lane 满」（read-pool-semantics.md §1.2）。readCapacity=1 时
+    // 复合判定「任何 lane 满」（read-pool-semantics.md §1.2）。两池容量皆 1 时
     // isLaneFree 退化口径对两个 lane 同真同假（见下），本判定逐点等价旧 size>0；
-    // 容量 ≥2 后「read 在飞但未满」不再是忙。写 lane capacityOf 恒 1——单线锁是地基。
+    // 任一容量 ≥2 后「某 lane 在飞但未满」不再是忙。
     return !this.isLaneFree('read') || !this.isLaneFree('write')
   }
 
-  capacityOf(lane) { return lane === 'read' ? this.readCapacity : 1 }
+  // 未知 lane 名（laneOf 不会产出）按最保守容量 1：宁可误判忙，不可静默变松。
+  capacityOf(lane) {
+    if (lane === 'read') return this.readCapacity
+    if (lane === 'write') return this.writeCapacity
+    return 1
+  }
 
   // 占槽口径与单线时代一致：在 currentMap 即占槽（spawning/waiting/running 同权）。
   // 无 lane 记录按 laneOf(agentType) 兜底归类（旧台账回填/异常路径的双保险，见头注释）。
+  // **同一 childId 跨两处只算一次**：revive 把记录搬回 currentMap 后预占若还挂着
+  // （释放前的一拍），同一条子代会被算两槽——那是重复计槽，不是多占一个槽。
   laneCount(lane) {
     let n = 0
     for (const rec of this.currentMap.values()) {
       if ((rec.lane ?? laneOf(rec.agentType)) === lane) n += 1
     }
+    for (const [reservedId, reservedLane] of this.revivalReservations) {
+      if (reservedLane === lane && !this.currentMap.has(reservedId)) n += 1
+    }
     return n
   }
 
+  // 复活预占（continue/forward 把已完工子代放回其 lane 槽之前先占位）。
+  // **先占后断言**而非「先查后占」：容量 ≥2 时同一 tick 内两条不同 childId 的复活
+  // 会双双看到最后一个空位并双双通过（查与占之间没有原子性）；先 set 再数，
+  // 后到者必然看见前者的预占，超容即回滚。JS 单线程 + 无 await 保证这段是原子的。
+  reserveRevival(childId, lane) {
+    if (this.revivalReservations.has(childId) || !this.isLaneFree(lane)) return undefined
+    this.revivalReservations.set(childId, lane)
+    if (this.laneCount(lane) > this.capacityOf(lane)) {
+      this.revivalReservations.delete(childId)
+      return undefined
+    }
+    return () => { this.revivalReservations.delete(childId) }
+  }
+
   isLaneFree(lane) {
-    // 退化口径（read-pool-semantics.md §八退化判据）：readCapacity=1 = 关闭 =
-    // **全局单线**，而非「read 1 + write 1 各占一槽的跨 lane 并行」——否则默认
-    // 配置下 write 在跑时 read 会被放行，违背 D5「默认关 = 逐字节现状」。容量 ≥2
-    // 才启用 lane 各自计数：读任务看读池、写任务看写平面恒 1。
-    if (this.readCapacity <= 1) return this.currentMap.size === 0
+    // 退化口径（read-pool-semantics.md §八退化判据 + 写池对称）：读池与写池容量
+    // 皆为 1 = 双池皆关 = **全局单线**，而非「read 1 + write 1 各占一槽的跨 lane
+    // 并行」——否则全缺省配置下 write 在跑时 read 会被放行，违背 D5「默认关 =
+    // 逐字节现状」。任一池容量 ≥2 才启用 lane 各自计数。
+    // 硬性兼容：write=1+read=1 与改造前逐字节等价；write=1+read=3（写池批次前的
+    // 装机态）走 lane 计数分支，与改造前同点同判，行为不变。
+    if (this.readCapacity <= 1 && this.writeCapacity <= 1) return this.currentMap.size === 0 && this.revivalReservations.size === 0
     return this.laneCount(lane) < this.capacityOf(lane)
   }
 
@@ -288,7 +329,7 @@ export class Orchestration {
     const rec = this.history[idx]
     // lane 归一化：旧格式台账回填的 history 记录没有 lane 字段，回槽
     // 必须补写——否则 laneCount 漏统计，isBusy 复合判定在写 lane 占用时可能为假，
-    // 放行第二个写平面子代（单线锁被一条旧档案架空）。
+    // 放行第二个写平面子代（泳道槽被一条旧档案架空）。
     const next = { ...rec, lane: rec.lane ?? laneOf(rec.agentType), status: 'running', updatedAt: Date.now() }
     this.history = [...this.history.slice(0, idx), ...this.history.slice(idx + 1)]
     this.currentMap.set(childId, next)

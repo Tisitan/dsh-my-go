@@ -118,7 +118,7 @@ test('迁移：旧顶级工种键无损搬进 roles dict（含 fallbacks 全字�
   const sets = ops.filter((op) => op.op === 'set')
   const unsets = ops.filter((op) => op.op === 'unset')
   assert.deepEqual(sets.map((op) => op.path[1]).sort(), [...WORKER_KEYS].sort(), '七工种逐键 set 进 roles')
-  assert.deepEqual(unsets.map((op) => op.path[0]).sort(), [...WORKER_KEYS].sort(), '旧键逐一 unset')
+  assert.deepEqual(unsets, [], '旧键不经volatile通道清理')
   for (const op of sets) {
     assert.deepEqual(op.path, ['roles', op.path[1]], 'set 路径为 roles.<key>')
     assert.deepEqual(op.value, LEGACY_STORED[op.path[1]], '整行无损搬运')
@@ -139,16 +139,10 @@ test('迁移幂等：迁移后形状再次检测返回 null', () => {
   assert.equal(migrateLegacyRolesOps(null), null)
 })
 
-test('迁移并存：roles 已有同名行时顶级旧行覆盖（旧顶级是权威来源）', () => {
-  const stored = {
-    ...MIGRATED_STORED,
-    hermes: { provider: 'legacy-p', model: 'legacy-m', reasoningEffort: 'default', fallbacks: [] },
-  }
-  const ops = migrateLegacyRolesOps(stored)
-  assert.ok(ops)
-  const hermesSet = ops.find((op) => op.op === 'set' && op.path[1] === 'hermes')
-  assert.equal(hermesSet.value.model, 'legacy-m', '顶级行覆盖 roles.hermes')
-  assert.equal(ops.filter((op) => op.path.includes('oracle')).length, 0, 'roles 已有的其余工种不被触碰')
+test('迁移并存：roles显式行优先，旧顶级保留但不覆回', () => {
+  const stored = { ...MIGRATED_STORED, hermes: { provider: 'legacy-p', model: 'legacy-m' } }
+  assert.equal(migrateLegacyRolesOps(stored), null)
+  assert.equal(mergeRoleBindings({}, stored).hermes.model, MIGRATED_STORED.roles.hermes.model)
 })
 
 // ── mergeRoleBindings：白名单泛化 + 自定义角色热更可见 ────────────────────
@@ -169,10 +163,10 @@ test('merge：roles.custom-x 键进入 bindings 并携带 persona/toolFilter', (
   assert.deepEqual(bindings['custom-x'], {
     provider: 'p9', model: 'm9', reasoningEffort: 'high', 
     fallbacks: [{ provider: 'p8', model: 'm8' }],
-    persona: '你是测试角色', toolFilter: { allow: ['read'], deny: ['write'] },
-  }, '自定义角色行完整进入 bindings')
-  assert.deepEqual(bindings.explore, { provider: 'p1', model: 'm3', reasoningEffort: undefined, fallbacks: undefined, persona: undefined, toolFilter: undefined }, '内置工种改从 roles 读取')
-  assert.deepEqual(bindings.sisyphus, { provider: 'p-s', model: 'm-s', reasoningEffort: undefined, fallbacks: undefined, persona: undefined, toolFilter: undefined }, 'sisyphus 仍读顶级')
+    persona: '你是测试角色',
+  }, '自定义角色保留人设、忽略旧工具限制')
+  assert.deepEqual(bindings.explore, { provider: 'p1', model: 'm3', reasoningEffort: undefined, fallbacks: undefined, persona: undefined }, '内置工种改从 roles 读取')
+  assert.deepEqual(bindings.sisyphus, { provider: 'p-s', model: 'm-s', reasoningEffort: undefined, fallbacks: undefined, persona: undefined }, 'sisyphus 仍读顶级')
   assert.deepEqual(
     Object.keys(mergeRoleBindings(base, { roles: { 'custom-x': {} } })).filter((k) => !['sisyphus', 'explore', 'custom-x'].includes(k)),
     [],
@@ -211,7 +205,7 @@ test('apply：旧 9 键存储触发一次迁移 mutate，热更后不再重复�
   await hostApply(ctx, resolvedHostConfig(LEGACY_STORED))
   assert.equal(mutates.length, 1, '初载恰好迁移一次')
   assert.equal(mutates[0].ns, 'dsh-my-go')
-  assert.equal(mutates[0].ops.filter((op) => op.op === 'unset').length, WORKER_KEYS.length, '七个旧键 unset')
+  assert.equal(mutates[0].ops.filter((op) => op.op === 'unset').length, 0, '七个旧键 unset')
   // 模拟迁移落盘后的重入：行 config 已无旧顶级键（迁移 ops 已把它们 unset 掉）。
   const after = mockHostCtx({ settings })
   await hostApply(after.ctx, resolvedHostConfig(MIGRATED_STORED))

@@ -142,16 +142,44 @@ test('pin：agent.patch.yml 的 broker 行必须显式 readPoolSize: 3（读平�
     'broker 行必须显式 readPoolSize: 3——读平面并发上限顶格；被同步 preset 覆盖回 2/1 或删行回落代码缺省 1，本 pin 红')
 })
 
+// 同范式第三钉（写池批次，与读池对称）：preset yml 显式 writePoolSize 必须为 3。
+// 唯一改动点 = 本断言下的那一处配置值：改回 1/2、删行回落代码缺省 1、或写超上限
+// 被钳制口径掩盖（如 99），本 pin 都红——显式值是唯一可审计的配置面。
+test('pin：agent.patch.yml 的 broker 行必须显式 writePoolSize: 3（写平面扩池）', async () => {
+  const cordisSchema = yaml.DEFAULT_SCHEMA.extend([
+    new yaml.Type('tag:yaml.org,2002:js', { kind: 'scalar', construct: (data) => data }),
+  ])
+  const text = await readFile(new URL('../preset/agent.patch.yml', import.meta.url), 'utf-8')
+  const doc = yaml.load(text, { schema: cordisSchema })
+  const brokerRow = doc.find((patch) => patch?.insert)?.insert?.[0]?.config?.plugins?.find((row) => row?.id === 'broker')
+  assert.ok(brokerRow, 'broker 行在册（预设声明的 config.plugins 内）')
+  assert.equal(brokerRow?.config?.writePoolSize, 3,
+    'broker 行必须显式 writePoolSize: 3——写平面并发上限顶格（双车道各 3、峰值 6）；被同步 preset 覆盖回 2/1 或删行回落代码缺省 1，本 pin 红')
+})
+
 // 方案 B：REPORT_CLAUSE 明牌压制工种手册旧交付收尾约定，防两源指令打架回潮
 test('REPORT_CLAUSE 含覆盖声明：压制工种手册旧收尾/交付约定，冲突以条款为准', () => {
   assert.match(REPORT_CLAUSE, /Precedence:/, '条款必须显式声明优先级')
   assert.match(REPORT_CLAUSE, /压制 prompts\/\*\.md/, '条款必须明牌压制 playbooks 旧约定')
 })
 
-// evidence 裸锚点纪律（提交制下落到数组项校验）：
-// 条款必须明文「禁止任何前后缀描述」——裸「路径:行号」锚点，描述性文字进 report 全文。
-test('REPORT_CLAUSE evidence 裸锚点明文：禁止任何前后缀描述', () => {
-  assert.match(REPORT_CLAUSE, /禁止任何前后缀描述/, '条款必须显式写明 evidence 项禁前后缀描述——裸「路径:行号」锚点，描述性文字放 report 全文')
+// evidence 宽松口径（校验器只拦空项/非数组，不再做格式正则）：
+// 条款必须教「关键证据即可」并把 URL / 说明文字列为合法形态，旧裸锚点紧箍咒零残留，
+// 同时把「校验失败 → 正文暂存 → 重调传（已暂存）」的省流口径写进去。
+test('REPORT_CLAUSE evidence 宽松口径：关键证据即可、URL 合法、旧裸锚点禁令零残留', () => {
+  assert.match(REPORT_CLAUSE, /evidence：字符串数组，提供关键证据即可/, '改为「关键证据即可」口径')
+  assert.match(REPORT_CLAUSE, /路径:行号/, '路径:行号仍是推荐形态之一')
+  assert.match(REPORT_CLAUSE, /URL/, 'URL 明确列为合法证据形态')
+  assert.match(REPORT_CLAUSE, /一句简明说明/, '说明文字合法')
+  assert.match(REPORT_CLAUSE, /\["无"\] 或 \["\/"\]/, '空值双写法')
+  assert.ok(!REPORT_CLAUSE.includes('禁止任何前后缀描述'), '旧紧箍咒零残留')
+  assert.ok(!REPORT_CLAUSE.includes('裸路径'), '「裸路径」字样零残留')
+})
+
+test('REPORT_CLAUSE 暂存口径：校验报错时正文已暂存，重调传「（已暂存）」免重传全文', () => {
+  assert.match(REPORT_CLAUSE, /report 正文已自动暂存/, '暂存事实在条款里')
+  assert.match(REPORT_CLAUSE, /（已暂存）/, '占位符写法在条款里')
+  assert.match(REPORT_CLAUSE, /无需重做任务/)
 })
 
 // 提交制核心机关：提交成功即交付 + 自由收尾 + 未交付兜底口径
@@ -193,15 +221,24 @@ test('pin：prompts 全目录交付收尾口径与 REPORT_CLAUSE 同步（六字
     }
   }
   assert.equal(submitted, 8, '八份提交报告的人设全覆盖（sisyphus 主编侧不交报告）')
+  // evidence 松绑同步：九份人设一律不得再教「URL 不能伪装成裸路径锚点」这类旧紧箍咒
+  for (const file of files) {
+    const text = await readFile(join(promptsDir, file), 'utf-8')
+    assert.ok(!text.includes('不能伪装成裸路径锚点'), `prompts/${file} 旧 evidence 紧箍咒零残留`)
+    assert.ok(!text.includes('每项一条裸路径'), `prompts/${file} 旧「每项一条裸路径」口径零残留`)
+  }
   // 施工层两份：强制语义必须在人设里说死（必填 + 空串即拒），不能只靠注入条款
   for (const buildLayer of ['hermes.md', 'hephaestus.md']) {
     const text = await readFile(join(promptsDir, buildLayer), 'utf-8')
     assert.match(text, /本工种必填，缺失或空串即被闸门逐条拒收/, `${buildLayer} 说清两字段强制面`)
-    assert.match(text, /不加分也不参与校验，只认字段/, `${buildLayer} 说清正文字段已退役`)
+    assert.match(text, /只认字段/, `${buildLayer} 说清字段层面才作数`)
+    assert.match(text, /（已暂存）/, `${buildLayer} 交代暂存复用（免重吐全文）`)
   }
   // 其余六份（非施工层）：必须写明「选填」，免得工种误以为自己也被闸门拒
   for (const other of ['explore.md', 'oracle.md', 'librarian.md', 'looker.md', 'prometheus.md', 'apelles.md']) {
     const text = await readFile(join(promptsDir, other), 'utf-8')
     assert.match(text, /后两字段本工种选填/, `${other} 标明两尾字段选填`)
+    assert.match(text, /路径:行号、路径、URL、test: 或 image: 记录或一句说明都合法/, `${other} evidence 描述已松绑（URL/说明合法）`)
+    assert.match(text, /（已暂存）/, `${other} 交代暂存复用`)
   }
 })

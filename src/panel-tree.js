@@ -302,6 +302,8 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
     const histories = parentList
       .flatMap((p) => (Array.isArray(p?.history) ? p.history.map((r) => ({ ...r, parentSessionId: p.parentSessionId })) : []))
       .sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0))
+    // 泳道容量（写池批次）：桶级事实，拍平会丢——单列投影给星图（每编排会话一份配置）
+    const lanesByParent = Object.fromEntries(parentList.map((p) => [p.parentSessionId, p?.lanes]))
 
     // 区块标题 + 计数徽章
     const sectionHeader = (title, count, hint) => React.createElement('div', { title: hint, style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 } },
@@ -341,7 +343,7 @@ export function createOrchestrationPanel({ slots, connection, sessions, timer })
             }, '⚠ 编排服务未就绪：宿主端 /dsh-my-go 无响应（插件未激活或仍在启动），面板将持续自动重试。')
           : null,
 
-      React.createElement(GraphSection, { records: currents, queue: queues, histories, sessions }),
+      React.createElement(GraphSection, { records: currents, queue: queues, histories, sessions, lanesByParent }),
 
       // 运行中：保留区块（空时显示「空闲」，用户习惯看它），等待求助的条目用红色
       React.createElement('div', { style: { marginBottom: 10 } },

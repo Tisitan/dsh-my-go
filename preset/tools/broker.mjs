@@ -13,7 +13,7 @@
  *     ADJACENT_BYPASS_TOOLS），主编排侧 deny skill + 同批邻接三件套
  *   - agent/request waterfall：按工种绑定 provider/model/reasoningEffort
  *   - subagent/end：归因决策在 shared/end-attribution.mjs（纯函数出 decision/ops/
- *     notices/facts），本文件只做挂载；结论落账 + 失败备选链重派 + 单线
+ *     notices/facts），本文件只做挂载；结论落账 + 失败备选链重派 + 泳道
  *     队列推进；台账跨重启持久化
  *   - settings 段只读（配置面与写面在 host 半，经 Symbol.for 全局桥交出）
  *   - 面板快照经 globalThis[Symbol.for('dsh-my-go.snapshot')] 单向发布给 host 半
@@ -89,7 +89,7 @@ import { mygoHome } from '../shared/paths.mjs'
 import { mergeRoleBindings } from '../shared/roles.mjs'
 import { Orchestration } from '../shared/orchestration.mjs'
 import { createChildRegistry } from '../shared/child-registry.mjs'
-import { defaultBindings, typeOfAgent, resolveEffectiveBinding } from '../shared/misc.mjs'
+import { defaultBindings, typeOfAgent, agentRoleLabel, resolveEffectiveBinding } from '../shared/misc.mjs'
 // 观测埋点：broker 本地模块（只有本文件消费，不进
 // shared——避免无谓扩大单源守卫面）。事件 JSONL 追加写 + 行数 cap 截头，
 // 任何 fs 异常在模块内部吞掉，编排热路径零感知（规划风险表 R0.1）。
@@ -122,10 +122,11 @@ import { createHeartbeatOps, normalizeKeepAlive } from './broker-heartbeat.mjs'
 // 5.4 processEnd 迁入 ./broker-ending.mjs（簇自 import）。段名编码与根焊死都在
 // shared/board.mjs 单点。
 import { writeBoard, readBoardSlice } from '../shared/board.mjs'
-// 容量钳制：clampReadCapacity 在挂载期读 READ_POOL_SIZE 时用。
+// 容量钳制：clampReadCapacity / clampWriteCapacity（同一实现的泳道别名）在挂载期
+// 读 READ_POOL_SIZE / WRITE_POOL_SIZE 时用。
 // laneOf 的派发侧消费点（dispatchWork / advanceQueue / stallHolder）在
 // ./broker-scheduler.mjs（Orchestration 本体仍在上方 import，此处不重复声明）。
-import { clampReadCapacity } from '../shared/orchestration.mjs'
+import { clampReadCapacity, clampWriteCapacity } from '../shared/orchestration.mjs'
 // 接力链状态机（relay-chain-semantics.md）的 dispatcher 本体在 ./broker-relay.mjs；
 // 摘要格式条款（单源）的两个消费点（REPORT_CLAUSE → spawnChild、
 // REDISPATCH_RESUME_PREFIX → 备选重派）分别落在调度核与 end 两簇，本文件不
@@ -199,6 +200,10 @@ export async function apply(ctx, config = {}) {
   // 2~3 启用读池（>3 钳制 3，钳制在 clampReadCapacity 内）。挂载期读一次，
   // 与 REPORT_EXT 同律不做运行时切换——orchFor 创建实例时注入。
   const READ_POOL_SIZE = clampReadCapacity(config.readPoolSize ?? 1)
+  // 写平面并发容量（与读池对称）：?? 1 = 关闭 = 写平面串行；
+  // 2~3 启用写池（>3 钳制 3，钳制在 clampWriteCapacity 内）。挂载期读一次，
+  // 与 REPORT_EXT 同律不做运行时切换——orchFor 创建实例时注入。
+  const WRITE_POOL_SIZE = clampWriteCapacity(config.writePoolSize ?? 1)
   // 接力链开关（D5：默认关）：关 = chain_start/chain_resolve
   // 不注册。与 REPORT_EXT 同律挂载期读一次，不做运行时切换。
   const RELAY_CHAINS = config.relayChains ?? false
@@ -309,7 +314,7 @@ export async function apply(ctx, config = {}) {
   function orchFor(parentId) {
     let orch = orchestrations.get(parentId)
     if (!orch) {
-      orch = new Orchestration({ readCapacity: READ_POOL_SIZE })
+      orch = new Orchestration({ readCapacity: READ_POOL_SIZE, writeCapacity: WRITE_POOL_SIZE })
       orch.onChange(() => bump())
       orch.onChange(() => scheduleLedgerSave())
       orchestrations.set(parentId, orch)
@@ -453,7 +458,7 @@ export async function apply(ctx, config = {}) {
   // 本簇接线点前移到调度簇之前（其产物 promptCache/loadPrompt 是
   // 调度簇 rolePersona 的注入源）——工厂体内只有纯组装与 fire-and-forget 预热，
   // 位移不改变任何注册序/时序。
-  const { promptCache, loadPrompt } = createBootstrapOps({
+  const { promptCache, loadPrompt, ready: promptsReady } = createBootstrapOps({
     effect: (fn, name) => ctx.effect(fn, name),
     registerSection: (def) => ctx.systemPrompt.section(def),
     getSectionOrder: (key) => ctx.systemPrompt?.getSectionOrder?.(key),
@@ -461,8 +466,9 @@ export async function apply(ctx, config = {}) {
     sessionTypes,
     getBindings: () => currentBindings(),
   })
+  await promptsReady // No first request may race the role prompt preload.
   // ── 调度核簇接线（本体在 ./broker-scheduler.mjs）──────────────────
-  // 名册路由薄壳（rosterKeys / rolePersona / resolveRoleToolFilter / liveToolNames）、
+  // 名册路由薄壳（rosterKeys / rolePersona / liveToolNames）、
   // spawnChild 唯一派发出口、dispatchWork / advanceQueue / scheduleQueueRetry 与
   // queueRetryTimers（互递归环整体随迁、环内聚在簇内）、两枚停摆可观测件
   // （buildStallNotice / stallHolder——T1 消费方是 end 簇，经下方转注）迁入模块。
@@ -547,6 +553,7 @@ export async function apply(ctx, config = {}) {
     findRecordWithLedgerFallback,
     resolveParentAgent,
     notifyParent,
+    advanceQueue,
   })
   // ── end 管线簇接线（本体在 ./broker-ending.mjs）─────────────────────
   // processEnd（subagent/end dispatcher：缓冲闸、归因快照、ops/notices 落地、
@@ -672,6 +679,7 @@ export async function apply(ctx, config = {}) {
     REPORT_EXT,
     RELAY_CHAINS,
     READ_POOL_SIZE,
+    WRITE_POOL_SIZE,
     HELP_CONTENT_MAX,
     STATUS_HISTORY_LIMIT,
     STATUS_CONCLUSION_MAX,
@@ -730,6 +738,7 @@ export async function apply(ctx, config = {}) {
     releaseHopHolds(orch)
     orch.queue = []
     orch.currentMap.clear()
+    orch.revivalReservations.clear()
     orch.helpRequests.clear()
     orch.chains = []
     orchestrations.delete(id)
@@ -755,23 +764,22 @@ export async function apply(ctx, config = {}) {
     // 备选重派儿童以登记表为准（只换 provider/model，保留工种 reasoningEffort/
     // fallbacks 等其余字段）；spawn 解析前窗口按 label 命中 pending 登记
     //（优先级回退在 child-registry 内实现）；常规派发无登记 → 原样 bindings[type]
-    const override = childRegistry.fallbackOverrideFor(agent.id, agent?.session?.header?.label)
+    const override = childRegistry.fallbackOverrideFor(agent.id, agentRoleLabel(agent))
     const binding = resolveEffectiveBinding(currentBindings()[type ?? 'sisyphus'] ?? {}, override)
     const nextConfig = { ...seed }
-    if (binding.provider !== undefined) nextConfig.provider = binding.provider
-    if (binding.model !== undefined) {
-      // Validate model exists on the resolved provider before applying
-      const resolvedProvider = String(nextConfig.provider ?? seed.provider ?? '')
-      const exists = resolvedProvider ? await modelExists(resolvedProvider, binding.model) : false
-      // 降噪：正常路径静默，只在绑定模型校验不过时告警（每请求 console.log 太吵）
-      if (!exists && resolvedProvider) {
-        console.warn(`[dsh-my-go] agent/request: model "${String(binding.model)}" not found on provider "${resolvedProvider}"; keeping the seed model`)
-      }
-      if (exists) {
-        nextConfig.model = binding.model
+    if (binding.provider !== undefined || binding.model !== undefined) {
+      const provider = binding.provider ?? seed.provider
+      const model = binding.model ?? seed.model
+      if (provider && model && await modelExists(provider, model)) {
+        nextConfig.provider = provider
+        nextConfig.model = model
+      } else {
+        console.warn(`[dsh-my-go] agent/request: configured route "${String(provider)}/${String(model)}" is unavailable; keeping the seed route`)
       }
     }
     const desiredEffort = binding.reasoningEffort
+    if (nextConfig.provider !== seed.provider || nextConfig.model !== seed.model
+      || (desiredEffort !== undefined && desiredEffort !== null)) delete nextConfig.reasoningEffort
     if (desiredEffort !== undefined && desiredEffort !== null) {
       const provider = String(nextConfig.provider ?? binding.provider ?? '')
       const model = String(nextConfig.model ?? binding.model ?? '')

@@ -654,7 +654,8 @@ var H = 300;
 var CENTER = { x: 148, y: 150, r: 22 };
 var ORBIT_R = 105;
 var READ_SLOTS = [{ x: 74, y: 76 }, { x: 148, y: 45 }, { x: 222, y: 76 }];
-var WRITE_SLOT = { x: 148, y: 255 };
+var mirrorSlot = (s) => ({ x: s.x, y: CENTER.y * 2 - s.y });
+var WRITE_SLOTS = [mirrorSlot(READ_SLOTS[1]), mirrorSlot(READ_SLOTS[0]), mirrorSlot(READ_SLOTS[2])];
 var DOCK = [{ x: 26, y: 268 }, { x: 50, y: 268 }, { x: 74, y: 268 }];
 var NODE_R = 16;
 var DOCK_W = 18;
@@ -820,8 +821,10 @@ function createGraphEngine(canvas) {
   const nodes = /* @__PURE__ */ new Map();
   const particles = [];
   const edgeFlash = /* @__PURE__ */ new Map();
-  const readSlots = [null, null, null];
-  let writeSlotUsed = null;
+  const readSlots = READ_SLOTS.map(() => null);
+  const writeSlots = WRITE_SLOTS.map(() => null);
+  let readCapacity = 1;
+  let writeCapacity = 1;
   let queueView = [];
   let centerFlashT = -1e9;
   let centerFlashColor = ACCENT_RUNNING;
@@ -847,22 +850,20 @@ function createGraphEngine(canvas) {
     for (let i = 0; i < n; i++) addParticle(from.x, from.y, to.x, to.y, color, rnd() * spreadDelay, dur + rnd() * 120, 1.5 + rnd());
   }
   function allocSlot(id, agentType) {
-    if (laneOf(agentType) === "read") {
-      for (let i = 0; i < READ_SLOTS.length; i++) {
-        if (!readSlots[i]) {
-          readSlots[i] = id;
-          return READ_SLOTS[i];
-        }
+    const pool = laneOf(agentType) === "read" ? { slots: readSlots, cap: readCapacity, geo: READ_SLOTS } : { slots: writeSlots, cap: writeCapacity, geo: WRITE_SLOTS };
+    for (let i = 0; i < pool.cap && i < pool.geo.length; i++) {
+      if (!pool.slots[i]) {
+        pool.slots[i] = id;
+        return pool.geo[i];
       }
-      return READ_SLOTS[0];
     }
-    writeSlotUsed = id;
-    return WRITE_SLOT;
+    return pool.geo[0];
   }
   function freeSlot(n) {
     const i = readSlots.indexOf(n.rec.id);
     if (i >= 0) readSlots[i] = null;
-    if (writeSlotUsed === n.rec.id) writeSlotUsed = null;
+    const w = writeSlots.indexOf(n.rec.id);
+    if (w >= 0) writeSlots[w] = null;
   }
   function collect(now) {
     for (const n of [...nodes.values()]) {
@@ -908,8 +909,17 @@ function createGraphEngine(canvas) {
     }
     n.rec.status = to;
   }
-  function applySnapshot(records, queue, histories) {
+  function applyLaneCapacity(lanes) {
+    const capOf = (lane, poolLen) => {
+      const n = Number(lanes && typeof lanes === "object" && lanes[lane] ? lanes[lane].capacity : void 0);
+      return Number.isFinite(n) && n >= 1 ? Math.min(poolLen, Math.floor(n)) : 1;
+    };
+    readCapacity = capOf("read", READ_SLOTS.length);
+    writeCapacity = capOf("write", WRITE_SLOTS.length);
+  }
+  function applySnapshot(records, queue, histories, lanes) {
     if (destroyed) return;
+    applyLaneCapacity(lanes);
     const now = T();
     collect(now);
     const ended = endedByChild(histories);
@@ -1042,8 +1052,8 @@ function createGraphEngine(canvas) {
     ctx.arc(CENTER.x, CENTER.y, ORBIT_R, Math.PI * 0.14, Math.PI * 0.86);
     ctx.stroke();
     ctx.restore();
-    haloText("\u8BFB\u6CF3\u9053 \xB7 \u22643 \u5E76\u884C", 44, 12, `9px ${MONO_FONT}`, LANE_LABEL_COLOR);
-    haloText("\u5199\u6CF3\u9053 \xB7 \u5355\u7EBF", 248, 292, `9px ${MONO_FONT}`, LANE_LABEL_COLOR);
+    haloText(`\u8BFB\u6CF3\u9053 \xB7 ${readCapacity} \u5E76\u884C`, 44, 12, `9px ${MONO_FONT}`, LANE_LABEL_COLOR);
+    haloText(`\u5199\u6CF3\u9053 \xB7 ${writeCapacity} \u5E76\u884C`, 248, 292, `9px ${MONO_FONT}`, LANE_LABEL_COLOR);
     haloText("\u961F\u5217", 26, 250, `9px ${MONO_FONT}`, LANE_LABEL_COLOR);
     for (const n of nodes.values()) {
       const { x, y } = n.pos;
@@ -1262,7 +1272,7 @@ function createGraphEngine(canvas) {
   const stats = () => ({ nodes: nodes.size, particles: particles.length, flashes: edgeFlash.size, running: rafId != null });
   return { applySnapshot, start, destroy, hitTest, stats };
 }
-function GraphCanvas({ records, queue, histories }) {
+function GraphCanvas({ records, queue, histories, lanes }) {
   const canvasRef = React2.useRef(null);
   const engineRef = React2.useRef(null);
   React2.useEffect(() => {
@@ -1278,8 +1288,8 @@ function GraphCanvas({ records, queue, histories }) {
   }, []);
   React2.useEffect(() => {
     const engine = engineRef.current;
-    if (engine) engine.applySnapshot(records, queue, histories);
-  }, [records, queue, histories]);
+    if (engine) engine.applySnapshot(records, queue, histories, lanes);
+  }, [records, queue, histories, lanes]);
   const onMove = (e) => {
     const engine = engineRef.current;
     const canvas = canvasRef.current;
@@ -1300,9 +1310,19 @@ ${shortId(n.rec.id)}` : "";
     style: { display: "block", width: W, height: "auto", maxWidth: "100%" }
   });
 }
-function GraphSection({ records, queue, histories, sessions }) {
+function pickLanes(lanesByParent, parentSessionId) {
+  if (!lanesByParent || typeof lanesByParent !== "object") return void 0;
+  const own = parentSessionId ? lanesByParent[parentSessionId] : void 0;
+  if (own && typeof own === "object") return own;
+  for (const value of Object.values(lanesByParent)) {
+    if (value && typeof value === "object") return value;
+  }
+  return void 0;
+}
+function GraphSection({ records, queue, histories, sessions, lanesByParent }) {
   const [open, setOpen] = React2.useState(true);
   const scope = pickBucket(records, queue, histories, readCurrentSessionId(sessions));
+  const lanes = pickLanes(lanesByParent, scope.parentSessionId);
   const waiting = scope.records.filter((r) => r && r.status === "waiting").length;
   const ownerChip = scope.parentCount > 1 && scope.parentSessionId ? React2.createElement("span", {
     title: scope.parentSessionId,
@@ -1341,7 +1361,7 @@ function GraphSection({ records, queue, histories, sessions }) {
       scope.queue.length > 0 ? React2.createElement("span", { style: { fontSize: 11, color: ACCENT_QUEUE } }, `\u961F\u5217 ${scope.queue.length}`) : null,
       hint ? React2.createElement("span", { style: { fontSize: 11, color: "#777" } }, hint) : null
     ),
-    open ? React2.createElement(GraphCanvas, { records: scope.records, queue: scope.queue, histories: scope.histories }) : null
+    open ? React2.createElement(GraphCanvas, { records: scope.records, queue: scope.queue, histories: scope.histories, lanes }) : null
   );
 }
 
@@ -1563,6 +1583,7 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
     const queues = parentList.flatMap((p) => Array.isArray(p?.queue) ? p.queue.map((w) => ({ ...w, parentSessionId: p.parentSessionId })) : []);
     const helps = parentList.flatMap((p) => Array.isArray(p?.helpRequests) ? p.helpRequests.map((h) => ({ ...h, parentSessionId: p.parentSessionId })) : []);
     const histories = parentList.flatMap((p) => Array.isArray(p?.history) ? p.history.map((r) => ({ ...r, parentSessionId: p.parentSessionId })) : []).sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
+    const lanesByParent = Object.fromEntries(parentList.map((p) => [p.parentSessionId, p?.lanes]));
     const sectionHeader = (title, count, hint) => React3.createElement(
       "div",
       { title: hint, style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 } },
@@ -1602,7 +1623,7 @@ function createOrchestrationPanel({ slots, connection, sessions, timer }) {
       }, `\u26A0 \u5BBF\u4E3B\u7AEF\u7F16\u6392\u5FEB\u7167\u8BFB\u53D6\u5F02\u5E38\uFF08\u88C5\u914D\u5DF2\u5B8C\u6210\uFF0C\u4F46\u6865\u63A5\u51FD\u6570\u629B\u9519\uFF09\uFF1A${bridgeDetail || "\u672A\u63D0\u4F9B\u539F\u56E0"}\uFF1B\u9762\u677F\u505C\u5728\u6700\u540E\u4E00\u6B21\u5B9E\u51B5\uFF0C\u6309\u9000\u907F\u8282\u594F\u81EA\u52A8\u91CD\u8BD5\u3002`) : bridgeProblem === "absent" ? React3.createElement("div", {
         style: { marginBottom: 10, padding: "6px 8px", borderRadius: 6, background: "rgba(244,67,54,0.1)", border: "1px solid rgba(244,67,54,0.3)", fontSize: 12 }
       }, "\u26A0 \u7F16\u6392\u670D\u52A1\u672A\u5C31\u7EEA\uFF1A\u5BBF\u4E3B\u7AEF /dsh-my-go \u65E0\u54CD\u5E94\uFF08\u63D2\u4EF6\u672A\u6FC0\u6D3B\u6216\u4ECD\u5728\u542F\u52A8\uFF09\uFF0C\u9762\u677F\u5C06\u6301\u7EED\u81EA\u52A8\u91CD\u8BD5\u3002") : null,
-      React3.createElement(GraphSection, { records: currents, queue: queues, histories, sessions }),
+      React3.createElement(GraphSection, { records: currents, queue: queues, histories, sessions, lanesByParent }),
       // 运行中：保留区块（空时显示「空闲」，用户习惯看它），等待求助的条目用红色
       React3.createElement(
         "div",
@@ -2111,33 +2132,6 @@ var SETTINGS_CSS = `
   display: flex;
   gap: 4px;
 }
-.mygo-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.mygo-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.07));
-  color: var(--dsw-alias-label-secondary, #999);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-}
-.mygo-chipName {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mygo-chipKill {
-  cursor: pointer;
-  color: var(--dsw-alias-state-error-primary, #e57373);
-  flex-shrink: 0;
-}
 .mygo-detail {
   min-height: 62px;
   max-height: 124px;
@@ -2332,17 +2326,6 @@ function formatDurationHuman(ms) {
 function isValidRoleKey(key) {
   return typeof key === "string" && ROLE_KEY_PATTERN.test(key);
 }
-function normalizeNameList(value) {
-  if (!Array.isArray(value)) return [];
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const entry of value) {
-    if (typeof entry !== "string" || entry === "" || seen.has(entry)) continue;
-    seen.add(entry);
-    out.push(entry);
-  }
-  return out;
-}
 function normalizeRoleRows(value, builtinKeys = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const builtin = new Set(Array.isArray(builtinKeys) ? builtinKeys : []);
@@ -2352,9 +2335,7 @@ function normalizeRoleRows(value, builtinKeys = []) {
     model: typeof row.model === "string" ? row.model : "",
     reasoningEffort: typeof row.reasoningEffort === "string" ? row.reasoningEffort : "",
     fallbacks: Array.isArray(row.fallbacks) ? row.fallbacks : [],
-    persona: typeof row.persona === "string" ? row.persona : "",
-    allow: normalizeNameList(row.toolFilter?.allow),
-    deny: normalizeNameList(row.toolFilter?.deny)
+    persona: typeof row.persona === "string" ? row.persona : ""
   }));
 }
 function withPersonaOverride(existingRow, text2) {
@@ -2568,10 +2549,6 @@ function normalizeForCompare(draft, baseline) {
       normalized[field] = field === "fallbacks" ? normalizeChainRows(stripEmptyFallbackRows({ fallbacks: normalizeChainRows(entry.fallbacks) }).fallbacks) : text(entry[field]).trim();
     }
     normalized.persona = text(entry.persona);
-    normalized.toolFilter = {
-      allow: (Array.isArray(record(entry.toolFilter).allow) ? entry.toolFilter.allow : []).map(String).filter((n) => n !== ""),
-      deny: (Array.isArray(record(entry.toolFilter).deny) ? entry.toolFilter.deny : []).map(String).filter((n) => n !== "")
-    };
     out.roles[key] = normalized;
   }
   const prices = {};
@@ -2652,13 +2629,8 @@ function buildSettingsOps(draft, stored = {}) {
     }
     if (carried && typeof carried === "object") {
       if ("persona" in carried) collect(["roles", key, "persona"], text(carried.persona));
-      const filter = record(carried.toolFilter);
-      for (const side of ["allow", "deny"]) {
-        if (!Array.isArray(filter[side])) continue;
-        collect(["roles", key, "toolFilter", side], filter[side].map(String).filter((name2) => name2 !== ""));
-      }
     }
-    const looksLikeNewRow = carried !== null && typeof carried === "object" && Array.isArray(carried.fallbacks) && carried.toolFilter !== null && typeof carried.toolFilter === "object";
+    const looksLikeNewRow = carried !== null && typeof carried === "object" && Array.isArray(carried.fallbacks);
     if (!(key in storedRoles) && looksLikeNewRow && !fieldOps.some((op) => op.op === "set")) {
       ops.push({ op: "set", path: ["roles", key], value: canonicalRole(src, carried) });
       continue;
@@ -2723,11 +2695,6 @@ function canonicalRole(src, carried) {
   }
   const from = record(carried);
   out.persona = text(from.persona);
-  const filter = record(from.toolFilter);
-  out.toolFilter = {
-    allow: (Array.isArray(filter.allow) ? filter.allow : []).map(String).filter((name2) => name2 !== ""),
-    deny: (Array.isArray(filter.deny) ? filter.deny : []).map(String).filter((name2) => name2 !== "")
-  };
   return out;
 }
 function cleanValue(field, value) {
@@ -2787,22 +2754,16 @@ function renderRolesPane(deps) {
     current,
     writable,
     catalog,
-    tools = [],
-    toolDrafts = {},
-    setToolDrafts,
     importError,
     personaFileErr = {},
-    rosterFailed = false,
     setBinding,
     setChain,
     setPersona,
-    setToolFilter,
     loadBuiltinPersona,
     onExportRole,
     onImportOverwrite,
     onDeleteRole,
-    onRenameRole,
-    onRefreshTools
+    onRenameRole
   } = deps;
   const key = role.key;
   const builtin = role.builtin === true;
@@ -2816,65 +2777,6 @@ function renderRolesPane(deps) {
     const errors = catalog.errors && typeof catalog.errors === "object" ? catalog.errors : {};
     const detail = errors[providerId];
     return typeof detail === "string" && detail !== "" ? detail : "";
-  };
-  const filter = row.toolFilter && typeof row.toolFilter === "object" ? row.toolFilter : {};
-  const namesOf = (side) => Array.isArray(filter[side]) ? filter[side].map(String) : [];
-  const toolList = (side) => {
-    const names = namesOf(side);
-    const pending = toolDrafts?.[key]?.[side] ?? "";
-    const listId = `mygo-tf-${key}-${side}`;
-    const write = (next) => setToolFilter(key, { allow: side === "allow" ? next : namesOf("allow"), deny: side === "deny" ? next : namesOf("deny") });
-    return el(
-      "div",
-      { className: "mygo-field" },
-      el("label", { className: "mygo-label" }, side === "allow" ? "\u5DE5\u5177\u767D\u540D\u5355\uFF08allow\uFF09" : "\u5DE5\u5177\u9ED1\u540D\u5355\uFF08deny\uFF09"),
-      names.length === 0 ? el("div", { className: "mygo-hint" }, side === "allow" ? "\uFF08\u7A7A = \u5168\u91CF\uFF0C\u9664\u5168\u5C40\u63A9\u7801\uFF09" : "\uFF08\u7A7A = \u4E0D\u989D\u5916\u5C4F\u853D\uFF09") : el("div", { className: "mygo-chips" }, names.map((name2, index) => el(
-        "span",
-        { key: `${side}-${name2}-${index}`, title: name2, className: "mygo-chip" },
-        el("span", { className: "mygo-chipName" }, name2),
-        el("span", {
-          role: "button",
-          className: "mygo-chipKill",
-          title: "\u79FB\u9664",
-          "aria-label": `\u79FB\u9664 ${name2}`,
-          onClick: () => {
-            if (!disabled) write(names.filter((_, at) => at !== index));
-          }
-        }, "\xD7")
-      ))),
-      el(
-        "div",
-        { className: "mygo-colFoot" },
-        el("input", {
-          className: "mygo-input mygo-inputMono",
-          value: pending,
-          list: listId,
-          placeholder: "\u5DE5\u5177\u540D\uFF08\u53EF\u70B9\u9009\uFF0C\u4E5F\u53EF\u624B\u586B\u672A\u8FDE\u63A5\u5DE5\u5177\uFF09",
-          disabled,
-          spellCheck: false,
-          onChange: (event) => setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: event.target.value } })),
-          onKeyDown: (event) => {
-            if (event.key === "Enter" && pending.trim() !== "" && !disabled) add();
-          }
-        }),
-        el("datalist", { id: listId }, tools.filter((name2) => !names.includes(name2)).map((name2) => el("option", { key: name2, value: name2 }))),
-        el("button", {
-          className: "mygo-btn mygo-btnMini",
-          disabled: disabled || pending.trim() === "",
-          title: "\u52A0\u5165\u540D\u5355",
-          onClick: add
-        }, "+ \u6DFB\u52A0")
-      )
-    );
-    function add() {
-      const name2 = pending.trim();
-      if (name2 === "" || names.includes(name2)) {
-        setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: "" } }));
-        return;
-      }
-      write([...names, name2]);
-      setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: "" } }));
-    }
   };
   return el(
     "div",
@@ -2931,7 +2833,6 @@ function renderRolesPane(deps) {
         )
       )
     ),
-    builtin ? null : el("div", { className: "mygo-fields" }, toolList("allow"), toolList("deny")),
     builtin ? null : el(
       "div",
       { className: "mygo-field" },
@@ -2960,12 +2861,6 @@ function renderRolesPane(deps) {
         title: "\u4ECE\u8349\u7A3F\u91CC\u5220\u6389\u8FD9\u4E2A\u89D2\u8272\uFF08\u4FDD\u5B58\u540E\u6574\u952E\u4ECE roles \u5B57\u5178\u79FB\u9664\uFF09"
       }, `\u5220\u9664\u300C${key}\u300D`),
       importError ? el("span", { className: "mygo-statusError" }, importError) : null
-    ),
-    builtin ? null : el(
-      "div",
-      { className: "mygo-colFoot" },
-      rosterFailed ? el("span", { className: "mygo-hint" }, "\u5DE5\u5177\u82B1\u540D\u518C\u62C9\u53D6\u5931\u8D25\uFF1A\u540D\u5355\u53EA\u662F\u4E0D\u7ED9\u63D0\u793A\uFF0C\u624B\u586B\u7167\u5E38\u3002") : el("span", { className: "mygo-hint" }, `\u5BBF\u4E3B\u82B1\u540D\u518C ${tools.length} \u4E2A\u5DE5\u5177\u53EF\u70B9\u9009\u3002`),
-      el("button", { className: "mygo-btn mygo-btnMini", onClick: () => onRefreshTools?.(), title: "MCP \u521A\u8FDE\u4E0A\u65B0\u5DE5\u5177\u65F6\u91CD\u62C9\u4E00\u6B21\u540D\u5355" }, "\u5237\u65B0\u82B1\u540D\u518C")
     )
   );
 }
@@ -3159,7 +3054,6 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const [picked, setPicked] = React6.useState(AGENT_TYPES[0]);
   const [pickedPrice, setPickedPrice] = React6.useState(null);
   const [newRoleKey, setNewRoleKey] = React6.useState("");
-  const [toolDrafts, setToolDrafts] = React6.useState({});
   const [importError, setImportError] = React6.useState("");
   const [newPriceKey, setNewPriceKey] = React6.useState("");
   const [personaFileErr, setPersonaFileErr] = React6.useState({});
@@ -3176,7 +3070,6 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const drifted = draft !== null && typeof fence === "number" && typeof snapshot?.revision === "number" && fence !== snapshot.revision;
   const writable = ready && snapshot.writable !== false && snapshot.mode !== "memory";
   const models = useCatalog(catalog);
-  const tools = useToolRoster(connection);
   React6.useEffect(() => {
     if (!dirty) return void 0;
     return attachBeforeUnloadGuard(typeof window === "undefined" ? void 0 : window);
@@ -3260,10 +3153,6 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const setPersona = (key, text2) => stage((prev) => ({
     ...prev,
     roles: { ...prev.roles, [key]: withPersonaOverride(rowOf(key), text2) }
-  }));
-  const setToolFilter = (key, filter) => stage((prev) => ({
-    ...prev,
-    roles: { ...prev.roles, [key]: { ...prev.roles?.[key], toolFilter: { allow: [...filter.allow ?? []], deny: [...filter.deny ?? []] } } }
   }));
   const loadBuiltinPersona = async (key) => {
     if (!connection?.rpc?.call) {
@@ -3441,22 +3330,16 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
           current,
           writable,
           catalog: models,
-          tools: tools.names,
-          rosterFailed: tools.failed,
-          toolDrafts,
-          setToolDrafts,
           importError,
           personaFileErr,
           setBinding,
           setChain,
           setPersona,
-          setToolFilter,
           loadBuiltinPersona,
           onExportRole: exportRole,
           onImportOverwrite: importOverwrite,
           onDeleteRole: deleteRole,
-          onRenameRole: renameRole,
-          onRefreshTools: tools.refresh
+          onRenameRole: renameRole
         }) : null)
       ),
       el3("div", { className: "mygo-detail", "data-role": "role-detail" }, roleDetailText(selectedKey, current))
@@ -3709,7 +3592,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       { className: "mygo-legend" },
       el3("span", null, "\u94FE\uFF1A#1 \u4E3B\u9009\uFF0C#2..N \u5907\u9009\uFF0C\u5931\u8D25\u6309\u5E8F\u964D\u7EA7"),
       el3("span", null, "\u8986\u76D6\uFF1Apersona \u8986\u76D6\u4E86 prompts \u6587\u4EF6\u9ED8\u8BA4"),
-      el3("span", null, "\u672A\u8FDE\u63A5\uFF1A\u5DE5\u5177\u540D\u4E0D\u5728\u5BBF\u4E3B\u82B1\u540D\u518C\uFF08MCP \u672A\u8FDE\u6216\u624B\u586B\uFF09")
+      el3("span", null, "\u5DE5\u5177\u6743\u9650\u7EE7\u627F\u5BBF\u4E3B\uFF1B\u5DE5\u79CD allow/deny \u5DF2\u53D6\u6D88\uFF0C\u65E7 toolFilter \u914D\u7F6E\u4F1A\u88AB\u5FFD\u7565\u3002\u7F16\u6392\u9632\u9012\u5F52\u7EA6\u675F\u4FDD\u7559\u3002")
     ),
     el3(
       "div",
@@ -3741,25 +3624,6 @@ function useCatalog(catalog) {
     catalog?.load?.();
   }, [catalog]);
   return state;
-}
-function useToolRoster(connection) {
-  const [names, setNames] = React6.useState([]);
-  const [failed, setFailed] = React6.useState(false);
-  const load = React6.useCallback(() => {
-    if (!connection?.rpc?.call) return;
-    connection.rpc.call(PANEL_RPC_CHANNEL, PANEL_ENDPOINTS.listTools, {}).then((res) => {
-      if (res && res.ok && Array.isArray(res.value)) {
-        setNames(res.value.filter((name2) => typeof name2 === "string" && name2 !== ""));
-        setFailed(false);
-      } else {
-        setFailed(true);
-      }
-    }).catch(() => setFailed(true));
-  }, [connection]);
-  React6.useEffect(() => {
-    load();
-  }, [load]);
-  return { names, failed, refresh: load };
 }
 function BlockedNotice({ card, scope }) {
   return el3(
@@ -3796,7 +3660,6 @@ function roleDetailText(key, current) {
   const builtin = AGENT_TYPES.includes(key);
   const row = builtin ? current[key] ?? {} : current.roles?.[key] ?? {};
   const chain = composeChain(row);
-  const filter = row.toolFilter ?? {};
   const lines = [
     `${AGENT_LABELS[key] ?? key}\uFF08${key}\uFF09\xB7 ${builtin ? "\u5185\u7F6E\u5DE5\u79CD" : "\u81EA\u5B9A\u4E49\u89D2\u8272"}`,
     `\u6A21\u578B\u4F18\u5148\u7EA7\uFF1A${chain.map((entry, index) => `#${index + 1} ${entry.provider || "\u2014"}/${entry.model || "\u2014"}`).join("  ")}`,
@@ -3804,9 +3667,7 @@ function roleDetailText(key, current) {
   ];
   if (key !== "sisyphus") lines.push(`\u4EBA\u8BBE\u6765\u6E90\uFF1A${personaOverrideSource(current.roles?.[key])}`);
   if (!builtin) {
-    const allow = Array.isArray(filter.allow) ? filter.allow : [];
-    const deny = Array.isArray(filter.deny) ? filter.deny : [];
-    lines.push(`\u5DE5\u5177\u9762\uFF1A\u767D\u540D\u5355 ${allow.length} \u6761${allow.length > 0 ? `\uFF08${allow.join(", ")}\uFF09` : ""}\uFF1B\u9ED1\u540D\u5355 ${deny.length} \u6761${deny.length > 0 ? `\uFF08${deny.join(", ")}\uFF09` : ""}`);
+    lines.push("\u5DE5\u5177\u6743\u9650\u7EE7\u627F\u5BBF\u4E3B\uFF1B\u65E7\u5DE5\u79CD toolFilter \u5DF2\u5FFD\u7565\u3002");
     lines.push("\u6D3E\u53D1\u65F6 go_work \u7528\u952E\u540D\u70B9\u540D\u8BE5\u89D2\u8272\uFF1B\u5220\u9664\u540E\u4E0B\u6B21\u4FDD\u5B58\u6574\u952E\u4ECE roles \u5B57\u5178\u79FB\u9664\u3002");
   }
   return lines.join("\n");
@@ -3884,22 +3745,17 @@ function parseRoleText(text2) {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, error: "JSON \u5FC5\u987B\u662F\u4E00\u4E2A\u89D2\u8272\u5BF9\u8C61" };
   const key = typeof parsed.key === "string" ? parsed.key : "";
-  const filter = parsed.toolFilter && typeof parsed.toolFilter === "object" ? parsed.toolFilter : {};
   const row = {
     provider: typeof parsed.provider === "string" ? parsed.provider : "",
     model: typeof parsed.model === "string" ? parsed.model : "",
     reasoningEffort: typeof parsed.reasoningEffort === "string" ? parsed.reasoningEffort : "",
     fallbacks: Array.isArray(parsed.fallbacks) ? parsed.fallbacks : [],
-    persona: typeof parsed.persona === "string" ? parsed.persona : "",
-    toolFilter: {
-      allow: Array.isArray(filter.allow) ? filter.allow.map(String).filter((name2) => name2 !== "") : [],
-      deny: Array.isArray(filter.deny) ? filter.deny.map(String).filter((name2) => name2 !== "") : []
-    }
+    persona: typeof parsed.persona === "string" ? parsed.persona : ""
   };
   return { ok: true, key, row };
 }
 function blankRole() {
-  return { provider: "", model: "", reasoningEffort: "", fallbacks: [], persona: "", toolFilter: { allow: [], deny: [] } };
+  return { provider: "", model: "", reasoningEffort: "", fallbacks: [], persona: "" };
 }
 function blankPriceRow() {
   return { input: "", output: "", cacheRead: "", cacheWrite: "" };

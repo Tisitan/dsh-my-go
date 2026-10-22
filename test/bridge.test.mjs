@@ -276,8 +276,7 @@ test('empty binding inherits the parent provider route and sets no model', async
 })
 
 test('configured model is applied only when modelExists passes', async () => {
-  // 指定 model：先经 llm.listModels 校验真实存在才应用；不存在的模型只留
-  // provider、model 缺省（回落父会话模型），不得硬塞一个不存在的模型名。
+  // 配置路由必须整对有效；无效路由不向 spawn 写入新 provider 或 model。
   const parent = { id: 'parent-1', session: { header: {} } }
   const specs = []
   const { ctx, dispatch, tools } = mockCtxFull({
@@ -298,7 +297,7 @@ test('configured model is applied only when modelExists passes', async () => {
   // 单线阻塞：先落账第一个子代理，再派第二个
   dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
   await goWork.execute({ agent: 'oracle', prompt: 'deep' }, execOf(parent))
-  assert.deepEqual(specs[1].request.agentOptions, { provider: 'beta' })
+  assert.equal(specs[1].request.agentOptions, undefined)
 })
 
 test('host bindings rebase from baseBindings: unset field falls back to defaults', async () => {

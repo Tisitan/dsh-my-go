@@ -2,6 +2,164 @@
 
 本文件记录本仓（MyGO 编排器）相对上游 [daizihan233/dsh-my-go](https://github.com/daizihan233/dsh-my-go) 的变更。
 
+## [Unreleased]
+
+- 修复 rc.2 工种人设与备选首请求识别：动态提示段读取持久化 descriptor，支持新建与冷恢复。
+- 移除工种工具 allow/deny 的运行时、schema 和编辑器；旧 toolFilter 忽略，宿主安全与通用拓扑约束保留。
+- 完成子代理复活前预占泳道容量，投递失败释放预占，防止并发超额。
+- 报告覆盖改为串行临时文件替换（`writeBoard` / `archiveBoardEntry` 共用同键队列），失败保留正板；台账关闭阻止旧异步写覆盖收尾数据，释放回队槽的推进移出预约作用域。
+- 用量归档不完整时完整重扫，求助挂起后的失败/取消正常收尾释放槽位。
+- 模型路由成对校验，切换后清除不支持的旧 effort；旧绑定迁移仅补写缺席 roles 行。
+- 增加上述缺陷的反例回归与真实 rc.2 合成 provider 生命周期验证。
+
+### 报告机制：防旧报告幻觉、证据格式松绑与长正文暂存
+
+- **`report_fetch` 在飞/排队拦截**（`preset/tools/broker-tools.mjs`）：子代处于
+  `running` / `spawning` / `waiting` 或仍在队列中时，正板位上即便有文件也只是上一代际
+  的残留（复活归档与本轮落板之间的窗口）。此时直接返回 `{ ok: false, message }` 并附
+  「报告尚未就绪，请等完工通知」提示，不读板文件，避免主编把老报告当本轮结论。判定
+  全实例扫描（含属主已换的收养与跨会话场景），未命中才走 `readBoardSlice`，`not-found`
+  语义不变；随 `REPORT_EXT` 开关关时不注册。
+- **复活即新世代**（`preset/tools/broker-delivery.mjs` + `preset/shared/board.mjs`）：
+  `continue`（含 ping 档）与 `forward` 复活已完工子代时，在 `rearmChild` 复籍同一处
+  完成报告代际重置——提交登记与暂存正文清空，旧正板 `<childId>.md` 原子挪为留痕
+  `<childId>.prev.md`（覆盖式，与 `writeBoard` 只留最近一版同律）。归档与落板共用同一
+  张串行队列，不会读到半张板；正板缺席返回 `archived: false` 不抛，归档失败只 `warn`、
+  绝不阻断续派投递。`hasBoardEntry` 只认正板，故上一代际的旧报告不会替新一轮放行终局闸门。
+- **`report_submit` 证据口径松绑**（`preset/shared/report-format.mjs`）：撤销 `evidence`
+  的「路径:行号」正则拦截，改为「必须是字符串数组 + 每项 trim 后非空」——普通路径、URL、
+  `test:` / `image:` 记录、一句说明文字一律放行；空数组或单条占位符（`无` / `/` / `-` /
+  `n/a` / `none`，大小写不敏感）整体归一为「无」，多条目里夹带的占位项在回执视图中剔除。
+- **长正文自动暂存与免重传复用**：字段校验失败时先把本次 `report` 正文存进
+  `childRegistry` 的有界暂存池（`stageReport` / `takeStagedReport` / `dropStagedReport`，
+  FIFO 容量驱逐），错误清单尾部附「已暂存」说明；重调时 `report` 省略、为空或传
+  `（已暂存）` / `(已暂存)` / `[staged]` / `复用` 等占位符即自动回填，免重吐几千字。
+  两次都失败时池内原稿保留；成功提交、复活开新一轮、终局翻篇三处统一清理。
+- **工具描述与全员人设同步松绑**：`report_submit` 工具描述与各工种 `prompts/*.md`
+  收尾协议同步改写（evidence 表述、`report_submit` 成功仅代表报告落板、暂存复用说明），
+  删去「驳回重做、双倍 token 代价」一类旧表述；进度询问应答从四段式简报改为
+  「已完成 / 剩余 / 卡点」三项事实归纳，禁止编造百分比与完成时间。
+- 新增回归：`report_fetch` 在飞拦截、代际归档与 `.prev.md`、占位符回填与池清理、
+  evidence 占位符归一各走正反例（见 `test/report-fetch.test.mjs`、
+  `test/report-submit.test.mjs`、`test/report-format.test.mjs`、`test/report-gate.test.mjs`、
+  `test/board.test.mjs`）。
+
+## [0.6.0] - 2026-10-05
+
+### Added
+
+- **写平面并行池配置项 `writePoolSize`**（broker 行 `config:`，与 `readPoolSize` 对称）：`1` = 关闭（写池退化为串行）、`2~3` = 写平面并发上限、`>3` 钳制 3、非法值回落 1；缺省 `?? 1`。挂载期读一次，不做运行时切换。出厂 `preset/agent.patch.yml` 显式 `3`（一致性 pin 站岗，改回 `2`/`1` 即红）。
+
+### 写平面扩池：双车道各 3、峰值 6 并行 + 口径同步（2026-10-05）
+
+0.4.0 线泳道化（读平面并行池）之后的**写平面侧收官**：写平面从「一次只跑一条」
+扩到「最多 3 条并行」，读平面 3 路不变 ⇒ 双车道各 3、峰值 6 并行。改造沿用
+`readPoolSize` 的既有骨架（容量钳制 / lane 判定 / lane-aware skip / 退化等价），
+写池侧只是把「写 lane 容量恒 1」放开为配置项，调度状态机零新概念。
+
+- **决策由来（防后人再反转）**：2026-09-18 批次的「**写平面保持单线**」针对的是
+  **单任务内部的假并行**——同一个任务的多个步骤之间有验收闸与数据依赖，并行只会
+  把「先做完再验」的顺序打乱；当时的场景里「并发放开」就等于「主编跳闸」。本次是
+  **场景反转**：主人 2026-10-05 拍板放开写池，针对的是**写集不相交、无数据依赖的
+  独立任务真并行**（多条互不相关的任务线同时开工）。两者不矛盾——**并行闸的判据
+  是「写集是否相交 + 有无数据依赖」，不是「任务属读平面还是写平面」**。照此判据，
+  真正的并发投放纪律是：主编并发投放多个写任务前必须确认写集不相交且无数据依赖，
+  并把写集边界写进各施工子代的派工 prompt；步骤间有验收闸或数据依赖的「假并行」
+  一律不许并发投放。**本段是口径锚点：再想反向收紧写池前，先读这一段。**
+- **配置**：`preset/agent.patch.yml` broker 行新增 `writePoolSize: 3`（含注释块：
+  装机口径取上限 3 = 双车道各 3、峰值 6；两池皆 1 才退化为全局单线；防覆盖提醒）。
+- **语义**：
+  - **容量**（`preset/shared/orchestration.mjs`）：新增 `clampWriteCapacity`
+    （与 `clampReadCapacity` 同实现同律：非法值回落 1、`>3` 钳 3、非整向下取整），
+    `capacityOf('write')` 由恒 1 改为读 `writeCapacity`；两池容量互相独立
+    （`writeCapacity` 不波及读池，反之亦然）。`broker.mjs` 挂载期
+    `WRITE_POOL_SIZE = clampWriteCapacity(config.writePoolSize ?? 1)`，同
+    `READ_POOL_SIZE` 一律读一次不热更。
+  - **lane 内 FIFO / 跨 lane 不阻塞**结构不变：写池满则写任务在该 lane 内排队、
+    读池满则读任务入队，另一条 lane 有空位照常上岗（写池满不挡读任务，读池满不挡
+    写任务）。
+  - **卡死语义**：`need_help` 挂起仍占自己那条槽（语义不变），但写槽满池为 3 ⇒
+    单点挂起/卡死只占 1/3，不再全线冻结，其余车道照跑。
+  - **退化语义**：**两池皆 1（`readPoolSize=1` 且 `writePoolSize=1`）才退化为全局
+    单线**，与旧行为逐字节等价——单池为 1 不再是全局单线的充分条件。
+  - **快照增发容量事实**：`Orchestration.snapshot()` 新增
+    `lanes: { read: { capacity }, write: { capacity } }`——只发容量不发占用（占用数
+    消费侧从 `currentRecords` 自算，避免同一事实两处漂移）；broker `bump()` 的
+    `{ parentSessionId, ...orch.snapshot() }` 自动并进每桶，
+    `lib/index.js` `trimSnapshotForPanel` 显式放行该字段（该函数是「`...bucket` 透传
+    + 逐字段覆写」混合体，此行是显式放行口径而非功能必需）。
+- **面板星图容量化**（`src/panel-graph.js` + `src/panel-tree.js`）：写池扩池后星图仍
+  画单写槽 + 硬编码「写泳道 · 单线」，重启即向用户展示错误信息——本批改为**两泳道
+  同构的容量感知渲染**：槽位池按快照 `capacity` 取前 N 槽（满则回落首槽，真闸在
+  broker 侧容量判定），标签内插为「读/写泳道 · N 并行」；坏值/缺省回落 1（= 单槽
+  形态），容量上限对齐槽池长度。写槽池 = 读弧关于中心水平线的镜像（中心优先），
+  容量 1 时落在 (148,255)——即改造前单写槽原位，视觉与动画逐像素兼容（既有断言
+  「写泳道单槽 → [148,255]」未改仍绿）。数据链：`panel-tree.js` 单列投影
+  `lanesByParent`（拍平的 records 列表会丢掉桶级事实）→ `GraphSection` 按
+  `pickBucket` 选中的同一个桶取容量（`pickLanes`：桶 id 对不上时退到任一「同配置桶」，
+  消除空图/降级桶状态显示「1 并行」与装机不符；一个桶都没有才回落 1）→ `GraphCanvas`
+  → `engine.applySnapshot(..., lanes)`。
+  注：`docs/design/panel-graph-demo.html`（冻结稿 v1.2）仍是单写槽 + 「单线」文案，
+  属设计基准稿，未随本批同步（另行报备）。
+- **工具面**：`go_work` 描述串读写两池容量各自内插实际装机值（旧「写平面一次只跑
+  一条」硬编码口径退役）；`orchestration_status` 多任务在飞时追加汇总行
+  `lanes: read x/y · write x/y`（读占用/容量 · 写占用/容量）。
+- **提示词口径**（`prompts/sisyphus.md`）：编排规则泳道调度段改写为双车道口径
+  （写平面最多 3 条并行、容量 = `writePoolSize` 装机值、默认 1 钳 [1,3] 挂载期读一次），
+  并新增**并发投放纪律**（写集不相交 + 无数据依赖 + 派工 prompt 互告写集边界，
+  假并行不许并发投放）与**卡死语义**（单点挂起只占 1/3）两条；「多任务线台账」第 5 条
+  泳道约束同步改写；逐步质检条款补「写平面扩池放开的只是独立任务真并行」限定；
+  心跳节补槽位按 lane 计的口径；`orchestration_status` 的 lanes 汇总行格式入册。
+- **文档**：README 泳道章节由「泳道读池」扩为「泳道双池」（读写两池对称说明 + 双车道
+  各 3 峰值 6 + 退化语义 + 并发投放纪律）；配置表新增 `writePoolSize` 行、
+  `readPoolSize` 行同步对称化；术语表「泳道」、拓扑段与架构段叙述同步；
+  `docs/ARCHITECTURE.md` §2.8 标题由「读平面并行池」扩为「泳道并行池（readPoolSize /
+  writePoolSize）」（容量条对称化、退化判据改「两池皆 1」、补卡死语义与决策由来指针）。
+- **架构口号收口**（自 9-18 读池扩 3 起即已过时的门面表述，随本批一并统一）：
+  `星型 + 单线嵌套` → `星型嵌套 + 双泳道池化`（README 首段与特性条、AGENTS.md 拓扑
+  小节标题、ARCHITECTURE.md 文首）；`单线阻塞` → `泳道阻塞（读/写双池各自计数）`
+  （AGENTS.md「执行模式」条、「同一时段只能有一个智能体运行」改为「并发受泳道容量
+  约束（装机双车道各 3、峰值 6）」；ARCHITECTURE.md 文首「执行模式」条、§2.1 节标题、
+  §2.1 复活段、模块职责表 `orchestration.mjs` 行、FORK-GUIDE 共享源清单与职责表）；
+  `package.json` `description` 字段同步（仅该字段，版本号另见上）。
+- **B2 返修批（随版与口径收口）**：`package-lock.json` 两处 `version` 随版
+  （0.5.0 → 0.6.0，同 0.5.0 发版 commit ee6d7c8 的改法），`docs/FORK-GUIDE.md`
+  发版固定动作补一条「package-lock.json 同步随版（两处 version）」；
+  FORK-GUIDE 职责表 `go_work` 行的闸门描述由 `isBusy()` 改为**实际口径**
+  `!orch.isLaneFree(laneOf(agentType))`（broker-scheduler.mjs:299；`isBusy()` 已无
+  生产调用点）；`docs/ARCHITECTURE.md` 模块表 `orchestration.mjs` 行补快照 `lanes`
+  字段；README 星图图注改为如实口吻（实现已多槽、图示仍为旧单写槽设计稿，重出另行
+  报备）；`docs/plans/read-pool-semantics.md` §八退化判据补一行前向指针（0.6.0 起
+  两池皆 1 才全局单线，见本条目），历史叙述不回改；`test/lane-scheduling.test.mjs`
+  文件头读池批与写池批覆盖清单合并叙述（用例名不动）。
+- **测试钉**（733 → 744，全绿）：
+  - `test/lane-scheduling.test.mjs` T10/T11/T12：写池 3 端到端（三条写任务同时在飞 +
+    第四条入队 + 写池 3/3 满时读任务仍越过上岗 + 释放槽位后 lane 内 FIFO 补位 +
+    `lanes: read x/y · write x/y` 汇总行上屏）；工具描述串写容量内插（缺省 1 →
+    `up to 1`、显式 3 → `up to 3`，且旧「one at a time」硬编码口径退役）；非法值回落
+    1 与 `>3` 钳 3 的端到端形态。
+  - `test/orchestration.test.mjs`：`clampWriteCapacity` 钳制对称钉（与读池同律、
+    两池容量互相独立）、写池 3 数据层钉（写 lane 三条在飞未满 / 第四条即满 / 写池满
+    不冻读 lane）、**退化等价钉**（`write=1` 状态下对 readCap 1/2/3 × 七种在飞形态
+    与改造前判定式逐点同判；两池皆 1 时 `isLaneFree` 两线皆退化为「全局空才 free」、
+    `isBusy` 与旧 `size>0` 逐点等价）。
+  - `test/report-clause.test.mjs`：出厂 yml `writePoolSize` 显式 3 的一致性 pin
+    （真 yaml 解析，与 `readPoolSize` pin 同范式）。
+  - `test/relay-chain-relay.test.mjs` R2-w3 写池放开探针：`writePoolSize=3` 下写池
+    满负荷（hop + 两条人派写同时在飞）时，链内在飞 hop 恒 1——写池放开的是**跨任务**
+    并发，链内 hop 串行性由状态机自身保证（与 R2-p3 读池侧正交互补）。
+  - 同文件 R2-w3b 写池满员断面（与 R2-w3 互补）：放行 gated 写跳前先用三条人派写任务
+    把写池灌满 3/3 → `chain_resolve` 后 hop **落队**而非超容顶进（`spawned` 数不变 +
+    写 lane 恒 3/3 + `queue.length===1`）→ 释放一槽才换手（写 lane 仍 3/3、队列清空、
+    spawn 恰 +1）。**红绿实证**：影子副本上把 `isLaneFree` 变异为 `return true`（取消
+    容量判定）→ 用例在「满写池下 hop 落队」处超时红；恢复后绿。
+  - `test/panel-graph.test.mjs` 新增两枚星图容量钉（写泳道 `capacity=3` → 三槽铺开
+    `[148,255]/[74,224]/[222,224]` + 标签内插「写泳道 · 3 并行」+ 旧「单线」文案退役
+    + 缺省/坏值回落 1；读泳道 `capacity=2` → 取前两槽 + 标签「读泳道 · 2 并行」）；
+    既有 hitTest 用例同步传 `lanes`（`read.capacity=3`）——该断言量的是「最右缘槽
+    222,76 的归一精度」，容量缺省下读槽只剩 1 个，须显式给容量才能维持原测量面
+    （语义未变，只补数据入参）。
+
 ## [0.5.0] - 2026-09-30
 
 ### Added

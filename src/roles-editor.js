@@ -3,8 +3,7 @@
  *
  * The right-hand column of the 模型与角色 block: everything you can change about
  * the *selected* role. Built-in and custom roles share the pane; a custom row
- * additionally gets the tool allow/deny lists, the card JSON export/overwrite and
- * the delete, because those fields only exist on custom rows of the roles dict.
+ * additionally gets card JSON export/overwrite and delete controls.
  *
  * Pure render function: no state, no draft knowledge beyond what it is handed.
  * Every mutation leaves through a callback the page owns (which is what stamps
@@ -29,7 +28,6 @@ export const effortLabel = (value) => (value === ''
  * @param deps.current - the page draft (promoted shape).
  * @param deps.writable - false disables every control and every callback.
  * @param deps.catalog - `{ providers, models, errors }` model-catalog snapshot.
- * @param deps.tools - the host tool roster (datalist suggestions only).
  * @returns the pane tree.
  */
 export function renderRolesPane(deps) {
@@ -38,22 +36,16 @@ export function renderRolesPane(deps) {
     current,
     writable,
     catalog,
-    tools = [],
-    toolDrafts = {},
-    setToolDrafts,
     importError,
     personaFileErr = {},
-    rosterFailed = false,
     setBinding,
     setChain,
     setPersona,
-    setToolFilter,
     loadBuiltinPersona,
     onExportRole,
     onImportOverwrite,
     onDeleteRole,
     onRenameRole,
-    onRefreshTools,
   } = deps
   const key = role.key
   const builtin = role.builtin === true
@@ -72,61 +64,6 @@ export function renderRolesPane(deps) {
     const detail = errors[providerId]
     return typeof detail === 'string' && detail !== '' ? detail : ''
   }
-  const filter = row.toolFilter && typeof row.toolFilter === 'object' ? row.toolFilter : {}
-  const namesOf = (side) => (Array.isArray(filter[side]) ? filter[side].map(String) : [])
-  const toolList = (side) => {
-    const names = namesOf(side)
-    const pending = toolDrafts?.[key]?.[side] ?? ''
-    const listId = `mygo-tf-${key}-${side}`
-    const write = (next) => setToolFilter(key, { allow: side === 'allow' ? next : namesOf('allow'), deny: side === 'deny' ? next : namesOf('deny') })
-    return el('div', { className: 'mygo-field' },
-      el('label', { className: 'mygo-label' }, side === 'allow' ? '工具白名单（allow）' : '工具黑名单（deny）'),
-      names.length === 0
-        ? el('div', { className: 'mygo-hint' }, side === 'allow' ? '（空 = 全量，除全局掩码）' : '（空 = 不额外屏蔽）')
-        : el('div', { className: 'mygo-chips' }, names.map((name, index) => el('span', { key: `${side}-${name}-${index}`, title: name, className: 'mygo-chip' },
-          el('span', { className: 'mygo-chipName' }, name),
-          el('span', {
-            role: 'button',
-            className: 'mygo-chipKill',
-            title: '移除',
-            'aria-label': `移除 ${name}`,
-            onClick: () => { if (!disabled) write(names.filter((_, at) => at !== index)) },
-          }, '×'),
-        ))),
-      el('div', { className: 'mygo-colFoot' },
-        el('input', {
-          className: 'mygo-input mygo-inputMono',
-          value: pending,
-          list: listId,
-          placeholder: '工具名（可点选，也可手填未连接工具）',
-          disabled,
-          spellCheck: false,
-          onChange: (event) => setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: event.target.value } })),
-          onKeyDown: (event) => {
-            if (event.key === 'Enter' && pending.trim() !== '' && !disabled) add()
-          },
-        }),
-        el('datalist', { id: listId }, tools.filter((name) => !names.includes(name)).map((name) => el('option', { key: name, value: name }))),
-        el('button', {
-          className: 'mygo-btn mygo-btnMini',
-          disabled: disabled || pending.trim() === '',
-          title: '加入名单',
-          onClick: add,
-        }, '+ 添加'),
-      ),
-    )
-
-    function add() {
-      const name = pending.trim()
-      if (name === '' || names.includes(name)) {
-        setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: '' } }))
-        return
-      }
-      write([...names, name])
-      setToolDrafts?.((prev) => ({ ...prev, [key]: { ...prev?.[key], [side]: '' } }))
-    }
-  }
-
   return el('div', { className: 'mygo-col', 'data-pane': 'role' },
     el('div', { className: 'mygo-colHead' },
       el('span', { className: 'mygo-label' }, `正在编辑：${role.label}`),
@@ -175,7 +112,6 @@ export function renderRolesPane(deps) {
         ),
     ),
 
-    builtin ? null : el('div', { className: 'mygo-fields' }, toolList('allow'), toolList('deny')),
 
     builtin ? null : el('div', { className: 'mygo-field' },
       el('label', { className: 'mygo-label' }, '角色键名'),
@@ -204,12 +140,7 @@ export function renderRolesPane(deps) {
       importError ? el('span', { className: 'mygo-statusError' }, importError) : null,
     ),
 
-    builtin ? null : el('div', { className: 'mygo-colFoot' },
-      rosterFailed
-        ? el('span', { className: 'mygo-hint' }, '工具花名册拉取失败：名单只是不给提示，手填照常。')
-        : el('span', { className: 'mygo-hint' }, `宿主花名册 ${tools.length} 个工具可点选。`),
-      el('button', { className: 'mygo-btn mygo-btnMini', onClick: () => onRefreshTools?.(), title: 'MCP 刚连上新工具时重拉一次名单' }, '刷新花名册'),
-    ),
+
   )
 }
 
