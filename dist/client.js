@@ -219,13 +219,26 @@ function combineCosts(costs) {
   }
   return seen ? { value, partial } : null;
 }
+function spentTokens(buckets) {
+  for (const [bucket] of COST_TERMS) {
+    const tokens = buckets?.[bucket];
+    if (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0) return true;
+  }
+  return false;
+}
 function computeChildCost(child, priceIndex) {
   const segments = Array.isArray(child?.segments) ? child.segments : [];
-  return combineCosts(segments.map((segment) => computeCost(segment?.buckets, priceIndex[priceKey(segment?.provider, segment?.model)])));
+  const costs = segments.map((segment) => computeCost(segment?.buckets, priceIndex[priceKey(segment?.provider, segment?.model)]));
+  const merged = combineCosts(costs);
+  if (!merged || merged.partial) return merged;
+  return { ...merged, partial: segments.some((segment, i) => !costs[i] && spentTokens(segment?.buckets)) };
 }
 function computeTotalCost(report) {
   const byModel = Array.isArray(report?.byModel) ? report.byModel : [];
-  return combineCosts(byModel.map((row) => computeCost(row?.buckets, row?.price)));
+  const costs = byModel.map((row) => computeCost(row?.buckets, row?.price));
+  const merged = combineCosts(costs);
+  if (!merged || merged.partial) return merged;
+  return { ...merged, partial: byModel.some((row, i) => !costs[i] && spentTokens(row?.buckets)) };
 }
 function hasAnyPrice(byModel) {
   return Array.isArray(byModel) && byModel.some((row) => !!row?.price);
@@ -293,6 +306,7 @@ function usageEmptyState(usage) {
   return null;
 }
 function globalPartial(report) {
+  if (report?.partial === true) return true;
   const children = Array.isArray(report?.children) ? report.children : [];
   if (children.some((c) => c?.partial === true)) return true;
   const byModel = Array.isArray(report?.byModel) ? report.byModel : [];
@@ -543,6 +557,7 @@ ${extras}` : ""}`),
     const byModel = Array.isArray(report.byModel) ? report.byModel : [];
     const totalCost = computeTotalCost(report);
     const totalCostShown = totalCost ? { ...totalCost, partial: totalCost.partial || partial } : null;
+    const lowerBound = partial || Boolean(totalCostShown?.partial);
     const stat = (label, value, title) => React.createElement(
       "div",
       { key: label, title, style: { padding: "2px 0" } },
@@ -572,7 +587,15 @@ ${extras}` : ""}`),
         { style: { color: "#888", fontSize: 11, marginTop: 6 } },
         `\u5B50\u4EE3 ${childRowCount(report)} \xB7 \u6A21\u578B\u6BB5 ${byModel.length} \xB7 \u6D88\u606F ${sumMessageCount(report)} \u6761`
       ),
-      partial ? React.createElement("div", { style: { color: "#777", fontSize: 10, marginTop: 2 } }, "\u5E26 \u2265 \u7684\u6570\u5B57\u4E3A\u4E0B\u754C\uFF1A\u90E8\u5206\u5206\u6876\u672A\u4E0A\u62A5\u6216\u626B\u63CF\u4E0D\u5B8C\u6574\uFF0C\u5982\u5B9E\u4E0D\u8BA1\u5165\u3002") : null
+      // 下界说明的触发面（B2 闸 F5）：token 侧（partial = 分桶未上报/扫描不完整）
+      // **或**费用侧（totalCost 参与换算的模型里有未配价但确有消耗的）任一成立就要
+      // 说明。旧实现只看 token 侧，于是「桶全报齐 + 有模型没配单价」时合计明明印着
+      // 「≥」却没有任何一行解释「≥ 从哪来」。
+      lowerBound ? React.createElement(
+        "div",
+        { style: { color: "#777", fontSize: 10, marginTop: 2 } },
+        partial ? "\u5E26 \u2265 \u7684\u6570\u5B57\u4E3A\u4E0B\u754C\uFF1A\u90E8\u5206\u5206\u6876\u672A\u4E0A\u62A5\u6216\u626B\u63CF\u4E0D\u5B8C\u6574\uFF0C\u5982\u5B9E\u4E0D\u8BA1\u5165\u3002" : "\u5E26 \u2265 \u7684\u6570\u5B57\u4E3A\u4E0B\u754C\uFF1A\u6709\u6A21\u578B\u672A\u914D\u5355\u4EF7\u4F46\u786E\u6709 token \u6D88\u8017\uFF0C\u5176\u8D39\u7528\u672A\u8BA1\u5165\u5408\u8BA1\u3002"
+      ) : null
     );
   };
   const renderBody = () => {
@@ -2763,7 +2786,11 @@ function renderRolesPane(deps) {
     onExportRole,
     onImportOverwrite,
     onDeleteRole,
-    onRenameRole
+    onRenameRole,
+    // 自定义角色「角色键名」输入框的受控草稿与写入口（P2，见下方输入框注释）。
+    // 内置角色不渲染该输入框，故两者对内置行是无关参数。
+    roleKeyDraft,
+    onRoleKeyDraftChange
   } = deps;
   const key = role.key;
   const builtin = role.builtin === true;
@@ -2837,16 +2864,29 @@ function renderRolesPane(deps) {
       "div",
       { className: "mygo-field" },
       el("label", { className: "mygo-label" }, "\u89D2\u8272\u952E\u540D"),
+      // 受控草稿（P2）：value 必须是页面持有的草稿，不能直接绑 `key`——绑 key 时
+      // 每敲一个字符都会被下一次渲染刷回旧键名，输入框实际只读，失焦改名永不触发。
+      // 失焦三态：未改/清空 → 回落到原键名；被拒（renameRole 返回 false，非法或
+      // 重名，提示走 importError）→ 回滚到原键名；成功 → renameRole 已 setPicked(next)，
+      // 选中换人 ⇒ 草稿自动回落到新键名（无需在这里再写一次）。
       el("input", {
         className: "mygo-input mygo-inputMono",
-        value: key,
+        "data-role": "role-key",
+        value: roleKeyDraft,
         disabled,
         spellCheck: false,
+        onChange: (event) => onRoleKeyDraftChange?.(event.target.value),
         onBlur: (event) => {
-          const next = event.target.value.trim();
-          if (!disabled && next !== "" && next !== key) onRenameRole?.(key, next);
+          const next = String(event.target.value ?? "").trim();
+          if (disabled) return;
+          if (next === "" || next === key) {
+            if (next !== key) onRoleKeyDraftChange?.(key);
+            return;
+          }
+          const renamed = onRenameRole?.(key, next) !== false;
+          if (!renamed) onRoleKeyDraftChange?.(key);
         },
-        title: "\u6539\u540D\u8BF7\u76F4\u63A5\u5728\u89D2\u8272\u6E05\u5355\u91CC\u65B0\u5EFA + \u5220\u9664\uFF1B\u8FD9\u91CC\u5931\u7126\u5373\u5C1D\u8BD5\u91CD\u547D\u540D"
+        title: "\u5931\u7126\u5373\u5C1D\u8BD5\u6539\u540D\uFF1A\u5408\u6CD5\u4E14\u672A\u91CD\u540D\u7684\u952E\u540D\u7ACB\u5373\u751F\u6548\uFF08\u8349\u7A3F\u6001\uFF0C\u70B9\u300C\u7ACB\u5373\u4FDD\u5B58\u300D\u624D\u843D\u76D8\uFF09"
       })
     ),
     builtin ? null : el(
@@ -3048,10 +3088,19 @@ function useScopeSnapshot(scope) {
 }
 function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const [draft, setDraft] = React6.useState(null);
+  const [draftCell] = React6.useState(() => ({ current: null }));
+  draftCell.current = draft;
+  const [roleKeyDraft, setRoleKeyDraft] = React6.useState(null);
+  const [roleKeyDraftFor, setRoleKeyDraftFor] = React6.useState(null);
   const [fence, setFence] = React6.useState(null);
   const [saving, setSaving] = React6.useState(false);
   const [message, setMessage] = React6.useState(null);
   const [picked, setPicked] = React6.useState(AGENT_TYPES[0]);
+  const pickRole = (key) => {
+    setPicked(key);
+    setRoleKeyDraft(null);
+    setRoleKeyDraftFor(null);
+  };
   const [pickedPrice, setPickedPrice] = React6.useState(null);
   const [newRoleKey, setNewRoleKey] = React6.useState("");
   const [importError, setImportError] = React6.useState("");
@@ -3075,7 +3124,11 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
     return attachBeforeUnloadGuard(typeof window === "undefined" ? void 0 : window);
   }, [dirty]);
   const stage = (updater) => {
-    setDraft((prev) => updater(prev ?? stored ?? emptyDraft()));
+    setDraft((prev) => {
+      const next = updater(prev ?? stored ?? emptyDraft());
+      draftCell.current = next;
+      return next;
+    });
     if (draft === null && typeof snapshot?.revision === "number") setFence(snapshot.revision);
     setMessage(null);
   };
@@ -3086,25 +3139,35 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   };
   const discardAndReload = () => {
     setDraft(null);
+    draftCell.current = null;
     setFence(null);
     setMessage(null);
     reload();
   };
   const save = async () => {
     if (!draft || !writable || saving) return;
+    const submittedDraft = draft;
     setSaving(true);
     setMessage(null);
     try {
-      const ops = buildSettingsOps(draft, layers);
+      const ops = buildSettingsOps(submittedDraft, layers);
       const before = { value: snapshot.value, base: snapshot.base };
       await scope.mutate(ops, typeof fence === "number" ? fence : void 0);
       const after = scope.getSnapshot();
-      const landed = ready && after?.status === "ready" && writeLanded(draft, before, ops) && compareKey(draft, draftFromSection(after.value)) === compareKey(draftFromSection(after.value));
+      const landed = ready && after?.status === "ready" && writeLanded(submittedDraft, before, ops) && compareKey(submittedDraft, draftFromSection(after.value)) === compareKey(draftFromSection(after.value));
       const unserved = landed ? [] : unservedSections(ops, [before.value, after?.value]);
-      setMessage(describeSaveOutcome(landed, after?.revision, unserved));
+      const latestDraft = draftCell.current;
+      const superseded = landed && latestDraft !== null && compareKey(latestDraft, submittedDraft) !== compareKey(submittedDraft, submittedDraft);
+      const outcome = describeSaveOutcome(landed, after?.revision, unserved);
+      setMessage(superseded ? { ...outcome, text: `${outcome.text}\uFF1B\u4FDD\u5B58\u671F\u95F4\u7684\u65B0\u6539\u52A8\u5C1A\u672A\u4FDD\u5B58\uFF0C\u8BF7\u518D\u4FDD\u5B58\u4E00\u6B21` } : outcome);
       if (landed) {
-        setDraft(null);
-        setFence(null);
+        if (superseded) {
+          setFence(typeof after?.revision === "number" ? after.revision : null);
+        } else {
+          setDraft(null);
+          draftCell.current = null;
+          setFence(null);
+        }
       }
     } catch (error) {
       setMessage({ ok: false, text: `\u5199\u5165\u901A\u9053\u5F02\u5E38\uFF1A${String(error)}` });
@@ -3176,7 +3239,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
     if (!writable || !isValidRoleKey2(key, customRows)) return;
     stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: blankRole() } }));
     setNewRoleKey("");
-    setPicked(key);
+    pickRole(key);
     setImportError("");
   };
   const deleteRole = (key) => {
@@ -3185,13 +3248,13 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       delete roles[key];
       return { ...prev, roles };
     });
-    setPicked(AGENT_TYPES[0]);
+    pickRole(AGENT_TYPES[0]);
   };
   const renameRole = (from, to) => {
     const next = String(to).trim();
     if (!isValidRoleKey2(next, customRows)) {
       setImportError(`\u952E\u540D\u300C${next}\u300D\u975E\u6CD5\u6216\u5DF2\u5B58\u5728\uFF08\u5185\u7F6E\u540D\u4E0E\u5C0F\u5199-\u89C4\u5219\u540C\u6837\u62D2\u6536\uFF09`);
-      return;
+      return false;
     }
     stage((prev) => {
       const roles = { ...prev.roles };
@@ -3199,8 +3262,9 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       delete roles[from];
       return { ...prev, roles };
     });
-    setPicked(next);
+    pickRole(next);
     setImportError("");
+    return true;
   };
   const exportRole = async (key) => {
     const json = JSON.stringify({ key, ...current.roles?.[key] }, null, 2);
@@ -3233,7 +3297,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       return;
     }
     stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: parsed.row } }));
-    setPicked(key);
+    pickRole(key);
     setImportError("");
   };
   const priceKeys = Object.keys(current.usagePrices ?? {}).sort();
@@ -3300,7 +3364,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
               "data-selected": entry.key === selectedKey,
               className: "mygo-listRow",
               title: `${entry.label} \xB7 ${entry.meta}`,
-              onClick: () => setPicked(entry.key)
+              onClick: () => pickRole(entry.key)
             },
             el3("span", { className: "mygo-rowName" }, entry.label),
             el3("span", { className: "mygo-rowMeta" }, entry.meta),
@@ -3339,7 +3403,14 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
           onExportRole: exportRole,
           onImportOverwrite: importOverwrite,
           onDeleteRole: deleteRole,
-          onRenameRole: renameRole
+          onRenameRole: renameRole,
+          // 键名输入框的受控草稿：只在「仍是同一个选中角色」时生效，否则回落到
+          // 当前选中键名（切换/改名成功后自动重置）。
+          roleKeyDraft: roleKeyDraftFor === selectedKey && roleKeyDraft !== null ? roleKeyDraft : selectedKey,
+          onRoleKeyDraftChange: (value) => {
+            setRoleKeyDraft(value);
+            setRoleKeyDraftFor(selectedKey);
+          }
         }) : null)
       ),
       el3("div", { className: "mygo-detail", "data-role": "role-detail" }, roleDetailText(selectedKey, current))
@@ -3942,9 +4013,14 @@ function createCatalogStore(remote) {
       return fetchCatalog();
     },
     reset() {
+      generation += 1;
       started = false;
       state = empty;
       publish();
+      if (listeners.size > 0) {
+        started = true;
+        void fetchCatalog();
+      }
     }
   };
 }

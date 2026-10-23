@@ -100,22 +100,50 @@ export function combineCosts(costs) {
 }
 
 /**
+ * 这一份桶里有没有**真花掉的 token**（四桶任一为有限正数）。判据与
+ * computeCost 的「未定价桶 token>0 ⇒ partial」同源：0 不算、null/NaN 不算
+ * （未上报由 Z1 的行级 partial 承担，这里不重复判定）。
+ */
+function spentTokens(buckets) {
+  for (const [bucket] of COST_TERMS) {
+    const tokens = buckets?.[bucket]
+    if (typeof tokens === 'number' && Number.isFinite(tokens) && tokens > 0) return true
+  }
+  return false
+}
+
+/**
  * One child's cost = sum over its segments, each priced through the byModel
  * index. A child priced only partially contributes only its priced segments —
  * which is exactly the D4 lower-bound semantics once `partial` is OR-ed in by
  * the caller.
+ *
+ * P2: "merged is non-null" only proves *some* segment was priced. A segment on
+ * a wholly unpriced model (price=null → computeCost null) with real token spend
+ * contributes no money at all, so the figure is a lower bound — and nothing else
+ * would say so (its own row shows '—', and the row-level usage partial only
+ * covers unreported buckets, Z1). Two models × 1M tokens with a price for one
+ * of them is the canonical case: without this flag the panel prints the priced
+ * half as if it were the whole cost.
  */
 export function computeChildCost(child, priceIndex) {
   const segments = Array.isArray(child?.segments) ? child.segments : []
-  return combineCosts(segments.map((segment) => (
+  const costs = segments.map((segment) => (
     computeCost(segment?.buckets, priceIndex[priceKey(segment?.provider, segment?.model)])
-  )))
+  ))
+  const merged = combineCosts(costs)
+  if (!merged || merged.partial) return merged
+  return { ...merged, partial: segments.some((segment, i) => !costs[i] && spentTokens(segment?.buckets)) }
 }
 
 /** Global cost = sum over byModel rows (they cover every segment of every child). */
 export function computeTotalCost(report) {
   const byModel = Array.isArray(report?.byModel) ? report.byModel : []
-  return combineCosts(byModel.map((row) => computeCost(row?.buckets, row?.price)))
+  const costs = byModel.map((row) => computeCost(row?.buckets, row?.price))
+  const merged = combineCosts(costs)
+  if (!merged || merged.partial) return merged
+  // 同上（P2）：整行未定价但确有 token 消耗的模型让总额成为下界。
+  return { ...merged, partial: byModel.some((row, i) => !costs[i] && spentTokens(row?.buckets)) }
 }
 
 /** Hide-the-cost-column verdict: no priced row anywhere → token-only panel (D5 Z3/Z13). */
@@ -229,8 +257,16 @@ export function usageEmptyState(usage) {
   return null
 }
 
-/** Global partial = OR over children (falls back to byModel), drives '≥' on totals. */
+/**
+ * Global partial = OR over children (falls back to byModel), drives '≥' on
+ * totals. `report.partial` is the third source (P2): the aggregator sets it when
+ * child *enumeration* was incomplete (listChildren failed, or the ledger hit its
+ * HISTORY_CAP with no second source), which no per-row flag can express — the
+ * missing child simply has no row. Without it the totals would present a lower
+ * bound as a complete figure.
+ */
 export function globalPartial(report) {
+  if (report?.partial === true) return true
   const children = Array.isArray(report?.children) ? report.children : []
   if (children.some((c) => c?.partial === true)) return true
   const byModel = Array.isArray(report?.byModel) ? report.byModel : []

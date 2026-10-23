@@ -26,7 +26,7 @@ token 聚合与价格解耦：单价热更零失效成本，聚合缓存永不�
 | F3 | 模型归因最权威：`request/header` 事件 `data.config.{provider,model}`（`EpochHeader.config: LlmCallConfig`，含 provider/model/reasoningEffort/sampling） | dsh-session types.d.ts:196-210 |
 | F4 | live 快路径：`ctx.get('sessions')?.get?.(childId)` + `sessionEvents()`（`snapshotEvents` 特性探测适配；坏档/已关闭回落空数组） | preset/tools/broker.mjs:548-565 |
 | F5 | continuable 子代 end 时 live store **先摘除**（capture→dispose→settle，subagent/end 晚于摘除发射）→ 持久化档案是主路径：`readFileSync` + `scanZstdFrameRanges` + `zstdDecompressSync` 逐帧解压 + 逐行 `JSON.parse`（截断末行跳过） | broker.mjs:543-547 注释；preset/shared/archive.mjs:147-207 |
-| F6 | 子代枚举持久权威：台账 `DSH_HOME/dsh-my-go/orchestration-ledger.json`，无上限；`childOwner`/`sessionTypes` 内存表是 broker 侧互补（lib 半不可达，本契约不依赖） | broker.mjs:354；preset/shared/child-registry.mjs:38-46 |
+| F6 | 子代枚举是**双源合并去重**，都不是无上限：① 台账 `DSH_HOME/dsh-my-go/orchestration-ledger.json` 按**每父会话保留末 200 条**（`HISTORY_CAP=200`，broker-ledger.mjs:97 的 `history.slice(-HISTORY_CAP)`）、最多保留 **200 个父会话**（`LEDGER_PARENTS_CAP=200` 见 constants.mjs:34；裁剪实现 `pruneLedgerParents` 见 preset/shared/misc.mjs:94）；② 宿主 `subagents.listChildren(parentId)` 的持久 `subagentCatalog` 投影（更早的子代靠它捞回）。两源按 childId 合并去重（台账序优先，lib/usage-aggregator.mjs 的 `getUsage` 合并段）。台账触顶而第二源缺席/失败 ⇒ 枚举可能漏人 ⇒ 报告置 `partial: true`，合计显示下界「≥」；**父桶整体淘汰**（`pruneLedgerParents` 把第 201 个父会话整桶删掉）同样置 `partial: true`——判据是该 parentId 命中持久化的 `evictedParents` 痕迹，或桶不存在而台账父桶数已触顶 200（处于淘汰态），因为此时缺失的历史不可逆、也无法与「真没子代」区分。第二源仅在 catalog 完整覆盖该父会话的子代时才能补回枚举；缺席、失败或不完整的 catalog 不构成完整性证明。父桶淘汰另配一枚**粘滞标志 `enumerationTruncated`**：本次淘汰了父桶、痕迹表溢出 `EVICTED_PARENTS_CAP=512`、或原始祖先桶数已触顶 200（含升级前已裁到 200 桶的旧台账）任一成立即置真，一旦为真永不回退、随台账 payload 持久化（`broker-ledger.mjs` 加载/落盘各带一次）。判据因此是「查询的 parentId 不在保留桶内 且（命中痕迹 ∨ 父桶数触顶 ∨ 粘滞标志为真）」——因为 old 台账迁移后痕迹为空、痕迹表溢出后被挤掉、桶数还会因 `session/disposed` 从 200 掉到 199，三条瞬时判据都可能同时失效。另有**幸存桶白名单 `intactParents`**（同一粘滞纪元那一刻在场且幸存的父会话，只减不增、有界 200、随 payload 落盘）：台账处于裁剪态且名单存在时，**在场**的父桶若不在名单里，说明它可能是被静默裁掉后又恢复重建的旧会话（桶里只剩重建后的新记录）⇒ 同样置 `partial: true`；名单内的桶与第二源能完整枚举的父会话仍报精确值。名单**允许退空为 `[]` 并随档落盘**：空数组表示「名单已确立、当前没有可证明完整的幸存桶」，此后任何在场桶都不在白名单里（继续标下界），因此落盘判定与 reads 都必须按「字段是否存在」区分空名单与「从未立过名单」——**已有裁剪事实、缺失 `intactParents` 且没有可信历史完整性证据的旧档，迁移为保守的空名单 `[]`**：在场桶也可能是淘汰后重建的残缺桶，不据当前内容推定为幸存桶。`evictedParents` 非空或当前长度不超过 `EVICTED_PARENTS_CAP=512` 均不能证明它覆盖全部淘汰历史：旧版可能先静默丢失父桶、后开始记录新的淘汰，也可能已截断痕迹并落盘，当前长度无法还原此前的溢出。此类旧档不播种 `present − evictedParents`；缺少完整 catalog 证明时，相关用量统一标为 `partial: true` 下界。完整 catalog 仍可补回子代枚举；没有裁剪事实的台账不因这条迁移规则标为不完整。第二源的完整性证明必须覆盖台账里已知的每个子代（部分名单不算证明）。只有没有既有裁剪标志或历史淘汰记录的台账，才会在首次裁剪时建立幸存名单；已有名单随后只减不增，空名单也会持续落盘。直接读取旧档时，同样将有效历史淘汰记录视为裁剪事实，不依赖 broker 先迁移落盘。第二源行形状按真实宿主 `subagentCatalog` 投影适配（`{id, createdAt, mode, label}`，**无 `kind` 字段**，`kind` 缺省即按 child 采纳）。`childOwner`/`sessionTypes` 内存表是 broker 侧互补（lib 半不可达，本契约不依赖） | preset/shared/constants.mjs:30-37；preset/shared/misc.mjs:117-160（`evictedParents`/`intactParents` 元数据与读取）、:177-238（`pruneLedgerParents` + `intactFrom` 三状态维护）；preset/tools/broker-ledger.mjs:41-60（痕迹与名单累加器、加载读回）、:125-145（落盘，含空名单 `[]`）；lib/usage-aggregator.mjs:124-200（台账行 + 名单读取）、:203-235（listedChildrenFor）、:530-541（partial 四条判据） |
 | F7 | **复活即新世代**：continue/forward 命中已结束记录时 `rearmChild` 回填登记，childId 不变、产生新事件代际 | child-registry.mjs:113-140 |
 | F8 | 面板 600ms 轮询 `connection.rpc.call('/dsh-my-go','snapshot',{})`；`currentSessionId()` 读 `sessions.list.getSnapshot().current` | src/panel-tree.js:78-99, 429-438 |
 | F9 | RPC 单通道：`webServer.register({ kind:'prefix', path:'/dsh-my-go', handler })` 直注册（F1 起不再经宿主 `connection.rpc.handle`——它在 0.1.5-alpha.1 上注册即抛），handler 内先 `connection.requestRejection` 直出 401/403、再按 `client-request`/`server-response` 封装；端点 camelCase（snapshot/listModels/listTools/getBuiltinPersona/loadSettings），信封 `{ok:true,value}` / `{ok:false,error:{code,message,details}}`，端点自带 try 回结构化 internal | lib/index.js:594-884（分发体），:101-235（注册壳） |
@@ -184,8 +184,10 @@ ChildCache = {
 
 **裁决**：在现有 `rpc.handle('/dsh-my-go', ...)` branch（F9，lib/index.js:397）内
 新增 `if (endpoint === 'getUsage')` 分支，命名对齐 `getBuiltinPersona` 的
-camelCase 动词式。实现于 **lib 半**，纯台账驱动（F6），不依赖 Symbol.for 桥——
-lib-only 降级形态同样可用。端点整体 try 包裹，失败回
+camelCase 动词式。实现于 **lib 半**，台账为主源 + 宿主 `listChildren` 为第二源
+（F6 双源，都不是无上限；触顶或第二源不可用时报告置 `partial`），不依赖
+Symbol.for 桥——lib-only 降级形态同样可用（此时只剩台账一源，触顶即标下界）。
+端点整体 try 包裹，失败回
 `{ ok:false, error:{ code:'internal', message, details:{} } }`（对齐 snapshot 先例
 lib/index.js:403-426）。
 
@@ -368,7 +370,7 @@ child**：
 | 落点 | 动作 | 参照 |
 |------|------|------|
 | `lib/index.js` settings register（:319-329） | 加 `usagePrices: z.dict(priceSchema, z.string().pattern(PRICE_KEY_PATTERN))` | F10，roles 字典样板 |
-| `lib/index.js` RPC branch（:397 内） | 新增 `getUsage` 端点：读台账（F6 路径）→ 枚举 parent 的 children → 调聚合引擎 → join 价格 → 组装 UsageReport；整体 try（:403-426 先例） | F9 |
+| `lib/index.js` RPC branch（:397 内） | 新增 `getUsage` 端点：读台账 + 宿主 `listChildren` 双源（F6）→ 枚举 parent 的 children → 调聚合引擎 → join 价格 → 组装 UsageReport；整体 try（:403-426 先例） | F9 |
 | 聚合引擎 | 新模块（建议 `lib/usage-aggregator.mjs` 或 lib/index.js 内闭包）：D2 缓存结构 + reducer 状态机 + R1-R7 | D2 |
 | `preset/shared/archive.mjs` | 新增 `readArchivedUsage(childId, fromSeq, options)`：同族同步逐帧解压，支持 fromSeq 过滤；复用 `findArchivedLogByChildId` 兜底 | F5，:147-207 先例 |
 | live 读 | `ctx.get('sessions')?.get?.(childId)` + `sessionEvents()` 适配（含 snapshotEvents 特性探测），从缓存 `lastSeq` 增量 | F4，broker.mjs:548-565 先例 |

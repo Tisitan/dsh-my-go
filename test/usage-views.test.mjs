@@ -83,7 +83,7 @@ test('combineCosts：空/全 null → null；求和且 partial OR', () => {
   assert.equal(sum.partial, true)
 })
 
-test('computeChildCost：segments 跨模型逐段乘价求和，unmatched 段跳过；无 segments → null', () => {
+test('computeChildCost：segments 跨模型逐段乘价求和，unmatched 段跳过但**标下界**；无 segments → null', () => {
   const priceIndex = { 'my-provider/model-a': FULL_PRICE }
   const child = {
     segments: [
@@ -92,8 +92,18 @@ test('computeChildCost：segments 跨模型逐段乘价求和，unmatched 段跳
     ],
   }
   const cost = computeChildCost(child, priceIndex)
-  closeTo(cost.value, 2)
-  assert.equal(cost.partial, false)
+  closeTo(cost.value, 2, '未定价段不计入')
+  // P2：未配价段确有 token 消耗 ⇒ 这个 2 只是下界（旧断言把下界当完整值钉住了）
+  assert.equal(cost.partial, true, '有量未配价的分段 → ≥')
+  // 未配价段若一个 token 都没花，就不构成下界
+  const quiet = computeChildCost({
+    segments: [
+      { provider: 'my-provider', model: 'model-a', buckets: { inputTokens: 1_000_000 } },
+      { provider: 'acme', model: 'unmatched', buckets: { inputTokens: 0, outputTokens: 0 } },
+    ],
+  }, priceIndex)
+  closeTo(quiet.value, 2)
+  assert.equal(quiet.partial, false, '未配价段 token=0 不算下界')
   assert.equal(computeChildCost({ segments: [] }, priceIndex), null, '无消息子代无成本')
   assert.equal(computeChildCost(undefined, priceIndex), null)
 })
@@ -107,7 +117,8 @@ test('computeTotalCost：跨 byModel 行求和（覆盖全部段）；hasAnyPric
   }
   const total = computeTotalCost(report)
   closeTo(total.value, 2 + 16 + 0.2 + 1, '未定价行不计入，已定价行整段计入')
-  assert.equal(total.partial, false)
+  // P2：未定价行有 1M input token ⇒ 合计只是下界
+  assert.equal(total.partial, true, '整行未定价但有 token → ≥')
   assert.equal(hasAnyPrice(report.byModel), true, '有定价行 → 成本列显示')
   assert.equal(hasAnyPrice([{ price: null }]), false, '全部未定价 → 隐藏成本列（不填就不记录）')
   assert.equal(hasAnyPrice([]), false)
@@ -216,6 +227,11 @@ test('globalPartial / sumMessageCount：children OR、byModel 兜底；计数 0 
   assert.equal(globalPartial({ children: [], byModel: [{ partial: true }] }), true)
   assert.equal(globalPartial({ children: [{ partial: false }], byModel: [{ partial: false }] }), false)
   assert.equal(globalPartial({ children: null, byModel: undefined }), false)
+  // P2：枚举不完整（台账触顶 / listChildren 失败）没有任何行能表达——它必须
+  // 由报告级 partial 直接传染到合计的「≥」，否则下界会被当成完整值展示。
+  assert.equal(globalPartial({ partial: true, children: [], byModel: [] }), true)
+  assert.equal(globalPartial({ partial: false, children: [{ partial: false }], byModel: [] }), false)
+  assert.equal(globalPartial({ children: [{ partial: false }], byModel: [] }), false, '报告没标 partial 时维持原判据')
   assert.equal(sumMessageCount({ children: [{ messageCount: 3 }, { messageCount: 0 }] }), 3)
   assert.equal(sumMessageCount({ children: [{ messageCount: null }] }), 0, '坏计数按 0 计，不 NaN')
   assert.equal(sumMessageCount({ children: undefined }), 0)
@@ -260,4 +276,47 @@ test('usage 面板接线在册（源码 pin）：行容器透传 opts.title + ch
   const src = readFileSync(new URL('../src/usage-panel.js', import.meta.url), 'utf-8')
   assert.match(src, /title: opts\.title/, 'gridRow 把 opts.title 透传到行容器')
   assert.match(src, /title: childRowTitle\(child, running, rowPartial\)/, 'child 行容器 title 传入三条提示')
+})
+
+test('P2 回归：两模型各 1M token、仅一模型配价 → computeChildCost / computeTotalCost 都标 partial', () => {
+  // 面板现场：同一子代先跑 deepseek（配价），备选切到未配价的 acme/model-x。
+  // 旧实现里 computeCost(未定价) = null 被 combineCosts 跳过，partial 仍是 false
+  // ——合计把「半个成本」当完整值显示，用户据此判断花销会系统性偏低。
+  const priceIndex = { 'deepseek/deepseek-chat': FULL_PRICE }
+  const priced = { provider: 'deepseek', model: 'deepseek-chat', buckets: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+  const unpriced = { provider: 'acme', model: 'model-x', buckets: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+  const child = computeChildCost({ segments: [priced, unpriced] }, priceIndex)
+  closeTo(child.value, 2)
+  assert.equal(child.partial, true, '子代成本是下界')
+  const total = computeTotalCost({
+    byModel: [
+      { ...priced, price: FULL_PRICE },
+      { ...unpriced, price: null },
+    ],
+  })
+  closeTo(total.value, 2)
+  assert.equal(total.partial, true, '合计成本是下界（面板据此加 ≥ 前缀）')
+  // 全部配价时不许误报
+  const allPriced = computeTotalCost({ byModel: [{ ...priced, price: FULL_PRICE }, { ...unpriced, price: FULL_PRICE }] })
+  assert.equal(allPriced.partial, false, '全部配价 → 精确值')
+  // 全部未定价 → null（面板显示 —，不是 0 也不是下界）
+  assert.equal(computeTotalCost({ byModel: [{ ...unpriced, price: null }] }), null)
+})
+
+test('usage 面板下界说明（源码 pin，B2 闸 F5）：说明行由 token 侧与费用侧任一驱动', () => {
+  const src = readFileSync(new URL('../src/usage-panel.js', import.meta.url), 'utf-8')
+  assert.match(src, /const lowerBound = partial \|\| Boolean\(totalCostShown\?\.partial\)/, '合并判据：token 下界 或 费用下界')
+  assert.match(src, /lowerBound\s*\? React\.createElement\(/, '说明行吃合并判据，不再只看 token 侧 partial')
+  assert.match(src, /有模型未配单价但确有 token 消耗/, '费用侧单独一句文案（桶全报齐时也要解释 ≥ 从哪来）')
+  // 行为侧前提：桶全报齐、只有模型未配价时，globalPartial 仍是 false 而费用是下界
+  // ——正是 F5 指出的「没有任何一行解释合计上的 ≥」的那一格。
+  const report = {
+    children: [{ partial: false }],
+    byModel: [
+      { provider: 'p', model: 'priced', buckets: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, price: FULL_PRICE, partial: false },
+      { provider: 'p', model: 'unpriced', buckets: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, price: null, partial: false },
+    ],
+  }
+  assert.equal(globalPartial(report), false, 'token 侧完整：合计数字本身不缺报')
+  assert.equal(computeTotalCost(report).partial, true, '费用侧是下界：底部说明必须登场')
 })

@@ -46,6 +46,10 @@ export function renderRolesPane(deps) {
     onImportOverwrite,
     onDeleteRole,
     onRenameRole,
+    // 自定义角色「角色键名」输入框的受控草稿与写入口（P2，见下方输入框注释）。
+    // 内置角色不渲染该输入框，故两者对内置行是无关参数。
+    roleKeyDraft,
+    onRoleKeyDraftChange,
   } = deps
   const key = role.key
   const builtin = role.builtin === true
@@ -115,16 +119,29 @@ export function renderRolesPane(deps) {
 
     builtin ? null : el('div', { className: 'mygo-field' },
       el('label', { className: 'mygo-label' }, '角色键名'),
+      // 受控草稿（P2）：value 必须是页面持有的草稿，不能直接绑 `key`——绑 key 时
+      // 每敲一个字符都会被下一次渲染刷回旧键名，输入框实际只读，失焦改名永不触发。
+      // 失焦三态：未改/清空 → 回落到原键名；被拒（renameRole 返回 false，非法或
+      // 重名，提示走 importError）→ 回滚到原键名；成功 → renameRole 已 setPicked(next)，
+      // 选中换人 ⇒ 草稿自动回落到新键名（无需在这里再写一次）。
       el('input', {
         className: 'mygo-input mygo-inputMono',
-        value: key,
+        'data-role': 'role-key',
+        value: roleKeyDraft,
         disabled,
         spellCheck: false,
+        onChange: (event) => onRoleKeyDraftChange?.(event.target.value),
         onBlur: (event) => {
-          const next = event.target.value.trim()
-          if (!disabled && next !== '' && next !== key) onRenameRole?.(key, next)
+          const next = String(event.target.value ?? '').trim()
+          if (disabled) return
+          if (next === '' || next === key) {
+            if (next !== key) onRoleKeyDraftChange?.(key)
+            return
+          }
+          const renamed = onRenameRole?.(key, next) !== false
+          if (!renamed) onRoleKeyDraftChange?.(key)
         },
-        title: '改名请直接在角色清单里新建 + 删除；这里失焦即尝试重命名',
+        title: '失焦即尝试改名：合法且未重名的键名立即生效（草稿态，点「立即保存」才落盘）',
       }),
     ),
 

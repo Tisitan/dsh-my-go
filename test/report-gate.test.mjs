@@ -27,7 +27,7 @@
 // 捕获 / board 文件 / metrics 行），零固定 sleep。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import * as broker from '../preset/tools/broker.mjs'
 import { encodeSegment } from '../preset/shared/archive.mjs'
@@ -55,7 +55,7 @@ const summaryOf = (childId, over = {}) => [
 ].join('\n')
 
 // 每用例一套独立捕获：queued = 补发投递、injected = 主编通知、specs = spawn 请求
-function gateCtx({ bindings } = {}) {
+function gateCtx({ bindings, onQueue } = {}) {
   const queued = []
   const injected = []
   const specs = []
@@ -67,6 +67,8 @@ function gateCtx({ bindings } = {}) {
       sendMessage: async () => ({}),
       [QUEUE_PROMPT]: async (_from, targetId, content) => {
         queued.push({ targetId, text: content?.[0]?.text ?? '' })
+        // 钩子：在投递**进行中**（唤醒窗口内）插入抢跑动作，P21/P22 竞态都用它
+        if (onQueue) await onQueue(targetId)
         return { ok: true }
       },
     },
@@ -358,4 +360,70 @@ test('⑨板兜底：登记表缺席（重启/冷恢复形态）而板上有货 
   } finally {
     await removeHomeWithRetry(g.home)
   }
+})
+
+test('P22 板兜底不许被上一世代残留旧板放行：复活轮新写失败 ⇒ 转补发而非 pass-board-fallback', async () => {
+  // 复现链路（recheck P22 后半）：子代第一世代交过报告 → 终局 → continue 复活
+  // （归档旧板）→ 新世代的那次写盘因存储冲突失败（.prev.md 被目录占住 ⇒ EISDIR）
+  // → 正板位置仍留着上一世代的旧报告。旧实现只看 hasBoardEntry 就直通
+  // （pass-board-fallback），把「本轮其实什么都没交」当成已交付。
+  // 修复：经历过复活（boardSeqAtArm > 0）时，还要求落盘代次已越过世代锚。
+  const g = gateCtx()
+  await broker.apply(g.ctx, { reportExternalization: true, metrics: false, queueRetryBaseMs: 5 })
+  const parent = { id: 'parent-g', session: { header: {} }, inject: () => {} }
+  const goWork = g.tools.get('go_work')
+  await goWork.execute({ agent: 'explore', prompt: 'first' }, execOf(parent))
+  await submitReport(g, 'sess-1', { report: '# 旧世代报告\n第一轮正文。\n' })
+  g.dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
+  await waitFor(() => snapOf('parent-g')?.history.length === 1, { what: '第一世代落史' })
+  // 把 .prev.md 位置占成目录：复活归档与新一轮写盘都会撞冲突
+  mkdirSync(g.boardPathOf('sess-1').replace(/\.md$/, '.prev.md'), { recursive: true })
+  await g.tools.get('continue').execute({ id: 'sess-1', prompt: 'new task' }, execOf(parent))
+  // 第二轮一个字都没交就完工：闸门必须判「未交付」并走补发，绝不直通
+  g.dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
+  await waitFor(() => g.queued.some((q) => q.targetId === 'sess-1'), { what: '闸门转补发（旧板不得替新一轮放行）' })
+  assert.equal(
+    readFileSync(g.boardPathOf('sess-1'), 'utf-8'),
+    '# 旧世代报告\n第一轮正文。\n',
+    '正板仍是上一世代内容（新写确实失败）——正是这一格曾让闸门 false pass',
+  )
+  await drain(10)
+  assert.equal(snapOf('parent-g')?.history.length, 0, '补发轮不落史（记录留在活槽等补交；第一世代记录已被 revive 取回）')
+  assert.equal(snapOf('parent-g')?.currentRecords?.[0]?.childId, 'sess-1', '记录仍占活槽等补交')
+})
+
+test('P21 抢跑提交写盘失败：旧世代登记不得被恢复，闸门转补发（绝不 stale-pass 直通）', async () => {
+  // recheck2 P21 复现：第一世代交过报告 → 终局 → 复活；唤醒窗口内子代抢跑交新报告，
+  // 但 .prev.md 被目录占住 ⇒ writeBoard EISDIR 抛错 ⇒ markSubmitted 根本没执行，
+  // reportSubmitted 里躺的还是第一世代的 OLD 摘要。旧判据只看「入队写代次已越过
+  // 边界」就把 OLD 登记恢复回去，第二轮终局被表命中短路过闸（stale-pass，结论
+  // 还是上一世代的）。修复后判据是**落盘代次**：写失败时 landed 不动，不恢复，
+  // rearmChild 正常清空旧登记 ⇒ 闸门转补发。
+  const child = (id) => ({ agent: { id, session: { header: { parentSession: 'parent-g' } } } })
+  let g
+  let early
+  const submitAs = (id, text) => g.tools.get('report_submit').execute(submitArgs({ report: `# ${text}\n正文。\n`, conclusion: text }), child(id))
+  g = gateCtx({
+    // 唤醒窗口内抢跑：新报告写盘撞上被目录占住的 .prev.md（EISDIR）
+    onQueue: (id) => { early = submitAs(id, 'NEW').then(() => undefined, (e) => e) },
+  })
+  await broker.apply(g.ctx, { reportExternalization: true, metrics: false, queueRetryBaseMs: 5 })
+  const parent = { id: 'parent-g', session: { header: {} }, inject: () => {} }
+  await g.tools.get('go_work').execute({ agent: 'explore', prompt: 'first' }, execOf(parent))
+  const old = await submitAs('sess-1', 'OLD')
+  g.dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
+  await waitFor(() => snapOf('parent-g')?.history.length === 1, { what: '第一世代落史' })
+  mkdirSync(old.path.replace(/\.md$/, '.prev.md'), { recursive: true })
+  // 唤醒窗口内抢跑：onQueue 钩子在投递进行中触发，抢跑的新报告必然 EISDIR
+  await g.tools.get('continue').execute({ id: 'sess-1', prompt: 'new task' }, execOf(parent))
+  const earlyError = await early
+  assert.ok(earlyError instanceof Error, '抢跑的新报告确实写盘失败')
+  assert.match(String(earlyError), /EISDIR/)
+  const before = g.queued.length
+  g.dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [] })
+  await waitFor(() => g.queued.length > before, { what: '闸门转补发（旧世代登记不得放行本世代）' })
+  const snap = snapOf('parent-g')
+  assert.equal(snap.history.length, 0, '绝不 stale-pass 落史')
+  assert.equal(snap.currentRecords?.[0]?.childId, 'sess-1', '记录留活槽等补交')
+  assert.equal(readFileSync(g.boardPathOf('sess-1'), 'utf-8'), '# OLD\n正文。\n', '正板仍是上一世代（新写确实失败）')
 })

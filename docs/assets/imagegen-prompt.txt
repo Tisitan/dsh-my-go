@@ -1,0 +1,9 @@
+Use case: ads-marketing.
+Asset type: GitHub README hero banner for an open-source developer tool, very wide 5:2 landscape composition (approximately 2000 x 800).
+Primary request: Create a polished original editorial illustration for "DSH MyGO", a multi-agent orchestration plugin for DeepSeek Harness. Its identity is a central coordinator called Sisyphus directing specialist agents, separate read and write lanes, and reports returning to a shared board.
+Visual concept: an elegant luminous constellation-like orchestration workspace, a central sculptural glass/ceramic coordination node joined by restrained curved paths to small distinct specialist nodes, two graceful parallel lanes of light, small document-shaped report tiles returning inward. Treat it as a conceptual illustration, not a literal technical diagram or screenshot.
+Style: contemporary premium software editorial art, precise geometry mixed with tactile frosted glass, subtle depth, beautiful calm lighting, generous negative space, restrained and sophisticated.
+Palette: deep midnight navy and indigo with cool cyan / periwinkle, soft white type, tiny warm amber accents for active work, very subtle textured background.
+Typography: exact large title "DSH MyGO"; exact smaller subtitle "Multi-agent orchestration for DeepSeek Harness". Make both readable at GitHub README width; no other text.
+Composition: title block occupies left half with comfortable 8% safe margins, constellation illustration right half, softly integrates across the whole banner. Title approx 12% of banner height, subtitle approx 3.2%. Artwork should remain clear when reduced to 900px wide.
+Constraints: no anime characters, no mascots, no third-party logos, no fake UI or controls, no metrics, no watermarks, no claims of guaranteed performance. Do not draw a dense network or countless tiny boxes. Keep refined, legible, intentional. Opaque background.

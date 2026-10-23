@@ -78,15 +78,97 @@ function splitLines(raw) {
 // （失败始终保留原正板，同路径写入串行化）——被顶掉的上一版不至于无声蒸发（取证现场：一次落板把 4993B 原文压成
 // 777B 摘要，无从对照）。只保留最近一版（同名 .prev 直接被覆盖），且刻意不参与
 // 任何读取路径：hasBoardEntry / readBoardSlice 都只认正板 <childId>.md。
-const boardWrites = new Map()
+// 同键串行队列（**写与归档共用同一张**，P2 修复）。
+// 原先写与归档各持一张表（boardWrites / boardArchives），archiveBoardEntry 只在
+// 入队时瞥一眼 boardWrites——于是「归档在飞 + 随后 writeBoard」这个方向完全不受
+// 保护：写流程 stat 看到旧板存在，归档随后把它 rename 走，replaceBoard 的
+// copyFile(path, prevTmpPath) 抛 ENOENT，新报告写失败且正板已被挪走（一次丢两样）。
+// 合并成一张按 path 键串行化的尾 Promise 表后，两个方向都按到达序执行，注释
+// 「与 writeBoard 共用同一张串行队列」才真正成立。
+const boardQueue = new Map()
+
+// 每键「写入代次」：writeBoard 每入队一次就 +1（同步段完成，先于任何 fs）。
+// archiveBoardEntry 拿它当世代闸的比对基准，代次变了说明「待归档的那一代」已经
+// 被后来的写顶掉——那块板不是要归档的那一代，绝不挪走（否则新世代刚提交的报告
+// 会被误归档成 .prev.md，report_submit 成功但正板 not-found）。
+// 这是 D/P2 的「记录写入代次」闸：不靠 mtime 猜，不靠时间窗，判据只有队列到达序。
+//
+// **跨队列排空单调递增**（P22 修复）：早先版本在队列排空时 delete 回收这张表，
+// 于是「新世代抢先提交（seq 0→1）→ 队列排空 → delete → 归档请求读到 0」这条
+// 交错里代次被重置，闸门形同虚设；更根本的是——归档请求一旦在**新写之后**才
+// 被调用，采样当前代次永远相等，判等通过就把新板挪走。故两层修：
+//   ① 代次不再清零，只在 LRU 容量上限（BOARD_WRITE_SEQ_CAP 键）时淘汰最旧键；
+//   ② archiveBoardEntry 支持调用方传入**唤醒前捕获的世代边界** expectedSeq，
+//      有它就以它为基准（绝不在调用/执行时重新采样）。
+const boardWriteSeq = new Map()
+// 每键「已落盘代次」：只有 replaceBoard 真正 rename 成功才 +1。
+// 与 boardWriteSeq 分道扬镳的唯一现场是「写请求已入队但写盘失败」（例如 .prev.md
+// 位置被目录占住 ⇒ EISDIR）：此时入队代次已涨、正板仍是上一世代的内容。报告闸门
+// 的板兜底必须看**落盘**代次，否则会把残留旧板当成新一轮已交付（P22 后半）。
+const boardLandedSeq = new Map()
+
+// 代次表的键上限（LRU）：只兜无界增长，正常进程远达不到。被淘汰的键读作 0——
+// 归档侧遇到「基准 >0 而当前 0」一律按代次已变跳过（保守：不挪板，绝不误挪）。
+export const BOARD_WRITE_SEQ_CAP = 1024
+
+function bumpSeq(table, key) {
+  const next = (table.get(key) ?? 0) + 1
+  // Map 插入序即 LRU 序：先删后插把本键挪到最新端。
+  table.delete(key)
+  table.set(key, next)
+  if (table.size > BOARD_WRITE_SEQ_CAP) {
+    for (const oldest of table.keys()) {
+      table.delete(oldest)
+      break
+    }
+  }
+  return next
+}
+
+// 当前「已入队写代次」/「已成功落盘代次」（读侧只用这两个访问器，不碰表本体）。
+// 同步、不抛：被 end 归因的同步段与投递簇消费。
+export function readBoardWriteSeq(sessionId, childId) {
+  try {
+    return boardWriteSeq.get(boardPath(sessionId, childId)) ?? 0
+  } catch {
+    return 0
+  }
+}
+
+export function readBoardLandedSeq(sessionId, childId) {
+  try {
+    return boardLandedSeq.get(boardPath(sessionId, childId)) ?? 0
+  } catch {
+    return 0
+  }
+}
+
+function enqueueBoardTask(key, task) {
+  const previous = boardQueue.get(key) ?? Promise.resolve()
+  // previous 恒为「已吞错的 tail」，故这里不会因前序失败而连坐（与既有语义一致：
+  // 一次失败的写不该让同键后续写/归档永久 reject）。
+  const result = previous.catch(() => {}).then(task)
+  const tail = result.catch(() => {})
+  boardQueue.set(key, tail)
+  void tail.then(() => {
+    if (boardQueue.get(key) !== tail) return
+    boardQueue.delete(key)
+    // 只回收队列表（B2 闸 F2 的无界增长点）。**代次表刻意不在这里清**：P22 的
+    // 交错正是「排空即清零」造成的（新写 seq→1、排空清零、归档读到 0 判等通过）。
+    // 代次表改为跨排空单调递增 + BOARD_WRITE_SEQ_CAP 有界 LRU 淘汰。
+  })
+  return result
+}
+
 export async function writeBoard(sessionId, childId, content) {
   const key = boardPath(sessionId, childId)
-  const previous = boardWrites.get(key) ?? Promise.resolve()
-  const result = previous.then(() => replaceBoard(sessionId, childId, content))
-  const tail = result.catch(() => {})
-  boardWrites.set(key, tail)
-  void tail.then(() => { if (boardWrites.get(key) === tail) boardWrites.delete(key) })
-  return result
+  bumpSeq(boardWriteSeq, key)
+  return enqueueBoardTask(key, async () => {
+    const written = await replaceBoard(sessionId, childId, content)
+    // 落盘成功才推进（失败时正板仍是旧世代内容，闸门据此拒绝放行）。
+    bumpSeq(boardLandedSeq, key)
+    return written
+  })
 }
 
 async function replaceBoard(sessionId, childId, content) {
@@ -122,18 +204,31 @@ async function replaceBoard(sessionId, childId, content) {
 // <childId>.prev.md（覆盖旧留痕，与 writeBoard 只留最近一版的纪律一致）。
 // 正板缺席 = 无事可做（返回 { archived: false }，不抛——没交过报告的子代被
 // continue 复活是常态）。与 writeBoard 共用同一张串行队列：归档与落板同键时
-// 按到达序执行，不会出现「归档读到半张板」。
+// 按到达序执行，不会出现「归档读到半张板」，也不会出现「写到一半被归档抽走」。
 // 效果：新一轮执行期间 report_fetch / 终局闸门 / 链直投读到的都是「本轮未提交」，
 // 上一代际的报告只留在 .prev.md 里可对照。
-const boardArchives = new Map()
-export async function archiveBoardEntry(sessionId, childId) {
+//
+// 写入代次闸（见 boardWriteSeq 注释）：请求之后才入队的新世代写入 ⇒ 本请求跳过，
+// 返回 { archived: false, skipped: 'newer-write' }。两种现场都靠它兜住：
+//   - 正常复活：归档先入队、新报告后入队 ⇒ 代次未变 ⇒ 照常归档旧板；
+//   - 子代被唤醒得极快、新报告抢在归档请求之前入队 ⇒ 代次已变 ⇒ 绝不挪走新板
+//     （代价只是旧一代留痕缺失，远小于「report_submit 成功但正板 not-found」）。
+// `options.expectedSeq` = 调用方在**唤醒子代之前**捕获的写代次（世代边界，P22）。
+// 给了就以它为基准；未给则退回「入队那一刻采样」的旧口径（向后兼容：仍有调用方
+// 不关心世代，只想要「请求之后别再有人写」这一层保护）。
+// 为什么必须由调用方给边界：归档请求在唤醒之后才发出时，此刻采样到的代次已经
+// 包含新世代的那一次写，判等必然通过——闸门看不见「我比新写更晚」，只能靠边界。
+export async function archiveBoardEntry(sessionId, childId, options = {}) {
   const key = boardPath(sessionId, childId)
-  const previous = boardArchives.get(key) ?? boardWrites.get(key) ?? Promise.resolve()
-  const result = previous.catch(() => {}).then(() => moveBoardToPrev(sessionId, childId))
-  const tail = result.catch(() => {})
-  boardArchives.set(key, tail)
-  void tail.then(() => { if (boardArchives.get(key) === tail) boardArchives.delete(key) })
-  return result
+  const explicit = typeof options?.expectedSeq === 'number' && Number.isFinite(options.expectedSeq)
+  const baseline = explicit ? options.expectedSeq : (boardWriteSeq.get(key) ?? 0)
+  return enqueueBoardTask(key, () => {
+    const current = boardWriteSeq.get(key) ?? 0
+    if (current !== baseline) {
+      return { archived: false, skipped: 'newer-write', path: boardPath(sessionId, childId), prevPath: boardPath(sessionId, childId, '.prev.md') }
+    }
+    return moveBoardToPrev(sessionId, childId)
+  })
 }
 
 async function moveBoardToPrev(sessionId, childId) {

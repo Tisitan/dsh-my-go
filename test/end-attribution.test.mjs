@@ -113,13 +113,91 @@ test('E3 工种在册而属主实例已销毁 → no-owning-orchestration：只�
 
 // ── E4 / E5：两张一次性表的出口与换序敏感性 ──────────────────────────────────
 
-test('E4 abort 护航命中（非 completed 终局）→ 吞掉这一发：不通知、不落史、不推进', () => {
+test('E4 abort 护航命中（掐断类终局）→ 吞掉这一发：不通知、不落史、不推进', () => {
   const r = fixture({ abortSet: ['sess-1'], info: { id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] } })
   assert.equal(r.decision, 'expected-abort')
   assert.deepEqual(opsOf(r), ['consume-abort-guard'])
   assert.deepEqual(ownerNotices(r), [], '不发失败预告：那是编排方自造的预期事件')
   assert.equal(r.facts.advance, 'no', '槽位仍被 interrupt 前排队的续轮占着')
   assert.match(r.facts.warn, /expected abort-interrupted turn; record stays running/)
+})
+
+test('E4 掐断类词表：interrupted / cancelled 同为预期噪音（变体 runtime 的用词）', () => {
+  for (const stopReason of ['interrupted', 'cancelled']) {
+    const r = fixture({ abortSet: ['sess-1'], info: { id: 'sess-1', stopReason, lastAssistantMessage: [] } })
+    assert.equal(r.decision, 'expected-abort', `${stopReason} 属掐断类`)
+    assert.equal(r.facts.advance, 'no')
+  }
+})
+
+// ── P1 回归：guard 只吞「掐断类」，续轮的唯一终局必须落账 ────────────────────
+// 宿主语义（dsh-subagent@0.1.7-alpha.2）：interrupt 不发 subagent/end，observer 按
+// Activation residency epoch 成对发 start/end，整个 Activation 只发**一条**终局，
+// 其 stopReason 由最后实际消费任务的那一轮决定。旧判据（!== 'completed'）会把这条
+// 唯一终局当「中间被掐轮」吞掉 → 子代已 disposed、broker 仍留 running 槽位。
+test('E4c 续轮以 error 结束（唯一终局）→ 消费 guard 后照常进备选评估，不再被吞', () => {
+  const r = fixture({
+    abortSet: ['sess-1'],
+    info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] },
+    failure: { message: 'replacement request failed', code: 'PROVIDER_ERROR' },
+  })
+  assert.equal(r.decision, 'fallback-evaluation', 'hermes 有备选链：续轮失败该进重派评估')
+  assert.deepEqual(opsOf(r), ['consume-abort-guard', 'add-fallback-guard'], 'guard 照样就地消费，绝不留残')
+  assert.equal(r.calls.readFailure, 1, '续轮失败要读附因（真终局才有失败附因）')
+  assert.equal(r.facts.failure?.code, 'PROVIDER_ERROR')
+})
+
+test('E4d 续轮以 error 结束且无备选链 → 按 failed 落账并推进同泳道队列', () => {
+  const r = fixture({
+    abortSet: ['sess-1'],
+    type: 'explore',
+    info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] },
+  })
+  assert.equal(r.decision, 'finalize')
+  assert.equal(r.facts.failed, true)
+  assert.equal(r.facts.advance, 'now', '槽位必须腾出来，排队的下一条要能派出去')
+  assert.equal(opsOf(r).includes('consume-abort-guard'), true)
+  assert.equal(ownerNotices(r).some((text) => text.includes('失败已知悉')), true, '真失败要发失败预告')
+})
+
+test('E4e 掐断类终局恒吞（不再按 disposed 二分）：收槽责任归宽限期兜底定时器', () => {
+  // B2 闸 F1 返工：真实宿主上 agent/disposed 恒先于 subagent/end，任何「是否已
+  // disposed」的判据对正常完工路径恒成立 —— 拿它二分会把两段激活
+  // （aborted → coldResume → completed）的第一段误判成终局、丢掉第二段的真结论。
+  // 故归因层只看 stopReason 词表；「还有没有续轮」交给挂着的宽限期定时器结构化解决
+  // （broker-ending 在 expected-abort 上不撤定时器，dispatcher 侧测试见 bridge.test）。
+  for (const stopReason of ['aborted', 'interrupted', 'cancelled']) {
+    const r = fixture({
+      abortSet: ['sess-1'],
+      type: 'explore',
+      info: { id: 'sess-1', stopReason, lastAssistantMessage: [] },
+    })
+    assert.equal(r.decision, 'expected-abort', `${stopReason} 是预期噪音：吞掉，槽位留给续轮`)
+    assert.equal(opsOf(r).includes('consume-abort-guard'), true, 'guard 仍就地消费，不留残')
+    assert.equal(r.facts.advance, 'no', '不推进队列（续轮占着槽）')
+    assert.notEqual(r.facts.failed, true, '不落失败账')
+  }
+  // 归因层不再接受 disposedAtEnd 这类外部二分输入：多余参数必须无效果
+  const ignored = fixture({
+    abortSet: ['sess-1'],
+    type: 'explore',
+    info: { id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] },
+    disposedAtEnd: true,
+  })
+  assert.equal(ignored.decision, 'expected-abort', 'disposedAtEnd 已从判据面移除（多余参数零效果）')
+})
+
+test('E4f 非掐断类失败词（max-tokens / refusal）同样不被吞：消费 guard 后落账', () => {
+  for (const stopReason of ['max-tokens', 'refusal']) {
+    const r = fixture({
+      abortSet: ['sess-1'],
+      type: 'explore',
+      info: { id: 'sess-1', stopReason, lastAssistantMessage: [] },
+    })
+    assert.equal(r.decision, 'finalize', `${stopReason} 不是掐断类噪音`)
+    assert.equal(r.facts.failed, true)
+    assert.equal(r.facts.advance, 'now')
+  }
 })
 
 test('E4b 被掐轮跑到 completed 终局 → guard 就地消费但**不吞**这条真结论', () => {
@@ -307,7 +385,9 @@ test('readFailure 惰性：只在 failed 且走到收尾/评估时才读，早�
     () => fixture({ type: undefined, ledgerRecord: { agentType: 'hermes' }, live: false }),
     () => fixture({ type: undefined, ledgerRecord: undefined }),
     () => fixture({ routing: undefined }),
-    () => fixture({ abortSet: ['sess-1'], info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] } }),
+    // P1 起「abort 护航命中 + error 终局」不再是早退：它落进备选评估/收尾（真终局
+    // 才读附因），故不在早退名单里；早退名单只剩「掐断类」那一发。
+    () => fixture({ abortSet: ['sess-1'], info: { id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] } }),
     () => fixture({ decidedSet: ['sess-1'], info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] } }),
   ]
   for (const make of early) {
@@ -317,6 +397,10 @@ test('readFailure 惰性：只在 failed 且走到收尾/评估时才读，早�
   }
   const late = fixture({ info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] }, type: 'explore' })
   assert.equal(late.calls.readFailure, 1, '走到收尾才读，且只读一次')
+  // 同一条判据覆盖续轮唯一终局（P1）：guard 命中不再是「免读附因」的通行证
+  const afterAbort = fixture({ abortSet: ['sess-1'], info: { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] }, type: 'explore' })
+  assert.equal(afterAbort.decision, 'finalize')
+  assert.equal(afterAbort.calls.readFailure, 1, '续轮失败是真失败，附因必须读')
 })
 
 // ── 队列推进时机的表完整性（R3/R4 显式化）────────────────────────────────────

@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
-import { boardRoot, writeBoard, readBoardSlice, hasBoardEntry } from '../preset/shared/board.mjs'
+import { boardRoot, writeBoard, readBoardSlice, hasBoardEntry, archiveBoardEntry, readBoardWriteSeq, readBoardLandedSeq, BOARD_WRITE_SEQ_CAP } from '../preset/shared/board.mjs'
 import { encodeSegment } from '../preset/shared/archive.mjs'
 import { removeHomeWithRetry } from './helpers/mock-ctx.mjs'
 
@@ -230,4 +230,104 @@ test('段名注入探针（Windows 盘符）：C:\\x 作段不产生盘符逃逸
     assert.equal((await readBoardSlice('C:\\x', 'child-drive')).text, 'safe-content')
     assert.equal((await readBoardSlice('sess-ok', 'C:\\x')).text, 'safe-content')
   })
+})
+
+// ── 写代次 / 落盘代次（P22 世代边界）─────────────────────────────────────────
+
+test('P22 写代次跨队列排空单调递增（不再清零）：排空后归档仍能识别「新世代已写过」', async () => {
+  await withBoardHome(async () => {
+    assert.equal(readBoardWriteSeq('s', 'c'), 0, '初始无写')
+    await writeBoard('s', 'c', 'GEN1')
+    assert.equal(readBoardWriteSeq('s', 'c'), 1)
+    // 等队列彻底排空（旧实现在这一步会 delete 代次，把计数打回 0）
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(readBoardWriteSeq('s', 'c'), 1, '排空后代次不得清零——清零正是「新写被判等」的成因')
+    await writeBoard('s', 'c', 'GEN2')
+    assert.equal(readBoardWriteSeq('s', 'c'), 2, '单调递增')
+    assert.equal(readBoardLandedSeq('s', 'c'), 2, '两次写都真落盘')
+  })
+})
+
+test('P22 世代边界：archiveBoardEntry(expectedSeq) 在唤醒前捕获的边界上跳过归档', async () => {
+  await withBoardHome(async () => {
+    await writeBoard('s', 'c', 'OLD GENERATION')
+    const expectedSeq = readBoardWriteSeq('s', 'c') // 唤醒前捕获（= 1）
+    // 子代抢跑：新世代先写了正板
+    await writeBoard('s', 'c', 'NEW GENERATION')
+    // 归档请求晚于新写到达：以旧边界为基准必须跳过（旧实现按调用时采样 ⇒ 判等 ⇒ 挪走新板）
+    const result = await archiveBoardEntry('s', 'c', { expectedSeq })
+    assert.equal(result.archived, false)
+    assert.equal(result.skipped, 'newer-write')
+    const board = await readBoardSlice('s', 'c', 0, 10)
+    assert.equal(board.text, 'NEW GENERATION', '新世代的正板绝不许被归档抽走')
+  })
+})
+
+test('P22 世代边界：无新写时按边界正常归档旧板（复活常规路径不受影响）', async () => {
+  await withBoardHome(async () => {
+    await writeBoard('s', 'c', 'OLD GENERATION')
+    const expectedSeq = readBoardWriteSeq('s', 'c')
+    const result = await archiveBoardEntry('s', 'c', { expectedSeq })
+    assert.equal(result.archived, true)
+    assert.equal((await readBoardSlice('s', 'c', 0, 10)).error, 'not-found', '正板位腾空')
+    assert.equal((await readBoardSlice('s', 'c.prev.md', 0, 10)).error, 'not-found', '拼路径恒过 boardPath，.prev 不是独立 childId')
+  })
+})
+
+test('P22 落盘代次：写盘失败不推进 landed（闸门据此拒绝把旧板当本世代交付）', async () => {
+  await withBoardHome(async () => {
+    const written = await writeBoard('s', 'c', 'OLD GENERATION')
+    const arm = readBoardWriteSeq('s', 'c')
+    assert.equal(readBoardLandedSeq('s', 'c'), arm)
+    // 用目录占住 .prev.md：新写要留痕 ⇒ rename EISDIR ⇒ 整次写失败
+    mkdirSync(written.path.replace(/\.md$/, '.prev.md'), { recursive: true })
+    await assert.rejects(() => writeBoard('s', 'c', 'NEW GENERATION'))
+    assert.equal(readBoardWriteSeq('s', 'c'), arm + 1, '入队代次已涨')
+    assert.equal(readBoardLandedSeq('s', 'c'), arm, '落盘代次不动 ⇒ 闸门可判定「本世代没写成」')
+    assert.equal(readBoardLandedSeq('s', 'c') <= arm, true, '闸门判据：landed > arm 才算本世代已交付')
+  })
+})
+
+test('P22 代次表有界：键数不超过 BOARD_WRITE_SEQ_CAP（LRU 淘汰最旧键）', async () => {
+  await withBoardHome(async () => {
+    assert.ok(BOARD_WRITE_SEQ_CAP >= 64, '容量常数须存在且非退化')
+    // 只做形状断言：表不导出，用「写入后仍可读」证明淘汰不影响新键
+    await writeBoard('s', 'c', 'X')
+    assert.equal(readBoardWriteSeq('s', 'c'), 1)
+  })
+})
+
+test('P21 提交登记绑定落盘代次：markSubmitted 记录的 landedSeq 与板世代一致，复活翻篇一并清', async () => {
+  const { createChildRegistry } = await import('../preset/shared/child-registry.mjs')
+  const childRegistry = createChildRegistry()
+  await withBoardHome(async () => {
+    const id = `p21-child-${Math.random().toString(36).slice(2, 8)}`
+    await writeBoard('s', id, 'GEN1')
+    const landed1 = readBoardLandedSeq('s', id)
+    childRegistry.markSubmitted(id, { conclusion: 'OLD' }, landed1)
+    assert.equal(childRegistry.submittedLandedSeqOf(id), landed1, '登记自带「写的是哪代板」')
+    // 世代锚：noteBoardSeqAtArm 存 { seq }，seq=0 的「已设锚」与「从未设锚」必须可分
+    childRegistry.noteBoardSeqAtArm(id, 0)
+    assert.equal(childRegistry.hasBoardSeqAtArm(id), true, 'seq=0 也算已设锚')
+    assert.equal(childRegistry.boardSeqAtArmOf(id), 0)
+    const fresh = `p21-fresh-${Math.random().toString(36).slice(2, 8)}`
+    assert.equal(childRegistry.hasBoardSeqAtArm(fresh), false, '从未设锚')
+    // 复活翻篇：登记与绑定同时清（arm 由投递方重新设）
+    childRegistry.rearmChild(id, { childId: id, status: 'done', lane: 'read' }, 's')
+    assert.equal(childRegistry.reportSubmitted.has(id), false)
+    assert.equal(childRegistry.submittedLandedSeqOf(id), undefined)
+    // 终局清理：世代锚随 retireChild 走（同一代际的双发窗口已过）
+    childRegistry.noteBoardSeqAtArm(id, 3)
+    childRegistry.retireChild(id)
+    assert.equal(childRegistry.hasBoardSeqAtArm(id), false, 'retireChild 清世代锚')
+    assert.equal(childRegistry.reportSubmitted.has(id), false)
+  })
+})
+
+test('P21 世代锚 FIFO 有界：超过 BOARD_SEQ_ARM_CAP 驱逐最旧条目', async () => {
+  const { createChildRegistry } = await import('../preset/shared/child-registry.mjs')
+  const childRegistry = createChildRegistry()
+  for (let i = 0; i < 260; i += 1) childRegistry.noteBoardSeqAtArm(`cap-child-${i}`, i)
+  assert.equal(childRegistry.hasBoardSeqAtArm('cap-child-0'), false, '最旧条目已驱逐')
+  assert.equal(childRegistry.hasBoardSeqAtArm('cap-child-259'), true, '最新条目仍在')
 })

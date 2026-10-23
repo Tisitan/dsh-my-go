@@ -520,14 +520,14 @@ git ls-tree -r --name-only HEAD | grep '^dist/'   # 期望恰好一行 dist/clie
 - **默认绑定已清空**：`defaultBindings()` 八键（含 sisyphus）
   均为 `{}`，不内置任何模型/渠道名，子代理完全继承环境默认路由。需要按工种分流
   必须自行配置（DSH Web → 插件 → dsh-my-go 配置卡，或 `~/.dsh/settings.yaml`，
-  示例见 README「工种模型绑定」），否则所有子代理与 Sisyphus 同路由。
+  示例见 [配置参考](CONFIGURATION.md#工种模型绑定)），否则所有子代理与 Sisyphus 同路由。
 - **用户级工具屏蔽已整体迁出本仓（2026-09-15 → dsh-tool-guard）**：
   原 preset 级屏蔽（tool-mask preset 行 + `config.deny`、settings `toolMask.deny`
   键、设置页「工具屏蔽」双列表编辑器、`preset/tool-mask.mjs` 与 `test/tool-mask*.test.mjs`
   两个测试档）已全部拆除，存量名单平移为 `dsh-tool-guard.denyTools`——那边以宿主
   平面插件对**所有 profile / preset / scope（含 MyGO 全部子代理）**生效，并经
   `settings/updated` 热更、呈示层 + `tools.guard` 双钩拦截。本仓只剩两类
-  **编排拓扑**工具层防线（与用户屏蔽正交，见 README「工具屏蔽」）：
+  **编排拓扑**工具层防线（与用户屏蔽正交，见 [工具屏蔽说明](CONFIGURATION.md#工具屏蔽已迁移至-dsh-tool-guard)）：
   ① `broker-tools.mjs` 的 `agent/created` 闸——子代理侧摘原生派生四件
   （`subagent` / `subagent_fork` / `workflow` / `ralph`）+ 编排三件 + 上游邻接
   消息三件套 + Agent Teams 六件，主编排侧摘 `skill` + 邻接三件套；

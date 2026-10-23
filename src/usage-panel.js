@@ -258,6 +258,8 @@ export function UsageSection({ usage, open, onToggle }) {
     const byModel = Array.isArray(report.byModel) ? report.byModel : []
     const totalCost = computeTotalCost(report)
     const totalCostShown = totalCost ? { ...totalCost, partial: totalCost.partial || partial } : null
+    // 底部说明行的下界判据：token 侧或费用侧任一为下界都要有说明（见下方注释）。
+    const lowerBound = partial || Boolean(totalCostShown?.partial)
     const stat = (label, value, title) => React.createElement('div', { key: label, title, style: { padding: '2px 0' } },
       React.createElement('div', { style: { color: '#777', fontSize: 10 } }, label),
       React.createElement('div', { style: { color: '#c8c8c8', fontFamily: MONO_FONT, fontSize: 14 } }, value),
@@ -281,8 +283,15 @@ export function UsageSection({ usage, open, onToggle }) {
       React.createElement('div', { style: { color: '#888', fontSize: 11, marginTop: 6 } },
         `子代 ${childRowCount(report)} · 模型段 ${byModel.length} · 消息 ${sumMessageCount(report)} 条`,
       ),
-      partial
-        ? React.createElement('div', { style: { color: '#777', fontSize: 10, marginTop: 2 } }, '带 ≥ 的数字为下界：部分分桶未上报或扫描不完整，如实不计入。')
+      // 下界说明的触发面（B2 闸 F5）：token 侧（partial = 分桶未上报/扫描不完整）
+      // **或**费用侧（totalCost 参与换算的模型里有未配价但确有消耗的）任一成立就要
+      // 说明。旧实现只看 token 侧，于是「桶全报齐 + 有模型没配单价」时合计明明印着
+      // 「≥」却没有任何一行解释「≥ 从哪来」。
+      lowerBound
+        ? React.createElement('div', { style: { color: '#777', fontSize: 10, marginTop: 2 } },
+            partial
+              ? '带 ≥ 的数字为下界：部分分桶未上报或扫描不完整，如实不计入。'
+              : '带 ≥ 的数字为下界：有模型未配单价但确有 token 消耗，其费用未计入合计。')
         : null,
     )
   }

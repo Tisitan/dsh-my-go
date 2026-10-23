@@ -264,9 +264,21 @@ export function createCatalogStore(remote) {
       return fetchCatalog()
     },
     reset() {
+      // P3：作废 reset 之前已经在飞的旧请求。generation 是 fetchCatalog 的唯一
+      // 代次闸，不动它的话旧响应回来（at === generation）会把刚清空的目录又填
+      // 回去——reset 的语义是「忘掉一切，重新读」，不是「先清后覆盖」。
+      generation += 1
       started = false
       state = empty
       publish()
+      // 有活跃订阅者 = 面板正挂着：reset 把 started 压回 false 后没有谁会再调
+      // load()，useCatalog 会永久停在 idle（列表空白且再不重试）。这里补一次拉取。
+      // 无订阅者时保持 started=false，留给下一次 load()（新挂载）——reset 不替
+      // 未来的读者预取，既有契约（settings-fence：reset 后下一次 load 才是第 3 次）。
+      if (listeners.size > 0) {
+        started = true
+        void fetchCatalog()
+      }
     },
   }
 }

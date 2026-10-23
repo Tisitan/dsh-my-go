@@ -217,3 +217,47 @@ test('跨会话抢属主防线：属主仍活时 continue 拒绝跨会话操作�
   assert.equal(currentOf('parent-A')?.childId, 'sess-1', '收养后记录在属主桶内复活占槽')
   assert.equal(currentOf('parent-A')?.status, 'running')
 })
+
+test('跨会话 forward 源求助单属主防线：属主仍活时拒绝搬运，求助单原样保留', async () => {
+  // P2 回归（work/broker-probes/forward-cross-owner.mjs）：p1 子代持一张 waiting
+  // 求助单，p2 拿着该 ID 执行 forward。原实现丢弃 findHelpEverywhere 给出的
+  // parentId，于是把 p1 的求助内容派给 p2 名下新子代、并 resolveHelp 删掉 p1 的
+  // 单子——p1 原子代仍 waiting 占槽、结论归属也丢了。属主闸与 continue 同口径。
+  let parentALive = true
+  const registry = { get: (id) => (id === 'parent-A' ? (parentALive ? parentA : undefined) : parentB) }
+  const spawned = []
+  const { ctx, tools } = mockCtxFull({
+    agents: registry,
+    startContinuable: withRealSignalContract(async (spec) => {
+      spawned.push(spec)
+      return { childId: `sess-${spawned.length}` }
+    }),
+    subagentsExtra: { reportFrom: async () => 'help' },
+  })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 'A 的任务' }, execOf(parentA))
+  const childExec = execOf({ id: 'sess-1', session: { header: { parentSession: 'parent-A' } } })
+  const help = await tools.get('need_help').execute({ intent: 'read_doc', content: 'A 的私密求助' }, childExec)
+  assert.equal(snapOf('parent-A').helpRequests.length, 1, '求助单挂在 A 的流水线上')
+
+  const forward = tools.get('forward')
+  await assert.rejects(
+    () => forward.execute({ from: help.helpRequestId, target: 'librarian' }, execOf(parentB)),
+    (error) => {
+      const msg = String(error.message)
+      assert.ok(msg.includes('belongs to another live orchestration session'), '报错点明属主会话')
+      assert.ok(msg.includes('parent-A'), '报错携带属主 id')
+      return true
+    },
+  )
+  assert.equal(spawned.length, 1, '拒绝路径零派工（不得留下半截副作用）')
+  assert.equal(snapOf('parent-A').helpRequests.length, 1, '原求助单必须保留')
+  assert.equal(currentOf('parent-A')?.status, 'waiting', 'A 的子代仍挂起等处置')
+
+  // 属主消亡后允许收养转发（进程重启后的旧求助单是正当收养路径）
+  parentALive = false
+  const res = await forward.execute({ from: help.helpRequestId, target: 'librarian' }, execOf(parentB))
+  assert.equal(res.kind, 'go_work')
+  assert.equal(spawned.length, 2, '收养后正常派工')
+  assert.equal(snapOf('parent-A').helpRequests.length, 0, '转发成功才销账')
+})

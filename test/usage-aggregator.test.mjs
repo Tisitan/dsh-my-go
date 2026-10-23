@@ -41,12 +41,12 @@ function writeArchiveFixture(root, childId, frames) {
   writeFileSync(join(dir, 'session.jsonl.zstd'), Buffer.concat(container))
 }
 
-function makeDeps({ ledger = {}, sessions, subagents, runningChildren, prices, readArchive, now } = {}) {
+function makeDeps({ ledger = {}, evictedParents, enumerationTruncated, intactParents, sessions, subagents, runningChildren, prices, readArchive, now } = {}) {
   return {
     getSessions: () => sessions,
     getSubagents: () => subagents,
     listRunningChildren: runningChildren,
-    loadLedger: async () => ({ version: 3, parents: ledger }),
+    loadLedger: async () => ({ version: 3, parents: ledger, ...(evictedParents ? { evictedParents } : {}), ...(enumerationTruncated ? { enumerationTruncated: true } : {}), ...(intactParents ? { intactParents } : {}) }),
     getUsagePrices: prices,
     // 未显式注入时的默认：空完整档案——live miss 的 self 流（D6）安静短路，
     // 不触真实 FS；显式注入的替身保留各自计数/哨兵语义。
@@ -427,3 +427,515 @@ test('父会话自身复活解冻：冻结后 live 重驻留即续扫新代际�
   assert.equal(self.frozen, false, 'live 重驻留 → 解冻（R4）')
   assert.deepEqual(self.totals, { inputTokens: 9, outputTokens: 1, cacheReadTokens: null, cacheWriteTokens: null })
 })
+
+// ── 枚举完整性（F6 降级下界，P2）──────────────────────────────────────────────
+// 报告上的 partial 只表达「本次聚合可能漏了子代」：listChildren 失败，或台账已
+// 触顶 HISTORY_CAP 而第二源没给出任何行。没有它，合计会把下界当完整值展示。
+
+test('枚举完整性：listChildren 抛错 → report.partial=true（这一源不可用）', async () => {
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { p: [{ childId: 'c1', status: 'done' }] },
+    subagents: { listChildren: async () => { throw new Error('catalog offline') } },
+    readArchive: () => ({ events: [], complete: true }),
+  }))
+  const report = await agg.getUsage('p')
+  assert.equal(report.partial, true, '第二源失败 = 枚举可能漏人')
+  assert.equal(report.children.length, 1, '台账那一行照常入账')
+})
+
+test('枚举完整性：listChildren 形状漂移（非数组）→ 同样算不可用', async () => {
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { p: [{ childId: 'c1', status: 'done' }] },
+    subagents: { listChildren: async () => ({ nope: true }) },
+    readArchive: () => ({ events: [], complete: true }),
+  }))
+  assert.equal((await agg.getUsage('p')).partial, true)
+})
+
+test('枚举完整性：台账触顶 HISTORY_CAP 且第二源缺席 → report.partial=true', async () => {
+  const rows = []
+  for (let i = 0; i < 200; i += 1) rows.push({ childId: `c${i}`, status: 'done' })
+  assert.equal(rows.length, 200, '正好 HISTORY_CAP')
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { p: rows },
+    subagents: undefined, // 旧宿主 / lib-only 降级：没有 listChildren 这一源
+    readArchive: () => ({ events: [], complete: true }),
+  }))
+  const report = await agg.getUsage('p')
+  assert.equal(report.partial, true, '只靠一张被裁过的台账 = 下界')
+  assert.equal(report.children.length, 200)
+})
+
+test('枚举完整性：未触顶且第二源缺席 → 不加下界（正常形态不误报）', async () => {
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { p: [{ childId: 'c1', status: 'done' }] },
+    subagents: undefined,
+    readArchive: () => ({ events: [], complete: true }),
+  }))
+  const report = await agg.getUsage('p')
+  assert.equal(report.partial, false, '台账没触顶就没有裁剪可能，不许滥报下界')
+})
+
+test('枚举完整性：台账触顶但第二源给出了行 → 由第二源兜底，不算不完整', async () => {
+  const rows = []
+  for (let i = 0; i < 200; i += 1) rows.push({ childId: `c${i}`, status: 'done' })
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { p: rows },
+    subagents: { listChildren: async () => [{ kind: 'child', id: 'older-1', activity: 'idle', label: 'dsh-my-go:explore: t' }] },
+    readArchive: () => ({ events: [], complete: true }),
+  }))
+  const report = await agg.getUsage('p')
+  assert.equal(report.partial, false, '第二源在场就能捞回更早的子代')
+  assert.equal(report.children.length, 201, '两源合并去重：台账 200 + 第二源多出的 1')
+})
+
+test('枚举完整性：空输入（Z8）→ 空报告且 partial=false（不主张不完整）', async () => {
+  const agg = createUsageAggregator(makeDeps({}))
+  const report = await agg.getUsage('')
+  assert.equal(report.found, false)
+  assert.equal(report.partial, false)
+})
+
+// ── 宿主 catalog 形状 + 父桶整桶淘汰（P23）────────────────────────────────────
+
+test('P23 真实宿主 catalog 行（无 kind 字段）必须被采纳：{id, createdAt, mode, label}', async () => {
+  // @deepseek-ai/dsh-subagent 0.1.7-alpha.2 的 subagentCatalog 投影产出
+  // { id, createdAt, mode, label }，**没有 kind**；旧判据 entry.kind === 'child'
+  // 在生产里把第二源整源过滤成空。kind 缺省即按 child 采纳。
+  const realRows = [{ id: 'c2', createdAt: 7, mode: 'continuable', label: 'dsh-my-go:hermes: 干活' }]
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { p: [{ childId: 'c1', agentType: 'explore', status: 'done' }] },
+    subagents: { listChildren: async () => realRows },
+  }))
+  const report = await agg.getUsage('p')
+  assert.equal(report.children.length, 2, '第二源的那一行确实入账（c1 台账 + c2 catalog）')
+  const c2 = report.children.find((row) => row.childId === 'c2')
+  assert.ok(c2, '真实 catalog 行被采纳')
+  assert.equal(c2.agentType, 'dsh-my-go:hermes: 干活', 'label 即工种来源（与 broker 冷恢复同口径）')
+  assert.equal(report.partial, false, '两源都在、台账未触顶 ⇒ 不主张不完整')
+})
+
+test('P23 catalog 行的显式非 child kind 仍然跳过；空 id 也跳过（形状漂移防线）', async () => {
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { p: [{ childId: 'c1', status: 'done' }] },
+    subagents: { listChildren: async () => [{ kind: 'orchestrator', id: 'x1' }, { id: '' }, { id: 'c9', label: 'ok' }] },
+  }))
+  const report = await agg.getUsage('p')
+  const ids = report.children.map((row) => row.childId)
+  assert.deepEqual(ids.sort(), ['c1', 'c9'], '只有合法子代行入账')
+})
+
+test('P23 父桶整桶淘汰（命中持久化 evictedParents）⇒ report.partial=true（下界，不谎报完整）', async () => {
+  // pruneLedgerParents 触顶 200 父桶后整桶删掉最旧父会话：被淘汰者 ledgerRows=[]
+  // 且不满足「>= HISTORY_CAP」，旧判据于是把漏算报成完整。
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { other: [{ childId: 'k1', status: 'done' }] },
+    evictedParents: ['gone'],
+    subagents: undefined, // 降级形态：没有第二源
+  }))
+  const report = await agg.getUsage('gone')
+  assert.equal(report.partial, true, '命中淘汰痕迹 = 历史不可逆缺失')
+  assert.equal(report.children.length, 0, '用量本身恢复不了（如实不注入假数据）')
+})
+
+test('P23 桶不存在 + 父桶数触顶 ⇒ partial=true（处于淘汰态，无法证明「真没子代」）', async () => {
+  const parents = {}
+  for (let i = 0; i < 200; i += 1) parents[`p${i}`] = [{ childId: `c${i}`, status: 'done' }]
+  const agg = createUsageAggregator(makeDeps({ ledger: parents, subagents: undefined }))
+  const report = await agg.getUsage('unknown-parent')
+  assert.equal(Object.keys(parents).length, 200)
+  assert.equal(report.partial, true, '台账处于父桶淘汰态 ⇒ 缺席桶按不完整处理')
+})
+
+test('P23 桶不存在但父桶数未触顶 ⇒ partial=false（正常新会话不误报下界）', async () => {
+  const agg = createUsageAggregator(makeDeps({ ledger: { other: [{ childId: 'k1', status: 'done' }] }, subagents: undefined }))
+  const report = await agg.getUsage('brand-new-parent')
+  assert.equal(report.partial, false, '没触淘汰上限就没有裁剪可能')
+})
+
+test('P23 pruneLedgerParents 的淘汰痕迹：不可枚举（不扰动桶数/序列化）+ 有界 + 可跨调用累积', async () => {
+  const { pruneLedgerParents, evictedParentsOf, EVICTED_PARENTS_CAP } = await import('../preset/shared/misc.mjs')
+  const parents = {}
+  for (let i = 0; i < 205; i += 1) parents[`p${i}`] = [{ childId: `c${i}`, status: 'done', updatedAt: i + 1 }]
+  const pruned = pruneLedgerParents(parents)
+  assert.equal(Object.keys(pruned).length, 200, '保留最近 200 个桶')
+  assert.equal(Object.keys(pruned).includes('evictedParents'), false, '痕迹必须不可枚举（不扰动桶数判定）')
+  assert.equal(JSON.stringify(pruned).includes('evictedParents'), false, '直接序列化 parents 时不掺痕迹')
+  assert.equal(evictedParentsOf(pruned).length, 5, '淘汰 5 个最旧父会话')
+  // 跨调用累积（broker-ledger 用它把痕迹写进 payload 顶层）
+  const next = {}
+  for (let i = 0; i < 203; i += 1) next[`q${i}`] = [{ childId: `d${i}`, status: 'done', updatedAt: i + 1 }]
+  const pruned2 = pruneLedgerParents(next, undefined, evictedParentsOf(pruned))
+  const trail = evictedParentsOf(pruned2)
+  assert.equal(trail.length, 5 + 3, '旧痕迹保留 + 本次新淘汰 3 个')
+  assert.ok(trail.length <= EVICTED_PARENTS_CAP, '有界')
+})
+
+// ── 粘滞裁剪标志（P22 收口）：曾饱和 = 永久下界，不随桶数回落而消失 ────────────
+
+test('P22 旧饱和台账迁移（200 桶、无痕迹）⇒ 删掉一个保留桶后仍 partial=true', async () => {
+  // 场景 A：升级前已裁到 200 桶的旧档没有 evictedParents。加载时「原始桶数触顶」
+  // 即置粘滞 enumerationTruncated；随后 session/disposed 删桶到 199，痕迹仍为空
+  // ——两条瞬时判据同时失效，只有粘滞标志能证明「缺席 ≠ 真没子代」。
+  const parents = {}
+  for (let i = 0; i < 200; i += 1) parents[`kept${i}`] = [{ childId: `c${i}`, status: 'done', updatedAt: i + 1 }]
+  const agg = createUsageAggregator(makeDeps({ ledger: parents, subagents: undefined }))
+  assert.equal((await agg.getUsage('previously-evicted')).partial, true, '饱和台账（200 桶）样本')
+  // 模拟 broker 落盘后再删桶：payload 顶层带 enumerationTruncated，桶数 199
+  const shrunk = {}
+  for (let i = 1; i < 200; i += 1) shrunk[`kept${i}`] = parents[`kept${i}`]
+  const agg2 = createUsageAggregator(makeDeps({ ledger: shrunk, evictedParents: undefined, subagents: undefined, enumerationTruncated: true }))
+  assert.equal(Object.keys(shrunk).length, 199)
+  assert.equal((await agg2.getUsage('previously-evicted')).partial, true, '痕迹为空 + 桶数 199 也不许退回 false')
+})
+
+test('P22 粘滞标志：无名单的在场桶保守下界（v6），行照常入账、缺席桶也不许报完整', async () => {
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { fresh: [{ childId: 'c1', status: 'done' }] },
+    subagents: undefined,
+    enumerationTruncated: true,
+  }))
+  const present = await agg.getUsage('fresh')
+  // v6 收口：没有白名单时，在场桶也可能是「先重建后升级」的残缺桶 —— 无法证伪即标下界。
+  assert.equal(present.partial, true, '无名单的裁剪档：在场桶也必须是下界')
+  assert.equal(present.children.length, 1, '行本身照常入账，下界不是吞数据')
+  const absent = await agg.getUsage('never-seen')
+  assert.equal(absent.partial, true, '曾裁剪过的台账里缺席的父会话 = 无法证明「真没子代」')
+})
+
+test('P22 pruneLedgerParents 的粘滞标志：触顶/淘汰/痕迹溢出任一成立即真，且不可枚举', async () => {
+  const { pruneLedgerParents, enumerationTruncatedOf, EVICTED_PARENTS_CAP } = await import('../preset/shared/misc.mjs')
+  const rows = (n, pfx = 'p') => Object.fromEntries(Array.from({ length: n }, (_, i) => [`${pfx}${i}`, [{ childId: `c${i}`, status: 'done', updatedAt: i + 1 }]]))
+  assert.equal(enumerationTruncatedOf(pruneLedgerParents(rows(3))), false, '小台账不设标志')
+  const saturated = pruneLedgerParents(rows(200))
+  assert.equal(enumerationTruncatedOf(saturated), true, '桶数触顶 200 即视为曾饱和（旧档迁移）')
+  assert.equal(Object.keys(saturated).includes('enumerationTruncated'), false, '不可枚举（序列化/桶数判定零扰动）')
+  const pruned = pruneLedgerParents(rows(201))
+  assert.equal(enumerationTruncatedOf(pruned), true)
+  // 痕迹表溢出：713 轮淘汰 ⇒ 痕迹被 slice(-512) 截断，标志必须为真
+  let kept = {}
+  let trail = []
+  for (let i = 0; i < 713; i += 1) {
+    kept = pruneLedgerParents({ ...kept, [`r${i}`]: [{ childId: `c${i}`, updatedAt: i + 1 }] }, undefined, trail)
+    trail = kept.evictedParents ?? []
+  }
+  assert.equal(trail.length, EVICTED_PARENTS_CAP)
+  assert.equal(enumerationTruncatedOf(kept), true, '痕迹溢出后同样为真')
+  // 粘滞：标志随 carried 传下去，桶数回落也不回退
+  const carried = pruneLedgerParents(rows(5), undefined, trail)
+  assert.equal(enumerationTruncatedOf(carried), true, '输入带痕迹/标志 ⇒ 永远为真')
+})
+
+// ── 幸存桶白名单（v4 收口）：重建的未知父桶不得洗白成「历史完整」 ───────────────
+
+test('v4 裁剪态 + 白名单：名单内保留桶精确、名单外重建桶标下界', async () => {
+  const intact = Array.from({ length: 200 }, (_, i) => `kept${i}`)
+  const agg = createUsageAggregator(makeDeps({
+    ledger: {
+      kept5: [{ childId: 'c5', status: 'done' }],
+      // 当年被静默裁掉、之后恢复重建的旧父会话：桶里只有新记录
+      'previously-evicted': [{ childId: 'new-child', status: 'done' }],
+    },
+    subagents: undefined,
+    enumerationTruncated: true,
+    intactParents: intact,
+  }))
+  const retained = await agg.getUsage('kept5')
+  assert.equal(retained.partial, false, '白名单内的桶：历史自纪元起连续在场 ⇒ 精确')
+  assert.equal(retained.children.length, 1)
+  const resumed = await agg.getUsage('previously-evicted')
+  assert.equal(resumed.partial, true, '白名单外的在场桶：可能是恢复重建的旧会话 ⇒ 下界')
+  assert.equal(resumed.children.length, 1, '桶里的行照常入账（下界不是吞数据）')
+  const absent = await agg.getUsage('never-seen')
+  assert.equal(absent.partial, true, '缺席 + 裁剪态 ⇒ 下界')
+})
+
+test('v6 白名单缺失但已有粘滞标志（先重建后升级）⇒ 在场桶一律下界', async () => {
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { fresh: [{ childId: 'c1', status: 'done' }] },
+    subagents: undefined,
+    enumerationTruncated: true,
+  }))
+  assert.equal((await agg.getUsage('fresh')).partial, true, '仍处在裁剪态 ⇒ 报精确就是替残缺桶背书')
+  assert.equal((await agg.getUsage('unknown-absent')).partial, true)
+  // 缺少完整性证据的旧档由 prune 迁移为 intactParents: []。
+})
+
+test('v4 第二源给出完整名单 ⇒ 名单外重建桶也算完整（逐子代回读档案，漏算不成立）', async () => {
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { 'previously-evicted': [{ childId: 'new-child', status: 'done' }] },
+    subagents: { listChildren: async () => [{ id: 'new-child', createdAt: 1, mode: 'continuable', label: 'dsh-my-go:hermes: t' }] },
+    enumerationTruncated: true,
+    intactParents: ['kept0'],
+  }))
+  const report = await agg.getUsage('previously-evicted')
+  assert.equal(report.partial, false, '第二源在场并给出子代名单 ⇒ 枚举完整')
+  assert.equal(report.children.length, 1)
+})
+
+test('v4 pruneLedgerParents 的白名单：纪元确立 → 只减不增（后建桶永不自动加入）', async () => {
+  const { pruneLedgerParents, intactParentsOf, enumerationTruncatedOf } = await import('../preset/shared/misc.mjs')
+  const rows = (n, pfx = 'k') => Object.fromEntries(Array.from({ length: n }, (_, i) => [`${pfx}${i}`, [{ childId: `c${i}`, status: 'done', updatedAt: i + 1 }]]))
+  const epoch = pruneLedgerParents(rows(200))
+  assert.equal(enumerationTruncatedOf(epoch), true)
+  assert.equal(intactParentsOf(epoch).length, 200, '纪元在场的 200 桶全部入名单')
+  // 删掉 kept0、再加一个「恢复重建」的旧会话：名单只减不增
+  const after = pruneLedgerParents({ ...rows(199, 'k'), resurrected: [{ childId: 'n', status: 'done', updatedAt: 9e9 }] }, undefined, [], intactParentsOf(epoch), true)
+  const list = intactParentsOf(after)
+  assert.equal(list.length, 199, 'kept0 出名单')
+  assert.equal(list.includes('resurrected'), false, '后建的桶不自动加入名单')
+  // 未裁剪台账不产名单（不为无法判定而滥报）
+  assert.deepEqual(intactParentsOf(pruneLedgerParents(rows(3))), [])
+})
+
+test('v4 裁剪态下全新父桶：第二源缺席时保守标下界（残余误报面，如实钉住）', async () => {
+  // 与「恢复重建的旧会话」在台账里长得一模一样：桶里只有一条新记录、不在白名单。
+  // 无第二源时无法证明它是全新会话，只能保守报下界（宁可显示 ≥，不可把漏算说成精确）。
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { 'brand-new': [{ childId: 'c1', status: 'done' }] },
+    subagents: undefined,
+    enumerationTruncated: true,
+    intactParents: ['kept0', 'kept1'],
+  }))
+  assert.equal((await agg.getUsage('brand-new')).partial, true)
+  // 真实宿主上第二源在场时该会话会被证明完整（catalog 逐子代枚举），见上一例
+})
+
+test('v4b 名单退空为 [] 后：在场桶一律下界，绝不重新播种（同进程）', async () => {
+  const { pruneLedgerParents, intactParentsOf, hasIntactParentsMeta, enumerationTruncatedOf } = await import('../preset/shared/misc.mjs')
+  const rows = (ids) => Object.fromEntries(ids.map((id) => [id, [{ childId: 'c-' + id, status: 'done', updatedAt: 1 }]]))
+  const epochIds = Array.from({ length: 200 }, (_, i) => `kept${i}`)
+  let cur = pruneLedgerParents(rows(epochIds))
+  assert.equal(intactParentsOf(cur).length, 200)
+  // 200 个幸存桶陆续 session/disposed 退场 ⇒ 名单退空为 []
+  cur = pruneLedgerParents(rows(epochIds.slice(1)), undefined, [], intactParentsOf(cur), true)
+  assert.equal(intactParentsOf(cur).length, 199)
+  cur = pruneLedgerParents({}, undefined, [], intactParentsOf(cur), true)
+  assert.deepEqual(intactParentsOf(cur), [], '名单退空为 []')
+  assert.equal(hasIntactParentsMeta(cur), true, '空数组仍是「已确立的名单」，不是「没有名单」')
+  assert.equal(enumerationTruncatedOf(cur), true)
+  // 被裁掉的旧父会话恢复重建桶 ⇒ 不得被补种进名单
+  cur = pruneLedgerParents(rows(['previously-evicted']), undefined, [], intactParentsOf(cur), true)
+  assert.deepEqual(intactParentsOf(cur), [], '退空后绝不重新播种')
+  assert.equal(hasIntactParentsMeta(cur), true)
+  // 聚合端：空名单 + 在场桶 ⇒ 下界；同档内普通全新桶也不得报精确
+  const agg = createUsageAggregator(makeDeps({
+    ledger: { 'previously-evicted': [{ childId: 'new-child', status: 'done' }], fresh: [{ childId: 'cf', status: 'done' }] },
+    subagents: undefined,
+    enumerationTruncated: true,
+    intactParents: [],
+  }))
+  assert.equal((await agg.getUsage('previously-evicted')).partial, true, '空名单里的在场桶必须保持下界')
+  assert.equal((await agg.getUsage('fresh')).partial, true, '空名单下无法证明任何在场桶完整')
+})
+
+test('v4b 名单退空为 [] 后跨落盘重载：旧父会话重建桶仍保下界', async () => {
+  const [{ createLedgerOps }, fs] = await Promise.all([import('../preset/tools/broker-ledger.mjs'), import('node:fs/promises')])
+  const home = await fs.mkdtemp(join(tmpdir(), 'dsh-my-go-v4b-'))
+  try {
+    const file = `${home}/ledger.json`
+    const orchestrations = new Map()
+    const orchFor = (id) => { if (!orchestrations.has(id)) orchestrations.set(id, { history: [], chains: [] }); return orchestrations.get(id) }
+    const mkOps = () => createLedgerOps({ ledgerPath: file, orchestrations, orchFor, findRecordEverywhere() {}, bump() {} })
+    const usage = () => createUsageAggregator({ ledgerPath: file, readArchive: async () => ({ events: [], complete: true }) })
+    // 201 桶 ⇒ 真实淘汰 p0，名单 = 在场 200 桶
+    let ops = mkOps()
+    for (let i = 0; i < 201; i++) orchFor('p' + i).history = [{ childId: 'c' + i, agentType: 'hermes', status: 'done', updatedAt: i + 1 }]
+    ops.writeLedgerSync(ops.ledgerPayload())
+    let raw = JSON.parse(await fs.readFile(file, 'utf8'))
+    assert.equal(raw.intactParents.length, 200)
+    // 在册桶与已被淘汰的桶全部退场（编排实例全销毁）：名单退空为 [] 并**落盘**。
+    // 注意 p0 虽已被账本淘汰，其编排实例仍在内存里、下次落盘会重新长出桶——这里连它
+    // 一起销毁，才是「幸存桶全退场」的真实形态。
+    for (const pid of [...orchestrations.keys()]) orchestrations.delete(pid)
+    ops.scheduleLedgerSave(); ops.closeLedger()
+    raw = JSON.parse(await fs.readFile(file, 'utf8'))
+    assert.equal(Object.keys(raw.parents).length, 0)
+    assert.deepEqual(raw.intactParents, [], '空名单必须随档落盘（不是省略字段）')
+    // 旧被裁父会话 p0 恢复重建桶并落盘 → 重载 → 依然是下界
+    ops = mkOps(); await ops.loadLedger()
+    orchFor('p0').history = [{ childId: 'new', agentType: 'hermes', status: 'done', updatedAt: 9e9 }]
+    ops.scheduleLedgerSave(); ops.closeLedger()
+    raw = JSON.parse(await fs.readFile(file, 'utf8'))
+    assert.deepEqual(raw.intactParents, [], '重载后不得把重建桶补种进空名单')
+    assert.equal((await usage().getUsage('p0')).partial, true)
+    assert.equal((await usage().getUsage('previously-evicted')).partial, true)
+  } finally {
+    await fs.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('旧档已有淘汰痕迹但缺裁剪标志和名单 ⇒ 不把其余在场桶认作完整', async () => {
+  const { pruneLedgerParents, intactParentsOf } = await import('../preset/shared/misc.mjs')
+  const rows = (ids) => Object.fromEntries(ids.map((id) => [id, [{ childId: 'c-' + id, status: 'done', updatedAt: 1 }]]))
+  // 痕迹来自旧档，无法证明是否完整；标志缺失不代表此次才首次裁剪。
+  const seeded = pruneLedgerParents(rows(['a', 'b', 'c']), undefined, ['b'], undefined, false)
+  assert.deepEqual(intactParentsOf(seeded), [], '旧淘汰痕迹不能证明 a/c 从未丢过历史')
+  // 未裁剪台账不立名单
+  assert.deepEqual(intactParentsOf(pruneLedgerParents(rows(['a']))), [])
+})
+
+test('v6 先重建后升级：已裁剪态 + 无名单的旧档加载后落成空白名单，残留残缺桶不再报精确', async () => {
+  const [{ createLedgerOps }, fs] = await Promise.all([import('../preset/tools/broker-ledger.mjs'), import('node:fs/promises')])
+  const home = await fs.mkdtemp(join(tmpdir(), 'dsh-my-go-v6-'))
+  try {
+    const file = `${home}/ledger.json`
+    // 旧档形态：裁剪早已发生（粘滞标志在），受害父会话在升级前就已恢复并留下 1 行残缺桶，
+    // 且没有 intactParents 字段。
+    const parents = Object.fromEntries(Array.from({ length: 199 }, (_, i) => [`kept${i}`, [{ childId: `child${i}`, agentType: 'hermes', status: 'done', updatedAt: i + 1 }]]))
+    parents['previously-evicted'] = [{ childId: 'new-child', agentType: 'hermes', status: 'done', updatedAt: 999 }]
+    await fs.writeFile(file, JSON.stringify({ version: 3, parents, enumerationTruncated: true }))
+    const orchestrations = new Map()
+    const orchFor = (id) => { if (!orchestrations.has(id)) orchestrations.set(id, { history: [], chains: [] }); return orchestrations.get(id) }
+    const ops = createLedgerOps({ ledgerPath: file, orchestrations, orchFor, findRecordEverywhere() {}, bump() {} })
+    const usage = () => createUsageAggregator({ ledgerPath: file, readArchive: async () => ({ events: [], complete: true }) })
+    await ops.loadLedger()
+    // 升级落盘：不播种当前在场桶，落成空白名单
+    ops.scheduleLedgerSave(); ops.closeLedger()
+    const raw = JSON.parse(await fs.readFile(file, 'utf8'))
+    assert.deepEqual(raw.intactParents, [], '先重建后升级的旧档不得补种白名单')
+    assert.equal(raw.enumerationTruncated, true, '粘滞标志保留')
+    assert.equal((await usage().getUsage('previously-evicted')).partial, true, '残留残缺桶必须报下界')
+    assert.equal((await usage().getUsage('kept5')).partial, true, '同档其它在场桶也无法证明完整（保守）')
+    // 重载后再写一次：依旧是空名单，不会把在场桶补种进来
+    const again = createLedgerOps({ ledgerPath: file, orchestrations, orchFor, findRecordEverywhere() {}, bump() {} })
+    await again.loadLedger(); again.writeLedgerSync(again.ledgerPayload())
+    const raw2 = JSON.parse(await fs.readFile(file, 'utf8'))
+    assert.deepEqual(raw2.intactParents, [])
+    assert.equal((await usage().getUsage('previously-evicted')).partial, true)
+  } finally {
+    await fs.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('v6 直接喂给聚合器的裸 JSON（枚举标志 true、无名单）与经 prune 后（[]）同判', async () => {
+  const raw = createUsageAggregator(makeDeps({ ledger: { revived: [{ childId: 'n1', status: 'done' }] }, subagents: undefined, enumerationTruncated: true }))
+  assert.equal((await raw.getUsage('revived')).partial, true, 'intactKnown=false 也必须下界')
+  const pruned = createUsageAggregator(makeDeps({ ledger: { revived: [{ childId: 'n1', status: 'done' }] }, subagents: undefined, enumerationTruncated: true, intactParents: [] }))
+  assert.equal((await pruned.getUsage('revived')).partial, true, 'intactParents=[] 同判')
+  // 未裁剪台账里同一形状的桶仍然精确
+  const clean = createUsageAggregator(makeDeps({ ledger: { revived: [{ childId: 'n1', status: 'done' }] }, subagents: undefined }))
+  assert.equal((await clean.getUsage('revived')).partial, false)
+})
+
+test('v6 第二源「部分名单」不再算证明：必须覆盖台账已知的每个子代', async () => {
+  const ledger = { revived: [{ childId: 'n1', status: 'done' }, { childId: 'n2', status: 'done' }] }
+  const partial = createUsageAggregator(makeDeps({
+    ledger,
+    subagents: { listChildren: async () => [{ id: 'n1', createdAt: 1, mode: 'continuable', label: 'dsh-my-go:hermes: t' }] },
+    enumerationTruncated: true,
+    intactParents: [],
+  }))
+  assert.equal((await partial.getUsage('revived')).partial, true, '只给 n1 的残名单不能免除下界')
+  const full = createUsageAggregator(makeDeps({
+    ledger,
+    subagents: {
+      listChildren: async () => [
+        { id: 'n1', createdAt: 1, mode: 'continuable', label: 'dsh-my-go:hermes: t' },
+        { id: 'n2', createdAt: 2, mode: 'continuable', label: 'dsh-my-go:hermes: t' },
+      ],
+    },
+    enumerationTruncated: true,
+    intactParents: [],
+  }))
+  assert.equal((await full.getUsage('revived')).partial, false, '覆盖全部已知子代才算证明')
+})
+
+test('首次 201→200 裁剪确立幸存名单，已有名单跨 512 痕迹溢出仍保留', async () => {
+  const { pruneLedgerParents, intactParentsOf, evictedParentsOf, EVICTED_PARENTS_CAP } = await import('../preset/shared/misc.mjs')
+  const rows = (ids) => Object.fromEntries(ids.map((id) => [id, [{ childId: 'c-' + id, status: 'done', updatedAt: 1 }]]))
+  // 从未裁剪、也无历史痕迹的 201 桶：此轮真正首次淘汰 victim。
+  const fresh = Object.fromEntries(['victim', 'survivor', ...Array.from({ length: 199 }, (_, i) => `kept${i}`)].map((id, i) => [id, [{ childId: 'c-' + id, status: 'done', updatedAt: i + 1 }]]))
+  const seeded = pruneLedgerParents(fresh)
+  assert.equal(intactParentsOf(seeded).length, 200)
+  assert.ok(intactParentsOf(seeded).includes('survivor'))
+  assert.ok(!intactParentsOf(seeded).includes('victim'))
+  assert.deepEqual(evictedParentsOf(seeded), ['victim'])
+  // 之后痕迹表溢出 512（最早 victim 被挤出）：survivor 已在名单内，victim 永不进入
+  const trail = ['victim', ...Array.from({ length: 513 }, (_, i) => `e${i}`)]
+  const after = pruneLedgerParents(rows(['survivor', 'victim']), undefined, trail, intactParentsOf(seeded), true)
+  assert.equal(evictedParentsOf(after).length, EVICTED_PARENTS_CAP)
+  assert.ok(!evictedParentsOf(after).includes('victim'), 'victim 已被挤出痕迹表')
+  assert.deepEqual(intactParentsOf(after), ['survivor'], '溢出后名单不因 victim 出表而洗白')
+})
+
+test('v6b 已裁剪 + 无名单且痕迹为空/已溢出 ⇒ 不播种（先重建后升级）', async () => {
+  const { pruneLedgerParents, intactParentsOf } = await import('../preset/shared/misc.mjs')
+  const rows = (ids) => Object.fromEntries(ids.map((id) => [id, [{ childId: 'c-' + id, status: 'done', updatedAt: 1 }]]))
+  // 痕迹为空：旧版静默裁剪，一个 victim 都没记下 ⇒ 私下无法排除残缺桶
+  assert.deepEqual(intactParentsOf(pruneLedgerParents(rows(['survivor', 'victim']), undefined, [], undefined, true)), [])
+  // 痕迹已溢出：最早 victim 被挤出 ⇒ 同样不能把「不在痕迹里」当成幸存证明
+  const overflowed = ['victim', ...Array.from({ length: 513 }, (_, i) => `e${i}`)]
+  assert.deepEqual(intactParentsOf(pruneLedgerParents(rows(['survivor', 'victim']), undefined, overflowed, undefined, true)), [])
+})
+
+// 老版本落盘形态：淘汰表可能只记录了后来的裁剪，也可能早已被截断。
+// 两种都不能用当前非空且 <=512 的表证明「未在表中的父会话历史完整」。
+for (const [scenario, evictedParents] of [
+  ['单条无关淘汰', ['unrelated-parent']],
+  ['已落盘截断至512条', ['victim', ...Array.from({ length: 512 }, (_, i) => `evicted-${i}`)].slice(-512)],
+]) {
+  for (const hasTruncatedFlag of [true, false]) {
+    test(`旧档迁移回归：${scenario}、${hasTruncatedFlag ? '有' : '无'}裁剪标志，迁移和重启均保留下界`, async () => {
+      const [{ createLedgerOps }, fs] = await Promise.all([import('../preset/tools/broker-ledger.mjs'), import('node:fs/promises')])
+      const home = await fs.mkdtemp(join(tmpdir(), 'dsh-my-go-ledger-migration-'))
+      const file = join(home, 'ledger.json')
+      const root = join(home, 'sessions')
+      const parentId = 'victim'
+      const oldChildId = 'old-million-token-child'
+      const newChildId = 'new-child'
+      try {
+        // 归档始终可读；丢失的是旧子代到父会话的台账关联。
+        for (const [id, inputTokens] of [[parentId, 10], [oldChildId, 1_000_000], [newChildId, 100]]) {
+          writeArchiveFixture(root, id, [[header(0, 'prov-a', 'm1'), msg(1, { inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })]])
+        }
+        await fs.writeFile(file, JSON.stringify({
+          version: 3,
+          parents: { [parentId]: [{ childId: newChildId, agentType: 'hermes', status: 'done', updatedAt: 1 }] },
+          evictedParents,
+          ...(hasTruncatedFlag ? { enumerationTruncated: true } : {}),
+        }))
+        const original = JSON.parse(await fs.readFile(file, 'utf8'))
+        assert.equal(original.intactParents, undefined)
+        assert.ok(!original.evictedParents.includes(parentId))
+        assert.equal(original.evictedParents.length, scenario === '单条无关淘汰' ? 1 : 512)
+        const catalog = [oldChildId, newChildId].map((id) => ({ id, createdAt: 1, mode: 'continuable', label: 'dsh-my-go:hermes: test' }))
+        const usage = (withCatalog = false) => createUsageAggregator({
+          ledgerPath: file,
+          readArchive: (id, fromSeq) => readArchivedUsage(id, fromSeq, { root, cwd: process.cwd() }),
+          getSubagents: () => withCatalog ? { listChildren: async () => catalog } : undefined,
+        })
+        const assertReports = async (phase) => {
+          const lowerBound = await usage().getUsage(parentId)
+          assert.equal(lowerBound.totals.inputTokens, 110, `${phase}: self 10 + 新子代 100 正常计入`)
+          assert.equal(lowerBound.partial, true, `${phase}: 仍缺旧子代 100万，不得报告精确值`)
+          assert.ok(!lowerBound.children.some((child) => child.childId === oldChildId))
+          const complete = await usage(true).getUsage(parentId)
+          assert.equal(complete.totals.inputTokens, 1_000_110, `${phase}: 完整 catalog 能重新枚举旧子代归档`)
+          assert.equal(complete.partial, false, `${phase}: 真实补齐后的报告可以恢复精确值`)
+        }
+        // lib-only 直接读旧档也必须保守，不依赖 broker 先迁移落盘。
+        await assertReports('迁移前')
+        for (const phase of ['首次迁移落盘', '重启再次落盘']) {
+          // 每次使用新的 Map 和 createLedgerOps，避免把内存元数据误当成持久化成功。
+          const orchestrations = new Map()
+          const orchFor = (id) => {
+            if (!orchestrations.has(id)) orchestrations.set(id, { history: [], chains: [] })
+            return orchestrations.get(id)
+          }
+          const ops = createLedgerOps({ ledgerPath: file, orchestrations, orchFor, findRecordEverywhere() {}, bump() {} })
+          await ops.loadLedger()
+          ops.scheduleLedgerSave()
+          ops.closeLedger()
+          await assertReports(phase)
+          const persisted = JSON.parse(await fs.readFile(file, 'utf8'))
+          assert.equal(persisted.enumerationTruncated, true)
+          assert.deepEqual(persisted.intactParents, [], `${phase}: 不把未知历史的现存桶补种为完整`)
+          assert.deepEqual(persisted.evictedParents, evictedParents, `${phase}: 现有淘汰记录照常保留`)
+        }
+      } finally {
+        await fs.rm(home, { recursive: true, force: true })
+      }
+    })
+  }
+}

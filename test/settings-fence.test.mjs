@@ -289,3 +289,36 @@ test('schema：keepAlive 缺省即默认段（enabled 关）、段在席逐字�
   }
   assert.throws(() => resolvedHostConfig({ keepAlive: { enabled: 'yes' } }), 'enabled 非布尔拒')
 })
+
+test('连接重代：reset 作废在飞请求，并在有订阅者时自动重拉回 ready（P3）', async () => {
+  const { createCatalogStore } = await import('../src/client.js')
+  const pending = []
+  const remote = {
+    session: {
+      modelCatalog: () => new Promise((resolve) => {
+        const label = `gen-${pending.length + 1}`
+        pending.push(() => resolve({ ok: true, value: { routableProviders: [label], groups: [], failures: [] } }))
+      }),
+    },
+  }
+  const store = createCatalogStore(remote)
+  const seen = []
+  const off = store.subscribe(() => seen.push(store.get().status))
+  const inflight = store.load()
+  assert.equal(store.get().status, 'loading', '首次 load 起飞')
+  store.reset()
+  // reset 自身广播 idle，随后因为面板还挂着（订阅者在场）立刻重拉
+  assert.deepEqual(seen, ['loading', 'idle', 'loading'], 'reset 先清空再自己补拉，不把面板钉在 idle')
+  assert.equal(pending.length, 2, 'reset 后有一次新请求')
+  // 旧请求此时才回来：代次已变，必须整个丢弃（否则刚清空的目录被旧数据填回）
+  pending[0]()
+  await inflight
+  assert.equal(store.get().status, 'loading', '旧响应不落地')
+  assert.deepEqual(store.get().providers, [], '旧响应不得写入 providers')
+  pending[1]()
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(store.get().status, 'ready', '新请求落地后恢复 ready')
+  assert.deepEqual(store.get().providers, ['gen-2'], '显示的是重代后的目录')
+  off()
+})

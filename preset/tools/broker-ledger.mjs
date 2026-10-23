@@ -31,17 +31,44 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { HISTORY_CAP, LEGACY_PARENT_ID } from '../shared/constants.mjs'
-import { pruneLedgerParents } from '../shared/misc.mjs'
+import { pruneLedgerParents, evictedParentsOf, enumerationTruncatedOf, intactParentsOf } from '../shared/misc.mjs'
 import { normalizeRestoredChain } from '../shared/relay-chain.mjs'
 
 export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecordEverywhere, bump }) {
+  // 父桶整桶淘汰的痕迹（P23）：内存累加器，loadLedger 时从 payload 读回、每次落盘
+  // 时连同本次新淘汰的 parentId 一起写回。父桶淘汰是不可逆的信息损失，痕迹必须
+  // 跨重启存活——下游统计只有靠它才能把「被挤掉的会话」与「真没子代」区分开。
+  let evictedParents = []
+  // 台账「曾经被裁剪过」的粘滞事实（P22 收口）：痕迹表会溢出、旧台账迁移时痕迹
+  // 为空、桶数还会因 session/disposed 从 200 掉到 199 —— 三条判据都能失效，只有
+  // 「曾饱和」这件事本身必须被记住（一旦为真永不回退，随 payload 落盘）。
+  let enumerationTruncated = false
+  // 裁剪纪元幸存的父桶白名单（v4 收口）：只有名单内的桶能证明「历史自纪元起连续
+  // 在场」。名单外的桶可能是当年被静默裁掉、后又恢复重建的旧会话（桶里只剩重建
+  // 之后的记录），全局粘滞标志说不了这一点。名单只减不增（后建的桶永不自动加入），
+  // 有界 LEDGER_PARENTS_CAP 个——最多就是当时的在场桶数。
+  // 初始 `null` = 「尚未确立名单」，与「名单已确立但已退空为 `[]`」严格区分：
+  // 存活桶全退场后名单就是 `[]`，此后任何在场桶都不在白名单里（必须继续标下界），
+  // 若在这里用 `[]` 表示「未知」，下一次 prune 就会把恢复重建的旧会话重新播种洗白。
+  let intactParents = null
   const isLedgerRow = (r) => r && typeof r.childId === 'string' && typeof r.agentType === 'string'
   async function loadLedger() {
     try {
       const raw = JSON.parse(await readFile(ledgerPath, 'utf-8'))
+      if (Array.isArray(raw?.evictedParents)) evictedParents = raw.evictedParents.filter((pid) => typeof pid === 'string')
+      if (Array.isArray(raw?.intactParents)) intactParents = raw.intactParents.filter((pid) => typeof pid === 'string')
+      // 缺名单保持 null；prune 对已有裁剪事实的旧档建立保守空名单。
+      // 注意：这里**不改** enumerationTruncated。旧台账（升级前已裁到 200 桶、没有
+      // 该字段）的粘滞标志由下面 pruneLedgerParents 的「原始桶数触顶」判定补上。
+      if (raw?.enumerationTruncated === true) enumerationTruncated = true
       if (raw && (raw.version === 3 || raw.version === 2) && raw.parents && typeof raw.parents === 'object') {
         // v2/v3：按编排会话分桶的台账，逐 parentId 恢复到各流水线实例
-        for (const [pid, list] of Object.entries(pruneLedgerParents(raw.parents))) {
+        const pruned = pruneLedgerParents(raw.parents, undefined, evictedParents, intactParents ?? undefined, enumerationTruncated)
+        evictedParents = evictedParentsOf(pruned)
+        enumerationTruncated = enumerationTruncated || enumerationTruncatedOf(pruned)
+        // 裁剪态才算确立了名单（可能是空数组：纪元幸存桶全退场）。
+        if (enumerationTruncated) intactParents = intactParentsOf(pruned)
+        for (const [pid, list] of Object.entries(pruned)) {
           if (!Array.isArray(list)) continue
           orchFor(pid).history = list.filter(isLedgerRow).slice(-HISTORY_CAP)
         }
@@ -100,8 +127,19 @@ export function createLedgerOps({ ledgerPath, orchestrations, orchFor, findRecor
       // 摘除自然生效。
       if (orch.chains.length > 0) chains[pid] = orch.chains
     }
-    const payload = { version: 3, parents: pruneLedgerParents(parents) }
+    const pruned = pruneLedgerParents(parents, undefined, evictedParents, intactParents ?? undefined, enumerationTruncated)
+    evictedParents = evictedParentsOf(pruned)
+    enumerationTruncated = enumerationTruncated || enumerationTruncatedOf(pruned)
+    if (enumerationTruncated) intactParents = intactParentsOf(pruned)
+    const payload = { version: 3, parents: pruned }
     if (Object.keys(chains).length > 0) payload.chains = chains
+    // 淘汰痕迹随档（P23）：非空才写，旧档零变化；有界 EVICTED_PARENTS_CAP。
+    if (evictedParents.length > 0) payload.evictedParents = evictedParents
+    // 粘滞标志落盘（P22 收口）：非真不写，旧档零变化。
+    if (enumerationTruncated) payload.enumerationTruncated = true
+    // 幸存桶白名单随档（v4 收口）：未裁剪台账零变化；裁剪态下**无条件**写，空数组
+    // `[]` 也要写——它表示「名单已确立且幸存桶全退场」，读回时不能再被当成「无名单」。
+    if (enumerationTruncated && Array.isArray(intactParents)) payload.intactParents = intactParents
     return JSON.stringify(payload)
   }
   function writeLedgerSync(payload) {

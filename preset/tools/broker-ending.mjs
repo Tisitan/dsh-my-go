@@ -42,7 +42,7 @@ import { normalizeTurnFailure, isFallbackable } from '../shared/failure.mjs'
 import { readArchivedTurnFailure } from '../shared/archive.mjs'
 import { sessionEvents } from '../shared/adjacent.mjs'
 import { agentLabel } from '../shared/misc.mjs'
-import { hasBoardEntry } from '../shared/board.mjs'
+import { hasBoardEntry, readBoardLandedSeq } from '../shared/board.mjs'
 import { REDISPATCH_RESUME_PREFIX } from '../shared/report-format.mjs'
 import { attributeEnd, shouldAdvanceQueue } from '../shared/end-attribution.mjs'
 import { bindSpawnedChild } from '../shared/orchestration.mjs'
@@ -336,9 +336,9 @@ export function createEndingOps({
   // ——不含业务判定。主体抽成 processEnd 以便缓冲认领后重入（方案 A 重放）。
   function processEnd(info) {
     const childId = info?.id
-    // end 到达即取消 disposed 宽限期兜底——正常完工路径上兜底定时器必然在挂着。
-    // 无 id 的载荷在表上没有键，自撤是幂等空转，故这一步无条件执行。
-    cancelDisposeFallback(childId)
+    // 撤 disposed 宽限期兜底的**唯一**位置在归因之后（见下方「兜底定时器撤销点」）：
+    // 不能在入口无脑撤——E4 吞掉掐断类终局（expected-abort）时必须让定时器继续挂着，
+    // 它是「宿主其实没有第二段续轮」时的唯一解冻路径（B2 闸 F1）。
     // ★ 缓冲闸（方案 A）：类型登记与台账双双缺席 = 登记未就绪 ⇒ 暂存待认领，
     //   绝不猜测归因（占位归因兜底不在归因面，见 end-attribution.mjs E2 注释）。
     //   条件与 attributeEnd 的 E2 前置严格一致：type 取证（活登记 ?? 墓碑）失败
@@ -348,6 +348,9 @@ export function createEndingOps({
       if (!typeSeen) {
         const ledgerHit = orchOfChild(childId)?.orch?.record(childId)
         if (!ledgerHit) {
+          // 这条 end 已被受理（暂存待认领重放），兜底定时器不该再触发：重放时它会
+          // 走完整归因，届时按决策统一处理。撤在这里是因为重放可能隔着毫秒级窗口。
+          cancelDisposeFallback(childId)
           bufferEnd(childId, info)
           return
         }
@@ -376,10 +379,31 @@ export function createEndingOps({
       // 每 end 至多一枚 existsSync（同步段零 await 不破：它是同步调用，不是 await）。
       reportGate: REPORT_EXT ? {
         enabled: true,
-        reportSubmitted: (id) => childRegistry.reportSubmitted.has(id),
+        // 已交付判定（P21）：内存登记 + 世代校验。登记要能在**本世代**站住脚——
+        // 子代经历过复活（有世代锚，含 `seq=0` 的「唤醒前一片空白」）时，必须
+        // `登记绑定的 landedSeq > 锚`：抢跑的 report_submit 若写盘失败（EISDIR），
+        // landedSeq 不前进、markSubmitted 没执行，表里躺的是上一世代的旧摘要，
+        // 而 end-attribution 的表命中在 hasBoard 之前短路——不校验就会拿旧结论
+        // 直通（stale-pass）。未复活过的子代没有锚，判定与旧口径逐字节一致。
+        reportSubmitted: (id) => {
+          if (!childRegistry.reportSubmitted.has(id)) return false
+          if (!childRegistry.hasBoardSeqAtArm(id)) return true
+          const armed = childRegistry.boardSeqAtArmOf(id)
+          const bound = childRegistry.submittedLandedSeqOf(id)
+          return typeof bound === 'number' && bound > armed
+        },
         readSubmitted: (id) => childRegistry.reportSubmitted.get(id),
         repairRetried: (id) => childRegistry.repairRetried.has(id),
-        hasBoard: () => (routed?.parentId ? hasBoardEntry(routed.parentId, childId) : false),
+        // 板兜底（P22 后半）：正板在 ≠ 本世代交过报告。经历复活的子代有世代锚
+        // （= 唤醒前的**已落盘**代次），要求落盘代次已越过该锚——否则新世代那次
+        // 写盘可能失败（.prev.md 被目录占住 ⇒ EISDIR），正板位置留着上一世代的
+        // 旧报告，闸门会把它当成本轮已交付直通（false pass）。
+        hasBoard: () => {
+          if (!routed?.parentId) return false
+          if (!hasBoardEntry(routed.parentId, childId)) return false
+          if (!childRegistry.hasBoardSeqAtArm(childId)) return true
+          return readBoardLandedSeq(routed.parentId, childId) > childRegistry.boardSeqAtArmOf(childId)
+        },
       } : null,
     })
     const ownerPid = facts.ownerPid
@@ -411,6 +435,16 @@ export function createEndingOps({
       if (notice.target === 'log') console.warn(notice.text)
       else notifyOwner(notice.parentId, notice.text)
     }
+    // ── 兜底定时器撤销点（唯一，B2 闸 F1）──────────────────────────────────
+    // `expected-abort` = 「这条掐断类是预期噪音，续轮还会再发一条终局」⇒ **必须
+    // 留着** agent/disposed 已挂上的宽限期定时器：
+    //   • 第二段 Activation 真的来了 ⇒ 它的终局 end 走本函数并在这一行撤掉定时器；
+    //   • 宿主其实已彻底掐断、再无第二段 ⇒ 宽限期到点由兜底按 failed 收槽并推进
+    //     队列（不撤是唯一解冻路径；撤了就永久卡槽 —— 这正是 P1 原缺陷的形态）。
+    // 其余一切决策都意味着这条 end 已经是该记录的结局，兜底不该再触发。
+    // 放在 ops/notices 之后：guard（consume-abort-guard）已在同步段落地，判据只读
+    // 归因结论，不引入新的时序依赖。
+    if (decision !== 'expected-abort') cancelDisposeFallback(childId)
     if (decision === 'fallback-evaluation') {
       // ops（fallbackDecided.add）与 notices（评估中预告）都已在同步段落地，异步
             // 重派链**必须**是本决策点的最后一件事——协议第 1 条（同步段零 await）。
