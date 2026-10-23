@@ -233,10 +233,11 @@ export function createDeliveryOps({
   // **复活即新世代（isFinished 支）**：台账复籍三步 + 报告代际重置同点完成——
   // rearmChild 清掉上一代际的提交登记与暂存正文（闸门不再把老报告当本轮交付），
   // 旧正板归档成 <childId>.prev.md（report_fetch / 闸门 / 链直投读到的正板位在
-  // 本轮提交前恒为空）。归档是异步 fs 操作（M5 唯一允许 await 的一处：它发生在
-  // 复籍之后、台账照记之后，不在任何「掐断 → 投递」的同步段中间），失败只 warn
-  // ——归档不成功绝不阻断续派投递（最坏后果退化成旧行为，不是丢指令）。
-  async function rearmAfterDelivery({ orch, record, targetId, ownerPid, isFinished, prompt, urgency, resolvePendingHelp = false, ledgerFirst = false }) {
+  // 本轮提交前恒为空）。归档是异步 fs 操作（M5 唯一允许 await 的一处），失败只
+  // warn——归档不成功绝不阻断续派投递（最坏后果退化成旧行为，不是丢指令）。
+  // 时序（P2 修复）：**归档先入队**（同步压进 board 的同键串行队列，先于复籍），
+  // **await 放在复籍与登记重置之后**——见 isFinished 分支内的注释。
+  async function rearmAfterDelivery({ orch, record, targetId, ownerPid, isFinished, prompt, urgency, resolvePendingHelp = false, ledgerFirst = false, expectedBoardSeq, expectedLandedSeq }) {
     const writeLedger = () => orch.followupPrompt(targetId, prompt, urgency)
     if (ledgerFirst) writeLedger()
     if (record.status === 'waiting') {
@@ -248,6 +249,20 @@ export function createDeliveryOps({
       }
       orch.resume(targetId)
     } else if (isFinished) {
+      // 归档**入队**必须先于复籍（P2 修复的时序半边）：archiveGenerationBoard 是
+      // async 函数，但它的第一句就是同步调用 archiveBoardEntry → 同步把归档任务压进
+      // 该 (sessionId, childId) 的串行队列。此后子代被唤醒后提交的新报告只能排在
+      // 归档之后（队列到达序），归档绝不会抽走新世代刚写的正板。
+      // **await 放在复籍之后**：await 之前若记录还没回到 currentMap，归档那段 fs I/O
+      // 就是一个「记录不在活槽」的真空期——子代恰在此刻以 error 终局收尾会被判成
+      // late-duplicate 丢掉，随后 revive 又把它捞回 running，槽位永久卡死。故本处
+      // 保持「入队早、等待晚」，复籍与登记重置仍是同步相邻的一段（中间零 await）。
+      // 世代边界（P22）：归档必须绑定「唤醒前的写代次」expectedBoardSeq，而不是
+      // 让 archiveBoardEntry 在**此刻**重新采样——子代被唤醒得极快时新报告已经
+      // 排在队里，采样到的正是新代次，判等通过就把新板挪成了 .prev.md。
+      // 注意这里是**入队**代次（expectedBoardSeq）：只要有新写尝试入队就不挪板，
+      // 写盘失败也不许挪——正板留在原位、由终局闸门按落盘代次判「没写成」。
+      const archiving = archiveGenerationBoard(ownerPid, targetId, expectedBoardSeq)
       // 已结束的子智能体重新入册并恢复类型登记，否则它游离在泳道槽位之外、
       // 再次结束时结论会被静默丢弃；三张表与 continue 复活路径同一实现
       // （漏一张就是「复活后 conclusion 静默丢失」或「备选回跳主模型」）
@@ -255,18 +270,41 @@ export function createDeliveryOps({
       // 暂存正文只清一处：rearmChild 内部已 `stagedReports.delete(childId)`
       // （复活即新世代，与 reportSubmitted / repairRetried 同点翻篇）。此前在
       // 这里再补一次 dropStagedReport 是第二个消费方——两处只会漂移，不会更安全。
+      // 唤醒窗口内子代可能已经抢跑交了新报告（writeBoard 落板 + report_submit
+      // 登记）。rearmChild 的职责是「清上一代际的提交登记」，不能连这份**本世代**
+      // 刚登记的提交一起抹掉。
+      //
+      // 判据必须是**成功落盘**代次已越过唤醒前边界（P21）：只比入队代次会误判
+      // ——writeBoard 在入队同步段就 bump 写代次，抢跑的那次写若因 EISDIR 抛错，
+      // markSubmitted 根本没执行，表里躺的还是上一世代的旧摘要；此时「写代次已
+      // 越过」成立，旧摘要被当成新世代登记恢复回去，第二轮终局就被它短路过闸
+      // （stale-pass）。landedSeq 只在 rename 成功后推进，写盘失败时钉在边界上，
+      // 于是这里不恢复、rearmChild 正常清空旧世代登记。
+      // 判据直接读**登记自身的绑定代次**（v4 加固），而不是现读 landedSeq：
+      // 抢跑的 report_submit 跑完 `await writeBoard(...)`（landed 已 +1）到执行
+      // 下一行同步的 `markSubmitted` 之间隔着一个 await 恢复微任务——那个微任务
+      // 窗口里表里躺的还是上一世代的旧值。只有「绑定代次已越过边界」才证明新世代
+      // 的 markSubmitted **已经执行完毕**；还在路上的那个，让它自己登记即可（这里
+      // 不恢复旧值，rearmChild 先清干净）。
+      const boundNow = childRegistry.submittedLandedSeqOf(targetId)
+      const freshSubmission = typeof expectedLandedSeq === 'number' && typeof boundNow === 'number' && boundNow > expectedLandedSeq
+        ? childRegistry.reportSubmitted.get(targetId)
+        : undefined
       childRegistry.rearmChild(targetId, record, ownerPid)
-      await archiveGenerationBoard(ownerPid, targetId)
+      // 恢复时**连绑定一起**重建（markSubmitted 同点写 submittedLandedSeq）：
+      // 只塞回值会让这条登记在闸门的世代校验里缺参数，反而把合法的抢先提交判成未交。
+      if (freshSubmission !== undefined) childRegistry.markSubmitted(targetId, freshSubmission, boundNow)
+      await archiving
     }
     if (!ledgerFirst) writeLedger()
   }
 
   // 旧正板 → <childId>.prev.md（覆盖旧留痕）。正板缺席是常态（子代从未交过
   // 报告就被复活），archiveBoardEntry 自会返回 archived=false；异常只 warn。
-  async function archiveGenerationBoard(ownerPid, childId) {
+  async function archiveGenerationBoard(ownerPid, childId, expectedBoardSeq) {
     if (typeof ownerPid !== 'string' || ownerPid === '') return false
     try {
-      const result = await archiveBoardEntry(ownerPid, childId)
+      const result = await archiveBoardEntry(ownerPid, childId, { expectedSeq: expectedBoardSeq })
       return result?.archived === true
     } catch (error) {
       console.warn(`[dsh-my-go] 复活归档旧报告板失败 (${ownerPid}/${childId}): ${String(error)}`)

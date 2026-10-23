@@ -27,6 +27,16 @@
  *             这里，重调传「（已暂存）」或省略 report 即回填；成功提交、
  *             复活开新一轮、终局翻篇三处清理；容量 STAGED_REPORTS_CAP 兜底
  *  modelCache       provider → 模型 id 集合（只缓存「列举成功」的清单，含空集）
+ *  pendingDeliveries childId → 在途投递计数（continue/forward 的唤醒投递窗口）。
+ *             begin/end 成对，只由投递方包住「唤醒 → 复籍」整段；disposed 宽限期
+ *             兜底在计数 >0 时**不得判死**（P11：冷恢复可能比宽限期长得多）。
+ *             终局清理不动它——投递可能比记录更长寿，清了就等于放开那把刀。
+ *  boardSeqAtArm   childId → { seq }：本世代唤醒前的 board **已落盘**代次（P21/P22
+ *                  世代锚；`{seq:0}` 的「已设锚」≠「从未设锚」，见 noteBoardSeqAtArm）。
+ *  submittedLandedSeq  childId → 该条 reportSubmitted 写中时的 landedSeq（P21）。
+ *             continue/forward 在**唤醒之前**登记；终局报告闸门的板兜底据此要求
+ *             「正板确系本世代新写入」（落盘代次已越过该锚），否则上一世代残留的
+ *             旧板会被当成新一轮已交付。
  *  heartbeats       childId → { roundStartAt, lastSignalAt, pingsUnanswered }
  *             （主编缓存心跳的「本轮起始 / 上次信号 / 未回应 ping 数」；
  *             spawn·continue·need_help·report_submit 等任一信号刷新
@@ -72,10 +82,18 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   const abortExpected = new Set()
   const fallbackDecided = new Set()
   const repairRetried = new Set()
+  // 世代锚表的容量上限（P21 顺手清理）：与 reportSubmitted 同尺。
+  const BOARD_SEQ_ARM_CAP = 200
   const reportSubmitted = new Map()
+  // 提交登记 ↔ 报告板世代的绑定（P21）：id → 落盘成功时的 landedSeq。
+  // 与 reportSubmitted 同生同灭（rearmChild 一起清、FIFO 一起驱逐），只多一层
+  // 「这条登记写的是哪代板」的事实，闸门用它防旧世代登记短路过闸。
+  const submittedLandedSeq = new Map()
   const stagedReports = new Map()
   const modelCache = new Map()
   const heartbeats = new Map()
+  const pendingDeliveries = new Map()
+  const boardSeqAtArm = new Map()
 
   /**
   * disposed 先于 end 到达：工种从活登记移入墓碑，备选覆盖随之摘除（墓碑期
@@ -102,12 +120,29 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   * 跨终局保留，本方法是它唯一的收缩手段——不设容量就等于让一条永不被清理的表
   * 随常驻进程无限长。
   */
-  function markSubmitted(id, value) {
+  function markSubmitted(id, value, landedSeq) {
     reportSubmitted.delete(id)
     reportSubmitted.set(id, value)
     if (reportSubmitted.size > REPORT_SUBMITTED_CAP) {
-      reportSubmitted.delete(reportSubmitted.keys().next().value)
+      const evicted = reportSubmitted.keys().next().value
+      reportSubmitted.delete(evicted)
+      submittedLandedSeq.delete(evicted)
     }
+    if (Number.isFinite(landedSeq)) submittedLandedSeq.set(id, landedSeq)
+    else submittedLandedSeq.delete(id)
+    if (submittedLandedSeq.size > REPORT_SUBMITTED_CAP) {
+      submittedLandedSeq.delete(submittedLandedSeq.keys().next().value)
+    }
+  }
+
+  /**
+   * 某条提交登记对应的是哪一代报告板（P21）。report_submit 落板成功后写入当时
+   * 的 landedSeq；闸门用它判断「这条登记是不是本世代写的」，从而让
+   * `hasBoard` 的世代护栏无法被一条**上一世代**的内存登记短路绕过（抢跑的
+   * report_submit 若写盘失败，landedSeq 不前进，登记也不会被当成新世代）。
+   */
+  function submittedLandedSeqOf(id) {
+    return submittedLandedSeq.get(id)
   }
 
   /**
@@ -152,6 +187,12 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   // 闸门若再一次看到它的 end（双发残余窗口/补交轮终局），清掉会把它判成「从未
   // 提交」而发射第二次补发。代际翻篇的唯一时点是 rearmChild（主动复活开新一轮）。
   // 收缩由 markSubmitted 的 FIFO 容量承担。
+  // 世代锚随终局清（P21）：属性是「本世代板写到哪」，终局闸门已经读过一次，
+  // 之后同 childId 再无第二次终局读取的机会；留着只会在长跑进程里无界积累
+  // （复活时投递方会重新设锚，所以这里清掉不丢信息）。
+  // 提交登记绑定的 landedSeq 与 reportSubmitted 同律：**不清**（同一代际的
+  // 双发残余窗口/补交轮终局还要读它），只随 rearmChild 与 FIFO 驱逐翻篇。
+    boardSeqAtArm.delete(id)
   // 暂存正文随终局丢：子代已离场，不会再有重调来取它。
     stagedReports.delete(id)
   }
@@ -168,8 +209,63 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
   // 心跳表同点删（与 retireChild 同律：类型侧翻篇即本代际事实作废）
     heartbeats.delete(id)
   // 与 retireChild 同理：reportSubmitted 不随任何终局形态清空（只随 rearmChild 翻篇）；
+  // 世代锚反而要清（属主实例已销毁 ⇒ 不会再有本世代的终局闸门读它）。
+    boardSeqAtArm.delete(id)
   // 暂存正文同样没有消费方了，同点丢。
     stagedReports.delete(id)
+  }
+
+ // ── 在途投递窗口 + 报告板世代锚（P11 / P22）──────────────────────────────────
+  /**
+   * 在途投递窗口（P11）。投递方（continue/forward）在**唤醒子代之前** begin，
+   * 在复籍落地后的 finally 里 end；disposed 宽限期兜底读 isDeliveryPending。
+   *
+   * 为什么必须由投递方显式开窗：宿主冷恢复（coldResume = observeSession +
+   * materialize）没有任何时长保证，可能远超 disposeEndGraceMs。窗口内 broker 侧
+   * 记录还没被 followupPrompt/revive 换掉（对象身份不变），兜底定时器看不出
+   * 「有人在恢复」，只能靠这张表知道「有一笔投递在飞」。计数而非布尔：同一
+   * childId 可能被并发 continue（重复投递是调用方的错，但计数保证 end 成对时
+   * 不会提前关窗）。
+   */
+  function beginDelivery(childId) {
+    pendingDeliveries.set(childId, (pendingDeliveries.get(childId) ?? 0) + 1)
+  }
+
+  function endDelivery(childId) {
+    const n = pendingDeliveries.get(childId) ?? 0
+    if (n <= 1) pendingDeliveries.delete(childId)
+    else pendingDeliveries.set(childId, n - 1)
+  }
+
+  function isDeliveryPending(childId) {
+    return (pendingDeliveries.get(childId) ?? 0) > 0
+  }
+
+  /**
+   * 本世代报告板的**已落盘**代次锚（P21/P22）：continue/forward 在唤醒**之前**
+   * 记下当时的 boardLandedSeq。终局闸门要求「本世代确实写过板」——判据是
+   * landedSeq > 该锚，而不是「写过板」本身：抢跑的 report_submit 若写盘失败
+   * （EISDIR），landedSeq 停在锚上，闸门就不认。
+   *
+   * 存 { seq } 而不是裸数字：`seq === 0` 的「已设锚」与「从未设锚」必须可区分
+   * ——前者要求 landedSeq ≥ 1（新世代必须真写成过），后者（老路径）不做世代校验。
+   * 容量跟 REPORT_SUBMITTED_CAP 同尺（childId 全局唯一，活体数受 CURRENT_MAP_CAP
+   * 约束，这里只兜异常增长）；retireChild 时清（终局闸门已读完，不再需要）。
+   */
+  function noteBoardSeqAtArm(childId, seq) {
+    if (typeof seq !== 'number' || !Number.isFinite(seq) || seq < 0) return
+    boardSeqAtArm.delete(childId)
+    boardSeqAtArm.set(childId, { seq })
+    if (boardSeqAtArm.size > BOARD_SEQ_ARM_CAP) boardSeqAtArm.delete(boardSeqAtArm.keys().next().value)
+  }
+
+  function boardSeqAtArmOf(childId) {
+    return boardSeqAtArm.get(childId)?.seq ?? 0
+  }
+
+  /** 该子代是否设有世代锚（`seq=0` 也算「有」——与 boardSeqAtArmOf 的 0 默认值不同）。 */
+  function hasBoardSeqAtArm(childId) {
+    return boardSeqAtArm.has(childId)
   }
 
  // ── 心跳字段（主编缓存心跳的信号面；定时器与决策在 broker-heartbeat.mjs）──────
@@ -267,6 +363,7 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     // 上一代的旧板上。清掉后，新一轮要么真交报告才直通，要么正常触发补发；旧板
     // 文件由工具簇/rearmAfterDelivery 同点归档成 <childId>.prev.md（回归档，不删）。
     reportSubmitted.delete(childId)
+    submittedLandedSeq.delete(childId)
     stagedReports.delete(childId)
     sessionTypes.set(childId, record.agentType)
   // 心跳同点开新一轮（keep-alive）：复活轮的「本轮已运行」从此刻起算，上一代际
@@ -292,8 +389,11 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     stagedReports,
     modelCache,
     heartbeats,
+    pendingDeliveries,
+    boardSeqAtArm,
     tombstoneType,
     markSubmitted,
+    submittedLandedSeqOf,
     stageReport,
     takeStagedReport,
     dropStagedReport,
@@ -302,6 +402,12 @@ export function createChildRegistry({ disposedTypesCap = DISPOSED_TYPES_CAP } = 
     fallbackOverrideFor,
     promoteFallback,
     rearmChild,
+    beginDelivery,
+    endDelivery,
+    isDeliveryPending,
+    noteBoardSeqAtArm,
+    boardSeqAtArmOf,
+    hasBoardSeqAtArm,
     noteHeartbeatSignal,
     noteHeartbeatPing,
     heartbeatOf,

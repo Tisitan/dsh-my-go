@@ -965,3 +965,93 @@ test('半输入：清空拍距框后再保存也不产生红字（读回判定�
   assert.doesNotMatch(receipt, /没落盘|未落盘/, '清空那一格不该引发「没落盘」红字')
   assert.equal(booted.scope.state.user.keepAlive.orchestratorIntervalMs, 60000, '用户层那条覆盖原封不动')
 })
+
+test('保存飞行期间的新输入不被静默清空：草稿保留、状态栏仍报待保存（P2）', async () => {
+  const booted = openCard({ user: { roles: {} }, revision: 4 })
+  const effort = () => all(booted.tree, (node) => node.tag === 'select')[0]
+  await typeValue(booted, effort(), 'high')
+  // 写通道挂在闸门上：模拟真实异步 mutate（官方信道要走一次 RPC）
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const realMutate = booted.scope.mutate
+  booted.scope.mutate = async (ops, expected) => { await gate; return realMutate(ops, expected) }
+  const saveButton = all(booted.tree, (node) => node.props?.['data-role'] === 'save')[0]
+  const pending = saveButton.props.onClick({ target: saveButton, preventDefault() {}, stopPropagation() {} })
+  await tick()
+  booted.reload()
+  // 飞行期间用户继续编辑（旧实现会在落盘后 setDraft(null)，把这一笔静默蒸发）
+  await typeValue(booted, effort(), 'max')
+  release()
+  await pending
+  booted.reload()
+  await tick()
+  assert.equal(effort().props.value, 'max', '飞行期间的新输入必须留下')
+  const status = all(booted.tree, (node) => node.props?.['data-role'] === 'status')[0]
+  assert.match(textOf(status), /待保存/, '状态栏不许误报「无改动」')
+  assert.match(textOf(status), /r5/, '栅栏已挪到刚落盘的 revision')
+  const receipt = all(booted.tree, (node) => node.props?.['data-role'] === 'receipt')[0]
+  assert.match(textOf(receipt), /已保存/, '前序保存确实生效')
+  assert.match(textOf(receipt), /新改动尚未保存/, '回执点明还有一笔没保存')
+  const written = booted.scope.state.user.sisyphus ?? booted.scope.state.user
+  assert.equal(written.reasoningEffort, 'high', '先那一笔已落盘')
+})
+
+test('自定义角色键名：输入新键名并失焦即改名（受控草稿态，P2）', async () => {
+  const booted = openCard({ user: { roles: { 'custom-x': { provider: 'p', model: 'm', fallbacks: [], persona: '' } } } })
+  await settle(booted)
+  await click(booted, rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('custom-x')))
+  const keyInput = () => all(booted.tree, (node) => node.props?.['data-role'] === 'role-key')[0]
+  assert.equal(keyInput().props.value, 'custom-x', '输入框显示当前键名')
+  // 受控输入：敲进去的值必须留在框里（旧实现 value 绑 key，下一帧就被刷回旧值，
+  // 于是第二个字符都打不进去，onBlur 的 next !== key 永不成立）
+  await typeValue(booted, keyInput(), 'custom-y')
+  assert.equal(keyInput().props.value, 'custom-y', '输入不被刷回旧键名')
+  await keyInput().props.onBlur({ target: { value: 'custom-y' } })
+  booted.reload()
+  await tick()
+  const names = rowsOf(booted.tree, 'roles').map((node) => textOf(node))
+  assert.ok(names.some((text) => text.includes('custom-y')), '新键名出现在清单里')
+  assert.ok(!names.some((text) => text.includes('custom-x')), '旧键名消失')
+  assert.equal(keyInput().props.value, 'custom-y', '改名成功后输入框跟随新键名（选中换人即重置草稿）')
+  assert.match(textOf(all(booted.tree, (node) => node.props?.['data-role'] === 'status')[0]), /待保存/, '改名进草稿，等保存')
+  const ops = booted.scope.state.writes
+  assert.equal(ops.length, 0, '失焦改名不写盘：仍走草稿 + 立即保存')
+})
+
+test('自定义角色键名：非法/重名键名失焦回滚到原键名并给提示（P2）', async () => {
+  const booted = openCard({ user: { roles: { 'custom-x': { provider: 'p', model: 'm', fallbacks: [], persona: '' } } } })
+  await settle(booted)
+  await click(booted, rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('custom-x')))
+  const keyInput = () => all(booted.tree, (node) => node.props?.['data-role'] === 'role-key')[0]
+  // 非法键名（大写 + 空格）
+  await typeValue(booted, keyInput(), 'Bad Key')
+  await keyInput().props.onBlur({ target: { value: 'Bad Key' } })
+  booted.reload()
+  await tick()
+  assert.equal(keyInput().props.value, 'custom-x', '被拒后输入框回滚到原键名')
+  assert.match(textOf(booted.tree), /非法或已存在/, '提示保留（importError）')
+  assert.ok(rowsOf(booted.tree, 'roles').map((node) => textOf(node)).some((text) => text.includes('custom-x')), '名册未变')
+  // 重名（撞内置名）同样拒收并回滚
+  await typeValue(booted, keyInput(), 'oracle')
+  await keyInput().props.onBlur({ target: { value: 'oracle' } })
+  booted.reload()
+  await tick()
+  assert.equal(keyInput().props.value, 'custom-x', '重名也回滚')
+  assert.match(textOf(booted.tree), /非法或已存在/)
+})
+
+test('角色键名草稿：切换角色即重置，切走再切回不放回半截草稿（P2）', async () => {
+  const booted = openCard({ user: { roles: { 'custom-x': { provider: 'p', model: 'm', fallbacks: [], persona: '' } } } })
+  await settle(booted)
+  await click(booted, rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('custom-x')))
+  const keyInput = () => all(booted.tree, (node) => node.props?.['data-role'] === 'role-key')[0]
+  await typeValue(booted, keyInput(), 'half-typed')
+  // 切到内置角色（键名框不渲染），再切回自定义角色：草稿必须已随切换清掉
+  await click(booted, rowsOf(booted.tree, 'roles')[0])
+  await click(booted, rowsOf(booted.tree, 'roles').find((node) => textOf(node).includes('custom-x')))
+  assert.equal(keyInput().props.value, 'custom-x', '半截草稿不随切回复现')
+  // 且名册没被这半截草稿动过
+  const names = rowsOf(booted.tree, 'roles').map((node) => textOf(node))
+  assert.ok(names.some((text) => text.includes('custom-x')))
+  assert.ok(!names.some((text) => text.includes('half-typed')))
+})

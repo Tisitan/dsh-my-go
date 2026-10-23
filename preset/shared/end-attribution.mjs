@@ -68,7 +68,7 @@ export const DECISIONS = Object.freeze([
   'late-duplicate', // E1 台账有归属、活槽位没有：已落账那一代的迟到/重复 end
   'unattributable', // E2 不在册、台账无记录、可归因的 spawning 占位不唯一：留痕忽略
   'no-owning-orchestration', // E3 工种在册但属主实例已销毁：结论无处安放
-  'expected-abort', // E4 urgency=abort 掐断的预期终局：吞掉，续轮仍占槽
+  'expected-abort', // E4 urgency=abort 掐断**类**终局（aborted/interrupted/cancelled）：吞掉，续轮仍占槽；其余终局消费 guard 后照常归因
   'fallback-in-flight', // E5 备选评估在飞窗口内的双发第二发：不矛盾口径、不推进
   'fallback-evaluation', // E6 error 终局 + 有备选链 + 本代际未决策：进异步重派
   'finalize', // E7 正常收尾（成功落账 / 失败附因落账 / 闸门合格或转裁决）
@@ -94,6 +94,13 @@ const DECISION_ADVANCE = {
 // （只给 reportSubmitted/readSubmitted/repairRetried 的老测试）因此零扰动，本模块
 // 也依旧零 fs——板上是否有货这件事实由 broker 现算后喂进来。
 const NEVER_HAS_BOARD = () => false
+
+// 「掐断类」终局词表（E4 的唯一吞并范围，见下方 E4 注释的宿主语义）。
+// 宿主 SubagentStopReasonMap（dsh-subagent types.d.ts:239-250）的词表是
+// completed / aborted / error / max-tokens / refusal；'interrupted' 与
+// 'cancelled' 是本仓对同类「被主动取消」终局的容忍别名（旧版本 / 变体 runtime
+// 的用词），一并按掐断论。**不在表内的一律不吞**——宁可多落一条账，也不吞真终局。
+const INTERRUPT_CLASS_STOP_REASONS = new Set(['aborted', 'interrupted', 'cancelled'])
 
 // 登记值缺席但板上有货时的最小兜底字段（回执内芯的合成原料）。措辞点名「登记表
 // 缺席」而非「未提交」：报告是真在板上的，主编照 report_fetch 取全文即可。
@@ -195,21 +202,50 @@ export function attributeEnd({
   }
 
   // E4：urgency=abort 护航。
-  // interrupt 掐断的那一轮必以非 completed 终局上报 end——它是编排方自造的预期
-  // 事件，落史会让 interrupt 前排队的 followup 续轮游离于泳道槽位之外，「失败已知
-  // 悉」预告/附因推送还会误导主流程进入失败处置。
+  // interrupt 掐断的那一轮的 end 是编排方自造的预期事件，落史会让 interrupt 前排队的
+  // followup 续轮游离于泳道槽位之外，「失败已知悉」预告/附因推送还会误导主流程进入
+  // 失败处置。
   // **guard 无条件就地消费**（协议第 3 条）：掐断与完工是赛跑关系，interrupt 只是
   // 同步受理（Agent.cancel 异步生效），被掐轮完全可能已跑到 completed 终局——那是
   // 一条真结论，吞了就等于把成果连记录一起蒸发；而 guard 留着只会误伤下一代际
   // （跨代际残留另有 rearmChild 清理，N5）。
+  //
+  // **吞并范围只限掐断类词表**（`INTERRUPT_CLASS_STOP_REASONS`）：
+  //   ① 原判据 `stopReason !== 'completed'` 太宽——它把 error / max-tokens /
+  //      refusal 也当预期噪音吞掉。宿主 `dsh-subagent@0.1.7-alpha.2` 的
+  //      `interrupt` 只调 `agent.cancel(..., { keepInbox: true })`
+  //      （types/continuation-activation.js:158-185），**不发 subagent/end**；
+  //      一个 Activation 只在 inbox 与子代都清空后才 finishDisposal →
+  //      observer.settle 发那**唯一一条**终局（types/lifecycle.js:89-125 的
+  //      residency epoch 成对语义，约 536 / 664 行）。于是「掐断 → 续轮 → 续轮失败」
+  //      只产生一条 end，stopReason 由最后真正消费任务的那一轮决定（error /
+  //      max-tokens / refusal…）——按旧判据会被当成中间噪音吞掉，子代已 disposed、
+  //      宿主已摘除 resident，broker 却留 running 槽位：不记 failed、不进备选、
+  //      不推进同泳道队列。
+  //   ② 故只吞「掐断类」（aborted / interrupted / cancelled = 被主动取消的那种噪音），
+  //      其余（error / max-tokens / refusal / completed / 未知词）消费 guard 后
+  //      继续向下走 E5/E6/E7，续轮的失败照常落账并推进队列。
+  //
+  // **不要试图在这里再判「续轮还会不会来」**（B2 闸 F1 返工的结论）：真实宿主上
+  // `agent/disposed` 恒先于 `subagent/end`（finishDisposal 先 handle.dispose() 再
+  // observer.settle()），而 broker 的 disposed 钩子会给活记录挂宽限期兜底——因此
+  // 「本 end 之前已 disposed」对正常完工路径**恒成立**，拿它当判据会让本分支在真实
+  // 环境里成为死代码，并把两段激活（aborted → coldResume → completed）的第一段误判
+  // 成终局、丢掉第二段的真结论。「续轮还会不会来」这个歧义由**宽限期兜底定时器**
+  // 在结构上解决：本分支吞掉 end 后定时器**保持挂着**（dispatcher 侧据此不撤，见
+  // broker-ending 的撤销点唯一化），
+  //   - 续轮真的来了 ⇒ 它的终局 end 走正常归因并撤掉定时器；
+  //   - 宿主其实已彻底掐断、再无第二段 ⇒ 宽限期到点由兜底按 failed 收槽并推进队列。
   if (abortExpected(childId)) {
     ops.push({ op: 'consume-abort-guard', childId })
-    if (info?.stopReason !== 'completed') {
-      // 不落史、不通知、不推进队列（槽位仍被续轮占用），续轮自己的 end 到达时走正常收尾
+    if (INTERRUPT_CLASS_STOP_REASONS.has(info?.stopReason)) {
+      // 不落史、不通知、不推进队列（槽位仍被续轮占用），续轮自己的 end 到达时走正常收尾；
+      // 兜底定时器**不撤**（在上方语义下它是「没有续轮」时的唯一解冻路径）。
       return done('expected-abort', ops, { ownerPid, type: resolvedType, notices }, {
         warn: `subagent/end for ${String(childId)} (${resolvedType}) is the expected abort-interrupted turn; record stays running for the queued followup`,
       })
     }
+    // 非掐断类终局（含 error / completed）：guard 已在 ops 里消费，落到下方正常归因。
   }
 
   // E5：双发 end 的第二发落在备选评估的 await 窗口内（pickFallbackEntry 含真实

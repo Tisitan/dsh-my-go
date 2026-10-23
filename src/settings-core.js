@@ -81,10 +81,38 @@ function useScopeSnapshot(scope) {
 
 function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   const [draft, setDraft] = React.useState(null)
+  // 最新草稿的**可变句柄**（P2）：draft state 在异步 save() 的闭包里会过期，而
+  // 「落盘后该不该清草稿」取决于用户此刻手里有什么。只在真正改草稿的三处同步写：
+  // stage（编辑）、save 成功清空、discardAndReload（丢弃）。
+  // 用 useState 惰性初始化的稳定对象代替 useRef：语义与 useRef 完全一致（同一个
+  // 对象跨渲染存活、写 .current 不触发重渲染），但不需要组件额外索要一个 hook——
+  // 本仓与外部复现档的假 React 都只提供 useState/useCallback/useEffect/
+  // useSyncExternalStore，多要一个 hook 会把整套验证档打死。
+  const [draftCell] = React.useState(() => ({ current: null }))
+  // 渲染顶层同步一次（B2 闸 F3）：stage 里在 updater 内写 cell 是「同帧可见」的快
+  // 路径，但 React 严格模式会重复调用 updater、并发模式可能丢弃渲染——只在 updater
+  // 里写会让 cell 与真正提交的 draft 失步。这里无条件对齐到**本次渲染的 draft**，
+  // 使 cell 在任何一次渲染后都等于已提交的真值；save() 读它时不会拿到幻影草稿。
+  draftCell.current = draft
+  // 「角色键名」输入框的本地草稿（P2）：受控输入若直接绑 `value: key`，每次按键都
+  // 被下一次渲染刷回旧值——用户打不出第二个字符，onBlur 里的 `next !== key` 永不
+  // 成立，改名入口形同不存在。草稿只在**当前选中角色未变**时有效：`roleKeyDraftFor`
+  // 记下草稿属于哪个角色，选中换人（含改名成功后 pickRole(next)）即自动回落到新
+  // 键名，等价于「随 selectedKey 切换重置」，且不需要一枚 effect 去追选中态。
+  const [roleKeyDraft, setRoleKeyDraft] = React.useState(null)
+  const [roleKeyDraftFor, setRoleKeyDraftFor] = React.useState(null)
   const [fence, setFence] = React.useState(null)
   const [saving, setSaving] = React.useState(false)
   const [message, setMessage] = React.useState(null)
   const [picked, setPicked] = React.useState(AGENT_TYPES[0])
+  // 选中角色统一入口（P2）：每次换人顺手清掉「角色键名」输入框的本地草稿，于是
+  // 「改了名不提交、切走切回」也不会把半截草稿放回来——切换即重置是同步完成的，
+  // 不依赖 effect 去追 picked。
+  const pickRole = (key) => {
+    setPicked(key)
+    setRoleKeyDraft(null)
+    setRoleKeyDraftFor(null)
+  }
   const [pickedPrice, setPickedPrice] = React.useState(null)
   const [newRoleKey, setNewRoleKey] = React.useState('')
   const [importError, setImportError] = React.useState('')
@@ -120,7 +148,14 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
   // 草稿建立只在「第一次打开编辑」时记栅栏（那一刻的 revision）；此后外部提交
   // 一律走漂移提示，绝不动用户手里的东西。
   const stage = (updater) => {
-    setDraft((prev) => updater(prev ?? stored ?? emptyDraft()))
+    setDraft((prev) => {
+      const next = updater(prev ?? stored ?? emptyDraft())
+      // 最新草稿跟踪（P2）：save() 的闭包拿到的 draft 是**发起保存那一刻**的快照，
+      // 而 scope.mutate 是异步的——用户在飞行期间继续编辑时闭包看不见新值。落盘后
+      // 靠这枚稳定句柄判断「最新草稿是否仍是提交时那一份」，再决定清不清草稿。
+      draftCell.current = next
+      return next
+    })
     if (draft === null && typeof snapshot?.revision === 'number') setFence(snapshot.revision)
     setMessage(null)
   }
@@ -133,6 +168,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
 
   const discardAndReload = () => {
     setDraft(null)
+    draftCell.current = null
     setFence(null)
     setMessage(null)
     reload()
@@ -140,27 +176,46 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
 
   const save = async () => {
     if (!draft || !writable || saving) return
+    // 本次提交的草稿快照（P2）：落盘后用它判断用户在这期间是否又改了东西。
+    const submittedDraft = draft
     setSaving(true)
     setMessage(null)
     try {
-      const ops = buildSettingsOps(draft, layers)
+      const ops = buildSettingsOps(submittedDraft, layers)
       const before = { value: snapshot.value, base: snapshot.base }
       await scope.mutate(ops, typeof fence === 'number' ? fence : undefined)
       const after = scope.getSnapshot()
       const landed = ready
         && after?.status === 'ready'
-        && writeLanded(draft, before, ops)
+        && writeLanded(submittedDraft, before, ops)
         // 第二道读回判据同样以「写入后的现值」为基线：半输入格子两侧同形，不再制造
         // 假红字（writeLanded 内部已经是同一口径，这里保持页面侧的判据与之一致）。
-        && compareKey(draft, draftFromSection(after.value)) === compareKey(draftFromSection(after.value))
+        && compareKey(submittedDraft, draftFromSection(after.value)) === compareKey(draftFromSection(after.value))
       // 被拒时尽量点名真凶：本次 ops 触及、而宿主现值里根本不存在的段 ⇒ 宿主 schema
       // 比本版本插件旧（宿主侧 volatile 闸拿旧 schema 判新段），不是「校验不过」也不是
       // 并发漂移。两义红字换成一句能照做的话（重启宿主）。
       const unserved = landed ? [] : unservedSections(ops, [before.value, after?.value])
-      setMessage(describeSaveOutcome(landed, after?.revision, unserved))
+      // 飞行期间的新输入（P2 修复的判据）：最新草稿 ≠ 提交快照 ⇒ 这份新草稿必须留下。
+      // 旧实现在 landed 时无条件 setDraft(null)，把用户刚敲的内容静默蒸发、状态栏还
+      // 显示「无改动」——用户以为已保存，实际那一笔改动从未上过盘。
+      const latestDraft = draftCell.current
+      const superseded = landed
+        && latestDraft !== null
+        && compareKey(latestDraft, submittedDraft) !== compareKey(submittedDraft, submittedDraft)
+      const outcome = describeSaveOutcome(landed, after?.revision, unserved)
+      setMessage(superseded
+        ? { ...outcome, text: `${outcome.text}；保存期间的新改动尚未保存，请再保存一次` }
+        : outcome)
       if (landed) {
-        setDraft(null)
-        setFence(null)
+        if (superseded) {
+          // 前序保存已生效：栅栏挪到刚落盘的 revision（新草稿的脏判定以它为基线，
+          // 状态栏照常报「待保存」），草稿与句柄都保持不动。
+          setFence(typeof after?.revision === 'number' ? after.revision : null)
+        } else {
+          setDraft(null)
+          draftCell.current = null
+          setFence(null)
+        }
       }
     } catch (error) {
       setMessage({ ok: false, text: `写入通道异常：${String(error)}` })
@@ -261,7 +316,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
     if (!writable || !isValidRoleKey(key, customRows)) return
     stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: blankRole() } }))
     setNewRoleKey('')
-    setPicked(key)
+    pickRole(key)
     setImportError('')
   }
 
@@ -271,14 +326,17 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       delete roles[key]
       return { ...prev, roles }
     })
-    setPicked(AGENT_TYPES[0])
+    pickRole(AGENT_TYPES[0])
   }
 
+  // 改名（P2）：**返回布尔**，调用方（roles-editor 的键名输入框失焦）据此决定
+  // 是否把本地草稿回滚回原键名——false 表示这次改名被拒（非法键名/重名/内置名），
+  // 提示已经由 importError 给出，输入框不该停在那个非法值上。
   const renameRole = (from, to) => {
     const next = String(to).trim()
     if (!isValidRoleKey(next, customRows)) {
       setImportError(`键名「${next}」非法或已存在（内置名与小写-规则同样拒收）`)
-      return
+      return false
     }
     stage((prev) => {
       const roles = { ...prev.roles }
@@ -286,8 +344,9 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       delete roles[from]
       return { ...prev, roles }
     })
-    setPicked(next)
+    pickRole(next)
     setImportError('')
+    return true
   }
 
   const exportRole = async (key) => {
@@ -323,7 +382,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
       return
     }
     stage((prev) => ({ ...prev, roles: { ...prev.roles, [key]: parsed.row } }))
-    setPicked(key)
+    pickRole(key)
     setImportError('')
   }
 
@@ -388,7 +447,7 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
             'data-selected': entry.key === selectedKey,
             className: 'mygo-listRow',
             title: `${entry.label} · ${entry.meta}`,
-            onClick: () => setPicked(entry.key),
+            onClick: () => pickRole(entry.key),
           },
             el('span', { className: 'mygo-rowName' }, entry.label),
             el('span', { className: 'mygo-rowMeta' }, entry.meta),
@@ -424,6 +483,10 @@ function SettingsPage({ snapshot, scope, face, catalog, connection }) {
           onImportOverwrite: importOverwrite,
           onDeleteRole: deleteRole,
           onRenameRole: renameRole,
+          // 键名输入框的受控草稿：只在「仍是同一个选中角色」时生效，否则回落到
+          // 当前选中键名（切换/改名成功后自动重置）。
+          roleKeyDraft: roleKeyDraftFor === selectedKey && roleKeyDraft !== null ? roleKeyDraft : selectedKey,
+          onRoleKeyDraftChange: (value) => { setRoleKeyDraft(value); setRoleKeyDraftFor(selectedKey) },
         }) : null),
       ),
       el('div', { className: 'mygo-detail', 'data-role': 'role-detail' }, roleDetailText(selectedKey, current)),

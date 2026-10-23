@@ -1332,6 +1332,42 @@ test('urgency=abort 护航：被掐轮的 aborted end 不落史不推进队列�
   assert.equal(spawnCalls, 2, '续轮收尾后队列正常推进，t2 派发')
 })
 
+test('urgency=abort 后同一 Activation 续轮以 error 结束：唯一终局按 failed 落账并推进同泳道队列', async () => {
+  // 真实宿主的 abort 语义：
+  // dsh-subagent@0.1.7-alpha.2 的 interrupt 只调 agent.cancel(keepInbox)，**不发**
+  // subagent/end；observer 按 Activation residency epoch 成对发 start/end，整个
+  // Activation 只发一条终局，stopReason 由最后实际消费任务的续轮决定。故这里刻意
+  // 不模拟「被掐轮先发一条 aborted end」，直接发续轮的唯一 error 终局。
+  const parent = { id: 'parent-1', session: { header: {} } }
+  let spawnCalls = 0
+  const { ctx, dispatch, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
+    subagentsExtra: {
+      interrupt: () => {},
+      followup: async () => 'msg-abort',
+    },
+  })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 't1' }, execOf(parent))
+  await tools.get('go_work').execute({ agent: 'hermes', prompt: 't2' }, execOf(parent)) // 排队占第二位
+  const res = await tools.get('continue').execute({ id: 'sess-1', prompt: '续轮', urgency: 'abort' }, execOf(parent))
+  assert.equal(res.mode, 'abort', 'abort 档确实掐断了（护航已登记）')
+  // 唯一终局：续轮失败
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'error', lastAssistantMessage: [] })
+  const snap = snapOf('parent-1')
+  assert.equal(
+    snap?.currentRecords?.some((record) => record.childId === 'sess-1') ?? false,
+    false,
+    '记录必须落史，绝不留「宿主已 disposed、broker 仍 running」的死槽',
+  )
+  assert.equal(snap?.history.length, 1)
+  assert.equal(snap?.history[0]?.childId, 'sess-1')
+  assert.equal(snap?.history[0]?.status, 'failed', '续轮失败如实按 failed 落账')
+  await waitFor(() => spawnCalls >= 2, { what: 'failed 落账后同泳道队列被推进、t2 已派发' })
+  assert.equal(spawnCalls, 2, '排队的 hermes 任务被成功推进')
+})
+
 test('urgency=abort 投递失败补偿：followup 抛错撤销护航，aborted end 正常落史释放槽位', async () => {
   const parent = { id: 'parent-1', session: { header: {} } }
   const { ctx, dispatch, tools } = mockCtxFull({
@@ -1754,4 +1790,171 @@ test('need_help 工种识别走 typeOfAgent：活登记缺席时 label 兜底，
   const help = snapOf('parent-1')?.helpRequests?.[0]
   assert.equal(help?.childId, 'sess-1')
   assert.equal(help?.agentType, 'explore', '求助单工种经 label 兜底认回（修复前 undefined）')
+})
+
+test('两段激活：aborted(已 disposed) → coldResume completed 不许误杀，第二段结论照常落账', async () => {
+  // 真实宿主 finishDisposal
+  // 是先 handle.dispose()（→ agent/disposed）再 observer.settle()（→ subagent/end），
+  // 所以「end 之前已 disposed」对**正常**路径恒成立。宿主 deliverFollowup 在投递输给
+  // disposal 截止线时会等第一段 Activation 结束，再 coldResume 起第二段：
+  //   epoch1: agent/disposed + end(aborted)  ← 预期噪音，吞掉、槽位留给续轮
+  //   epoch2: agent/disposed + end(completed) ← 真结论，必须落 done
+  // 旧 disposedAtEnd 判据把 epoch1 判成 failed 终局，epoch2 的真结论就被当成
+  // late-duplicate 丢掉（结论丢失 = F1 本体）。
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const { ctx, dispatch, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: { interrupt: () => {}, followup: async () => 'msg-1' },
+  })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, disposeEndGraceMs: 60000 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 't1' }, execOf(parent))
+  const res = await tools.get('continue').execute({ id: 'sess-1', prompt: '续轮', urgency: 'abort' }, execOf(parent))
+  assert.equal(res.mode, 'abort')
+
+  // ── epoch 1 拆解（宿主序：disposed 先到）──
+  dispatch('agent/disposed', { agent: { id: 'sess-1' } })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] })
+  const afterEpoch1 = snapOf('parent-1')
+  assert.equal(currentOf('parent-1')?.status, 'running', '掐断类终局是预期噪音：槽位留给续轮')
+  assert.equal(afterEpoch1.history.length, 0, '第一段不落史（落史就等于把续轮判死）')
+
+  // ── epoch 2 完工 ──
+  dispatch('agent/disposed', { agent: { id: 'sess-1' } })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '续轮结论' }] })
+  const afterEpoch2 = snapOf('parent-1')
+  assert.equal(currentOf('parent-1'), null, '第二段收槽')
+  assert.equal(afterEpoch2.history.length, 1, '只有一条历史（第一段没被误记）')
+  assert.equal(afterEpoch2.history[0].childId, 'sess-1')
+  assert.equal(afterEpoch2.history[0].status, 'done', '第二段的真结论落 done，绝不 late-duplicate 丢弃')
+  assert.match(String(afterEpoch2.history[0].conclusion), /续轮结论/)
+})
+
+test('单段激活：aborted 被吞且再无续轮 → 宽限期兜底必须仍在挂，到点按 failed 收槽并推进队列', async () => {
+  // B2 闸 F1 的另一半：吞掉掐断类终局后，若宿主其实已彻底掐断（没有第二段
+  // Activation），宽限期定时器是唯一的解冻路径。若在 expected-abort 分支把定时器
+  // 撤掉，槽位就永久卡死——这正是 P1 原缺陷。用 20ms 宽限期验到「定时器确实还在」。
+  const parent = { id: 'parent-1', session: { header: {} } }
+  let spawnCalls = 0
+  const { ctx, dispatch, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
+    subagentsExtra: { interrupt: () => {}, followup: async () => 'msg-1' },
+  })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, disposeEndGraceMs: 20 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 't1' }, execOf(parent))
+  await tools.get('go_work').execute({ agent: 'hermes', prompt: 't2' }, execOf(parent)) // 排队等推进
+  await tools.get('continue').execute({ id: 'sess-1', prompt: '续轮', urgency: 'abort' }, execOf(parent))
+  dispatch('agent/disposed', { agent: { id: 'sess-1' } })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] })
+  assert.equal(currentOf('parent-1')?.status, 'running', '先吞掉（此刻仍假设续轮会来）')
+  // 没有任何第二段 end：宽限期到点必须由兜底按 failed 收槽，并推进同泳道队列
+  await waitFor(() => spawnCalls >= 2, { what: '宽限期兜底收槽后排队任务被推进' })
+  const snap = snapOf('parent-1')
+  assert.equal(snap.history.length, 1)
+  assert.equal(snap.history[0].childId, 'sess-1')
+  assert.equal(snap.history[0].status, 'failed', '兜底口径：无 end 的掐断轮按 failed 落账（有据不静默）')
+  assert.equal(spawnCalls, 2, '队列已解冻')
+  assert.equal(currentOf('parent-1')?.childId, 'sess-2', '槽位由排队的 hermes 接上')
+})
+
+test('兜底定时器活体检查：宽限期内有续轮投递（记录被替换）→ 撤掉兜底，不掐断活体', async () => {
+  // B2 闸 F1 的加固面：E4 吞掉掐断类终局后定时器仍在挂；若子代其实已进入新一段
+  // 激活（broker 侧证据 = 记录对象被续派/状态迁移替换），宽限期到点不许把它判死
+  // ——而且必须**撤掉**兜底：留着它，第二段只要跑得比宽限期长就会被误判成 failed。
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const { ctx, dispatch, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: { interrupt: () => {}, followup: async () => 'msg-1' },
+  })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, disposeEndGraceMs: 30 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 't1' }, execOf(parent))
+  dispatch('agent/disposed', { agent: { id: 'sess-1' } }) // 挂兜底（30ms）
+  await tools.get('continue').execute({ id: 'sess-1', prompt: '续轮', urgency: 'abort' }, execOf(parent))
+  // 续轮投递换掉了记录对象 ⇒ 定时器到点撤掉兜底（不重挂），绝不 abort 活体
+  await drain(45) // 已越过第一个 30ms 窗口
+  assert.equal(currentOf('parent-1')?.status, 'running', '记录仍被续轮占着，不许被兜底掐断')
+  assert.equal(snapOf('parent-1').history.length, 0, '没有落任何 failed 账')
+  // 再等两个宽限期：撤掉而非重挂的判据——重挂的实现会在这个窗口里再次开火
+  await drain(70)
+  assert.equal(currentOf('parent-1')?.status, 'running', '兜底已撤：长跑的第二段激活不会被误杀')
+  assert.equal(snapOf('parent-1').history.length, 0)
+  // 续轮真结论到达 → 正常收尾
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '续轮完成' }] })
+  const snap = snapOf('parent-1')
+  assert.equal(snap.history.length, 1)
+  assert.equal(snap.history[0].status, 'done')
+})
+
+test('P11 冷恢复慢于宽限期：在途投递期间兜底只推迟、绝不判死，第二段结论照常落 done', async () => {
+  // 真实宿主链路：continue(abort) → interrupt 掐断 →
+  // 第一段 Activation 关闭发出 agent/disposed（挂 20ms 兜底）+ subagent/end(aborted)
+  // （E4 吞并、保留定时器）→ 宿主 coldResume（observeSession + materialize，无时长
+  // 保证）仍在 await，broker 侧记录还没被 followupPrompt 换掉。旧实现只看「记录
+  // 对象是否换过」⇒ 到点就把仍在恢复中的子代判 failed，第二段的 completed 随后被
+  // 当 late-duplicate 丢掉。修复：投递窗口（childRegistry.beginDelivery）开着时
+  // 定时器只顺延一轮，不判死。
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const resumeGate = Promise.withResolvers()
+  let deliveryStarted = false
+  let spawnCalls = 0
+  const { ctx, dispatch, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: `sess-${++spawnCalls}` })),
+    subagentsExtra: {
+      interrupt: () => {},
+      // 投递挂在宿主冷恢复上：比 disposeEndGraceMs 长得多
+      followup: async () => { deliveryStarted = true; await resumeGate.promise; return 'msg-slow' },
+    },
+  })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, disposeEndGraceMs: 20 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 't1' }, execOf(parent))
+  await tools.get('go_work').execute({ agent: 'hermes', prompt: 'queued next' }, execOf(parent))
+  const continuing = tools.get('continue').execute({ id: 'sess-1', prompt: '续轮', urgency: 'abort' }, execOf(parent))
+  await waitFor(() => deliveryStarted, { what: '唤醒投递已发出并挂在宿主冷恢复上' })
+  // 宿主第一段拆解：disposed + aborted（预期噪音吞掉、定时器保留）
+  dispatch('agent/disposed', { agent: { id: 'sess-1' } })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'aborted', lastAssistantMessage: [] })
+  // 越过 3 个宽限期：在途投递未完成 ⇒ 绝不判死、绝不落 failed、绝不推进队列
+  await drain(90)
+  assert.equal(currentOf('parent-1')?.childId, 'sess-1', '记录仍占槽（冷恢复在跑）')
+  assert.equal(currentOf('parent-1')?.status, 'running')
+  assert.equal(snapOf('parent-1').history.length, 0, '在途冷恢复期间不许落任何 failed 账')
+  assert.equal(spawnCalls, 1, '队列不得被提前推进（原续轮还在恢复）')
+  // 冷恢复完成 → 投递返回 → 复籍（记录换新对象）→ 兜底应被撤除
+  resumeGate.resolve()
+  const res = await continuing
+  assert.equal(res.accepted, true)
+  await drain(60) // 再越过几个宽限期：兜底已撤，不得回头判死活体
+  assert.equal(currentOf('parent-1')?.status, 'running', '复籍后仍是活体，兜底必须已被撤除')
+  assert.equal(snapOf('parent-1').history.length, 0)
+  // 第二段 Activation 的真结论
+  dispatch('agent/disposed', { agent: { id: 'sess-1' } })
+  dispatch('subagent/end', { id: 'sess-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '续轮完成' }] })
+  const snap = snapOf('parent-1')
+  assert.equal(snap.history.length, 1)
+  assert.equal(snap.history[0].childId, 'sess-1')
+  assert.equal(snap.history[0].status, 'done', '第二段结论落 done（绝不被 late-duplicate 丢弃）')
+  assert.match(String(snap.history[0].conclusion), /续轮完成/)
+})
+
+test('P11 投递失败时窗口无条件关闭：宽限期兜底恢复判死能力（不留永久卡槽）', async () => {
+  const parent = { id: 'parent-1', session: { header: {} } }
+  const { ctx, dispatch, tools } = mockCtxFull({
+    agents: { get: (id) => (id === 'parent-1' ? parent : id === 'sess-1' ? { id: 'sess-1' } : undefined) },
+    startContinuable: withRealSignalContract(async () => ({ childId: 'sess-1' })),
+    subagentsExtra: { interrupt: () => {}, followup: async () => { throw new Error('facade boom') } },
+  })
+  await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5, disposeEndGraceMs: 20 })
+  await tools.get('go_work').execute({ agent: 'explore', prompt: 't1' }, execOf(parent))
+  await assert.rejects(() => tools.get('continue').execute({ id: 'sess-1', prompt: '续轮', urgency: 'abort' }, execOf(parent)))
+  // 投递失败 ⇒ finally 必关窗。判据：此后只发 disposed、永无 end，兜底必须在一个
+  // 宽限期内收槽——若窗口泄漏（计数没减），定时器会一轮轮顺延、记录永久卡住。
+  dispatch('agent/disposed', { agent: { id: 'sess-1' } })
+  await waitFor(() => snapOf('parent-1')?.history.length === 1, { what: '投递失败 ⇒ 窗口已关 ⇒ 宽限期兜底恢复判死' })
+  const hist = snapOf('parent-1').history
+  assert.equal(hist[0].childId, 'sess-1')
+  assert.equal(hist[0].status, 'failed', '窗口关闭后兜底照常按 failed 收槽（不静默蒸发）')
+  assert.equal(currentOf('parent-1'), null, '槽位解冻')
 })
