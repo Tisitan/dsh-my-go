@@ -15,7 +15,7 @@
 
 dsh-my-go 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的多智能体编排预设。它把一个主会话与 8 个专业工种组织起来，提供模型分流、读写泳道、报告板和 Web 面板。本仓由 Tisitan 独立维护。
 
-[快速开始](#快速开始) · [配置参考](docs/CONFIGURATION.md) · [使用与排错](docs/USAGE.md) · [更新日志](CHANGELOG.md)
+[快速开始](#快速开始) · [角色分工](#角色分工) · [配置参考](docs/CONFIGURATION.md) · [使用与排错](docs/USAGE.md) · [更新日志](CHANGELOG.md)
 
 ## 一眼看懂
 
@@ -40,7 +40,8 @@ dsh-my-go 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness
 - **读写双泳道**：随包预设读池 3 槽、写池 3 槽，每个编排会话最多同时运行 6 个子代理；各会话独立排队。
 - **报告落板**：子代理提交结论、证据与未决事项，完整报告持久化，主编按需读取。
 - **接力链**：声明连续执行的步骤，报告作为下一步的数据输入；需要审阅的节点暂停等待主编裁决。
-- **Web 配置与观测**：配置角色与模型，查看运行、队列、求助、历史及用量；费用按宿主用量和用户填写的单价估算。
+- **Web 配置与观测**：编辑角色、模型与人设，查看运行、队列、求助和历史。
+- **用量与费用**：聚合主会话及子代理的用量，按配置单价估算费用；数据不完整时明确显示下界。
 
 <a id="8-工种名册"></a><a id="智能体-prompt"></a>
 
@@ -64,7 +65,8 @@ dsh-my-go 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness
 
 ## 环境要求
 
-- **Node.js 22.15+**，以及已安装的 DSH、Git、pnpm。
+- **Node.js 22.15+**；当前 CI 的 Node.js 版本见 [`.nvmrc`](.nvmrc)。
+- 已安装 DSH、Git 与 pnpm。
 - DSH 相关包的 peer 范围：**`>=0.1.7-alpha.1 <0.3.0`**，以 [package.json](package.json) 为准。
 - 至少一个已配置且可用的 LLM provider。
 - 预设适配 Windows 与 macOS / Linux 的 shell；CI 配置了 Ubuntu / Windows 测试矩阵。声明的依赖范围不等于逐版本实机验证。
@@ -99,9 +101,15 @@ dsh web
 
 预设缺失或导入失败时，按 [安装验证与排错](docs/USAGE.md#验证安装) 检查本地链接、依赖与 bundle 登记。
 
+### 查看结果与用量
+
+子代理完成任务后，主编会收到报告概要；完整内容保存在报告板，需要时按行读取。要求返工后，报告会按新的执行轮次重新提交。
+
+用量面板汇总主会话和子代理的 token，并按你填写的模型单价估算费用。**`≥` 表示当前可确认的下界**：历史记录或价格不完整时，不把缺失部分当成零。完整性标记与费用说明见 [用量与费用](docs/USAGE.md#用量与费用)。
+
 ### 升级
 
-在原 clone 目录运行，再停止旧 Web 实例并重新启动：
+先停止旧的 DSH Web 实例，在原 clone 目录更新并重新启动：
 
 ```bash
 git pull --ff-only
@@ -122,7 +130,7 @@ dsh plugin --profile web remove dsh-my-go
 
 ## 配置
 
-常用设置在 Web 配置卡中编辑，点击 **立即保存** 后生效。模型、人设、备选链、心跳与用量单价的字段和 YAML 示例见 [配置参考](docs/CONFIGURATION.md)。
+常用设置在 Web 配置卡中编辑，点击 **立即保存** 后生效。保存期间继续编辑会保留新的草稿，保存失败也可修改后重试。模型、人设、备选链、心跳与用量单价的字段和 YAML 示例见 [配置参考](docs/CONFIGURATION.md)。
 
 | 设置 | 随包预设 / 初始行为 |
 |---|---|
@@ -158,7 +166,7 @@ dsh plugin --profile web remove dsh-my-go
 | 隔离 DSH_HOME、启动宿主与实机验收 | [开发沙箱指南](docs/DEV-SANDBOX.md) |
 | 用量聚合、价格与 RPC 契约 | [用量统计设计](docs/usage-stats-design.md) |
 
-[版本记录](CHANGELOG.md) · [历史规划](docs/plans/) · [历史审查](docs/archive/) · [归档 TS 实现](docs/legacy-broker-ts/)
+[贡献指南](CONTRIBUTING.md) · [安全问题](SECURITY.md) · [历史规划](docs/plans/) · [历史审查](docs/archive/) · [归档 TS 实现](docs/legacy-broker-ts/)
 
 [头图](docs/assets/README.md)是项目概念视觉；[面板设计演示](docs/USAGE.md#面板设计演示)来自早期设计稿，不代表当前产品的真实运行截图。全部工种提示词与公共[搜索纪律](prompts/search-discipline.md)保存在 [prompts/](prompts/)。
 
