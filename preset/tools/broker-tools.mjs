@@ -50,6 +50,17 @@ import {
 import { laneOf, nextId } from '../shared/orchestration.mjs'
 import { createChain, validateChainDeclaration, RELAY_CHAINS_CAP } from '../shared/relay-chain.mjs'
 
+// ── 回合收尾指令（tool result 回文）────────────────────────────────────────
+// 派发/求助/交报告之后「何时可以停下」这段纪律，原先只写在工具 description 与
+// 人设 prompt 里，模型在拿到 result 的那一刻并不重读 description——于是最常见的
+// 反模式就是「派发完继续轮询」与「求助后又补一堆话」。把一句话纪律直接焊在
+// result 尾部：它随每次工具返回出现在上下文最末端，是唯一 100% 可见的位置。
+// 三档语义互斥：等子代（go_work/continue/forward）、已挂起（need_help）、已交卷
+// （report_submit）——措辞刻意各不相同，避免模型把「等通知」当成「可以继续动手」。
+const ORCHESTRATOR_STOP_REMINDER = '🛑 [回合收尾指令] 子智能体已在后台运行；当它完成或发起求助时，宿主会自动唤醒你开启新回合，无需你调用工具保持活跃。你可以在目前事务处理完毕后静默结束本轮，子代会自动唤醒你。'
+const NEED_HELP_STOP_REMINDER = '🛑 [回合收尾指令] 求助单已由工具直接送达主编，你已被标记为挂起状态（waiting）。请勿再调用任何工具或继续施工，无需重复叙述求助内容，直接输出一句简短的等待说明并立即结束本轮；主编处理后会通过 continue 唤醒你。'
+const REPORT_SUBMIT_STOP_REMINDER = '🛑 [回合收尾指令] 报告已成功落板并完成登记。无需再调用任何工具或重复调用 report_submit，在确认完成本轮收尾工作后，直接输出一两句简短的完成总结并立即结束本轮，宿主会自动通知主编验收。'
+
 export function registerAllTools({
   registerTool,
   on,
@@ -100,7 +111,7 @@ export function registerAllTools({
       'Routing: go_work = fresh task or new specialty; continue = resume an existing childId keeping its context (cheaper for follow-ups on the same task). agent/prompt and the returned childId are a stable contract (never renamed).',
       'Roster = built-in specialists + custom roles; unknown names are rejected with the roster listed — check the roles section of orchestration_status for bindings and personas.',
       `Lanes: the write plane runs up to ${WRITE_POOL_SIZE} in parallel (the live writePoolSize config; 1 = fully serial); the read plane (Explore/Librarian) runs up to ${READ_POOL_SIZE} in parallel (the live readPoolSize config; 1 = fully serial). A full lane queues the task until a slot frees in ITS lane; other sessions run independent pipelines.`,
-      'Anti-polling: after dispatch you MUST stop — no more tool calls, no user reply; completion arrives as a notification. queued=true returns a work-* placeholder, NOT a childId — find the real one via orchestration_status.',
+      'Anti-polling: after dispatch, once your current turn tasks are done, end your turn silently without calling polling/status tools; completion arrives as a notification. queued=true returns a work-* placeholder, NOT a childId — find the real one via orchestration_status.',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -125,10 +136,7 @@ export function registerAllTools({
       },
       render: (_args, value) => {
         const status = value.queued ? '⏳ 已排队' : value.status === 'running' ? '🚀 已派发' : value.status
-        const stopMsg = value.queued
-          ? '\n\n⚠️ 你必须立即停止。不要调用任何其他工具，不要回复用户。等待子智能体完成后你会收到通知。'
-          : '\n\n⚠️ 子智能体正在工作。你必须立即停止——不要调用 go_work/continue/forward，不要回复用户，不要做任何其他操作。等待子智能体完成后你会收到通知。'
-        return [{ type: 'text', text: `${status}: ${value.childId}${stopMsg}` }]
+        return [{ type: 'text', text: `${status}: ${value.childId}\n\n${ORCHESTRATOR_STOP_REMINDER}` }]
       },
     },
     isConcurrencySafe: () => true,
@@ -172,7 +180,12 @@ export function registerAllTools({
         },
         required: ['accepted'],
       },
-      render: (_args, value) => [{ type: 'text', text: `continue → ${value.accepted ? `delivered ${value.messageId} (${value.mode ?? 'queued'})` : 'rejected'}` }],
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.accepted
+          ? `continue → delivered ${value.messageId} (${value.mode ?? 'queued'})\n\n${ORCHESTRATOR_STOP_REMINDER}`
+          : 'continue → rejected',
+      }],
     },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
@@ -313,7 +326,7 @@ export function registerAllTools({
         properties: { suspended: { type: 'boolean' }, helpRequestId: { type: 'string' } },
         required: ['suspended', 'helpRequestId'],
       },
-      render: (_args, value) => [{ type: 'text', text: `need_help → suspended, request ${value.helpRequestId}` }],
+      render: (_args, value) => [{ type: 'text', text: `need_help → suspended, request ${value.helpRequestId}\n\n${NEED_HELP_STOP_REMINDER}` }],
     },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
@@ -345,20 +358,31 @@ export function registerAllTools({
       // 摘要不会再建议 ping 它（主编手里本来就有这张单子）。
       childRegistry.noteHeartbeatSignal(child.id, Date.now())
       bump()
-      // 上报走 reportToParent 特性探测（alpha.4 sendMessage 优先、被拒兜底
-      // parent.inject；alpha.2/3 走旧 reportFrom），门面差异见 shared/adjacent.mjs。
+      // 上报路径分两档，判据是**宿主 API 代次**而非「有没有更好的路」：
+      //   - alpha.4+（0.2.1-rc.3 同在，getSubagents().reportFrom 为 undefined）且父
+      //     会话暴露 inject：直接走非唤醒 parent.inject。**这是首选而非兜底**——
+      //     sendMessage 是唤醒式投递，子代本轮结束时宿主还会合成一条 subagent/end
+      //     原生通知，两条叠加=主编被同一件事唤醒两次；inject 是伴随既有唤醒到达的
+      //     非唤醒通道（settled notice 会在下一回合把它带进上下文），语义正好。
+      //   - alpha.2/3（reportFrom 在）：仍走旧 reportFrom，保持旧宿主契约原样；
+      //     该档的 injectFallback 只在 sendMessage 被拒时才可能生效，与本分支无关。
+      // 两档都是「送达或抛错」，抛错统一进下方 catch 留痕 + 尽力通知，绝不静默。
       const helpText = `<need_help id="${id}" intent="${args.intent}" child="${child.id}">\n${escapeXml(args.content)}\n</need_help>`
       const helpParentId = child?.session?.header?.parentSession ?? owned?.parentId
       const helpParentAgent = resolveParentAgent(helpParentId)
       try {
-        await reportToParent(getSubagents(), child, helpParentId, [{ type: 'text', text: helpText }], {
-          signal: exec?.signal,
-          injectFallback: () => {
-            if (!helpParentAgent || typeof helpParentAgent.inject !== 'function') return false
-            notifyParent(helpParentAgent, helpText)
-            return true
-          },
-        })
+        if (typeof getSubagents()?.reportFrom !== 'function' && helpParentAgent && typeof helpParentAgent.inject === 'function') {
+          notifyParent(helpParentAgent, helpText)
+        } else {
+          await reportToParent(getSubagents(), child, helpParentId, [{ type: 'text', text: helpText }], {
+            signal: exec?.signal,
+            injectFallback: () => {
+              if (!helpParentAgent || typeof helpParentAgent.inject !== 'function') return false
+              notifyParent(helpParentAgent, helpText)
+              return true
+            },
+          })
+        }
       } catch (error) {
         // Report failure must not break the suspension bookkeeping; surface it.
         console.warn(`[dsh-my-go] need_help ${id} (${args.intent}) report delivery failed for child ${String(child.id)}: ${String(error)}`)
@@ -389,12 +413,17 @@ export function registerAllTools({
       schema: {
         type: 'object',
         additionalProperties: false,
-        properties: { kind: { type: 'string' }, targetId: { type: 'string' }, resolved: { type: 'boolean' }, mode: { type: 'string' } },
+        properties: { kind: { type: 'string' }, targetId: { type: 'string' }, resolved: { type: 'boolean' }, mode: { type: 'string' }, queued: { type: 'boolean' } },
         required: ['kind', 'targetId'],
       },
       // mode 只在 target=childId（continue 等效）支出现：转发本身无 urgency
       // 概念，档位由 runtime 能力决定，如实回报免得主流程以为一定在排队。
-      render: (_args, value) => [{ type: 'text', text: value.mode ? `forward → ${value.kind}: ${value.targetId} (${value.mode})` : `forward → ${value.kind}: ${value.targetId}` }],
+      // queued 只在 target=工种（go_work 等效）支透视派结果：写泳道满时派发以
+      // 占位符返回，主流程据此知道「已收单、还没真起跑」，别去猜为什么没通知。
+      render: (_args, value) => {
+        const suffix = value.mode ? ` (${value.mode})` : value.queued ? ' (queued)' : ''
+        return [{ type: 'text', text: `forward → ${value.kind}: ${value.targetId}${suffix}\n\n${ORCHESTRATOR_STOP_REMINDER}` }]
+      },
     },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
@@ -430,7 +459,7 @@ export function registerAllTools({
         const result = await dispatchWork(target, prompt, parent, exec?.signal)
         helpOrch.resolveHelp(help.id) // 投递成功后才销账，失败则求助单保留
         bump()
-        return { kind: 'go_work', targetId: String(result?.childId ?? ''), resolved: true }
+        return { kind: 'go_work', targetId: String(result?.childId ?? ''), resolved: true, ...(result?.queued ? { queued: true } : {}) }
       }
       // M1 定位 + 三道闸（跨会话抢属主 / 泳道取得预占槽；queued 与 spawning 两道占位闸
       // 是 continue 独有的行为，不互相补齐）
@@ -795,7 +824,7 @@ export function registerAllTools({
           properties: { ok: { type: 'boolean' }, path: { type: 'string' }, bytes: { type: 'number' } },
           required: ['ok', 'path', 'bytes'],
         },
-        render: (_args, value) => [{ type: 'text', text: `report_submit → 已落板 (${value.bytes} bytes)\n${value.path}` }],
+        render: (_args, value) => [{ type: 'text', text: `report_submit → 已落板 (${value.bytes} bytes)\n${value.path}\n\n${REPORT_SUBMIT_STOP_REMINDER}` }],
       },
       isConcurrencySafe: () => true,
       async execute(args, exec) {

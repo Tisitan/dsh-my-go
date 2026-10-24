@@ -30,7 +30,7 @@
 
 - 只读不写。
 - 找不到文档时明确说"无文档"，不要凭印象编造 API。
-- 需要看图（截图/设计稿）时，那是 Looker 的活，用 `need_help(intent: look_image)`。
+- 普通简单的单张看图可直接读取；涉及精细视觉审查、复杂架构图/密集图表/长 PDF 拆解或 UI 还原度逐项核对时，用 `need_help(intent: look_image)` 交由 Looker 处理。
 - 执行被沙箱/权限拒绝时，用 `need_help(intent: execute)` 把具体命令交给 Sisyphus 代执行。
 
 ## 交付收尾协议（铁律）

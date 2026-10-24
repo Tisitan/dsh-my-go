@@ -441,8 +441,9 @@ test('broker/alpha.4：need_help 经 sendMessage 上报，Sisyphus 收到的注�
   assert.match(sent[0].text, /帮我跑这条命令/)
 })
 
-test('broker/alpha.4：need_help 的 sendMessage 被拒 → parent.inject 兜底送达，求助单挂起不炸', async () => {
+test('broker/alpha.4：need_help 优先走非唤醒 parent.inject（不调 sendMessage，避免与子代回合结束通知双次唤醒）', async () => {
   const injected = []
+  const sent = []
   const parent = {
     id: 'parent-A',
     session: { header: {} },
@@ -451,17 +452,81 @@ test('broker/alpha.4：need_help 的 sendMessage 被拒 → parent.inject 兜底
   const { ctx, tools } = mockCtxAlpha4({
     agents: { get: (id) => (id === 'parent-A' ? parent : undefined) },
     subagentsExtra: {
-      sendMessage: async () => { throw new Error('UNAUTHORIZED: not resident') },
+      // 唤醒式投递替身：真走到它就算「双次唤醒」缺陷，本用例直接红
+      sendMessage: async (sender, targetId, content) => { sent.push({ sender, targetId, text: content[0]?.text }); return 'msg-help' },
     },
   })
   await broker.apply(ctx, { reportExternalization: false, queueRetryBaseMs: 5 })
   await tools.get('go_work').execute({ agent: 'explore', prompt: '任务' }, execOf(parent))
   const child = { id: 'sess-1', session: { header: { parentSession: 'parent-A' } } }
   const r = await tools.get('need_help').execute({ intent: 'replan', content: '超出能力' }, execOf(child))
-  assert.equal(r.suspended, true, '兜底送达按成功处理，挂起账不破坏')
+  assert.equal(r.suspended, true, '非唤醒送达按成功处理，挂起账不破坏')
+  assert.equal(sent.length, 0, 'parent.inject 在场即绝不调 sendMessage（该消息唤醒主编，与子代回合结束的原生 subagent/end 叠加成双次唤醒）')
   assert.equal(injected.length, 1, 'parent.inject 收到求助注入（行为等价旧 reportFrom）')
   assert.match(injected[0].content[0].text, /<need_help id="[^"]+" intent="replan"/)
-  assert.equal(injected[0].source.kind, 'plugin:dsh-my-go', 'V4 生产者自持 kind：inject 兜底走 plugin:dsh-my-go 通知源（notifyParent 同款）')
+  assert.equal(injected[0].source.kind, 'plugin:dsh-my-go', 'V4 生产者自持 kind：inject 走 plugin:dsh-my-go 通知源（notifyParent 同款）')
+  assert.equal(injected[0].source.form, 'notice', '非唤醒注入按 notice 形态进上下文（不是 relay/唤醒件）')
+})
+
+// ── ②′ 回合收尾指令回文：五具工具的 output.render 一律带同一句收尾纪律 ──────
+// 「派发/求助/交卷之后什么时候可以停」原先只写在工具 description 与人设 prompt
+// 里，模型拿到 result 的那一刻并不重读 description——于是「派发完继续轮询」
+// 「求助后又补一堆话」成为最常见的反模式。回文把这句话焊在 result 尾部（上下文
+// 最末端，唯一 100% 可见的位置）。五具逐具断言：缺一具，就留给模型一条继续动手
+// 的口子。
+const STOP_MARK = '🛑 [回合收尾指令]'
+
+test('broker/回合收尾：go_work / continue / forward / need_help / report_submit 五具 render 均带 [回合收尾指令]', async () => {
+  const parent = { id: 'parent-A', session: { header: {} } }
+  const { ctx, tools } = mockCtxAlpha4({
+    agents: { get: (id) => (id === 'parent-A' ? parent : undefined) },
+    subagentsExtra: { sendMessage: async () => 'msg-1' },
+  })
+  // report_submit 随 REPORT_EXT 条件注册——本用例要它的 render，故显式开
+  await broker.apply(ctx, { reportExternalization: true, queueRetryBaseMs: 5 })
+  const render = (name, value) => {
+    const tool = tools.get(name)
+    assert.ok(tool, `${name} 在册`)
+    return tool.output.render({}, value).map((block) => block.text).join('\n')
+  }
+
+  // go_work：运行态与排队占位两档都要带（queued 是最容易被误解成「没派出去」的一档）
+  const dispatched = render('go_work', { childId: 'sess-1', status: 'running' })
+  assert.ok(dispatched.startsWith('🚀 已派发: sess-1'), `派发态回文体原样保留: ${dispatched}`)
+  assert.ok(dispatched.includes(STOP_MARK), 'go_work 派发态带回文')
+  const queued = render('go_work', { childId: 'work-1', status: 'queued', queued: true })
+  assert.ok(queued.startsWith('⏳ 已排队: work-1'), `排队态前缀保留: ${queued}`)
+  assert.ok(queued.includes(STOP_MARK), 'go_work 排队态同样带回文')
+  assert.match(tools.get('go_work').description, /end your turn silently without calling polling\/status tools/,
+    'description 的 anti-polling 口径已从「MUST stop」改为「事务处理完毕即静默收尾」')
+
+  // continue：送达才带回文，rejected 不带（没派出去就没有「等通知」可言）
+  const delivered = render('continue', { accepted: true, messageId: 'msg-1', mode: 'steer' })
+  assert.ok(delivered.startsWith('continue → delivered msg-1 (steer)'), `送达回文体原样保留: ${delivered}`)
+  assert.ok(delivered.includes(STOP_MARK), 'continue 送达带回文')
+  assert.equal(render('continue', { accepted: false }), 'continue → rejected', 'rejected 回文不变（不加收尾指令）')
+
+  // forward：mission 两支（mode=continue 档 / queued=go_work 占位档）都带
+  const forwarded = render('forward', { kind: 'continue', targetId: 'sess-1', mode: 'queued' })
+  assert.ok(forwarded.startsWith('forward → continue: sess-1 (queued)'), `转发档位回文体原样保留: ${forwarded}`)
+  assert.ok(forwarded.includes(STOP_MARK), 'forward（continue 等效）带回文')
+  const forwardQueued = render('forward', { kind: 'go_work', targetId: 'sess-2', resolved: true, queued: true })
+  assert.ok(forwardQueued.startsWith('forward → go_work: sess-2 (queued)'), `go_work 占位档如实回报 queued: ${forwardQueued}`)
+  assert.ok(forwardQueued.includes(STOP_MARK), 'forward（go_work 等效）带回文')
+
+  // need_help：挂起档的措辞必须是「已送达 + 立即结束本轮」，与派发档互斥
+  const helpRender = render('need_help', { suspended: true, helpRequestId: 'help-1' })
+  assert.ok(helpRender.startsWith('need_help → suspended, request help-1'), `挂起回文体原样保留: ${helpRender}`)
+  assert.ok(helpRender.includes(STOP_MARK), 'need_help 带回文')
+  assert.match(helpRender, /求助单已由工具直接送达主编/, 'need_help 回文说清「已送达、别重述」')
+  assert.equal(helpRender.includes('子智能体已在后台运行'), false, '挂起档不复用派发档措辞（两者语义互斥）')
+
+  // report_submit：落板成功即交卷，回文禁止再次调用
+  const submitted = render('report_submit', { ok: true, path: '/tmp/board/child-1.md', bytes: 42 })
+  assert.ok(submitted.startsWith('report_submit → 已落板 (42 bytes)'), `落板回文体原样保留: ${submitted}`)
+  assert.ok(submitted.includes('/tmp/board/child-1.md'), '落板路径仍在回文里（可复查）')
+  assert.ok(submitted.includes(STOP_MARK), 'report_submit 带回文')
+  assert.match(submitted, /无需再调用任何工具或重复调用 report_submit/, 'report_submit 回文说清「别重复交卷」')
 })
 
 test('broker/alpha.4：continue 默认 queued 档经 internal 队列符号投递（真 FIFO，不塌 steer）', async () => {
